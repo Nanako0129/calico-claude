@@ -9,6 +9,9 @@ permissions:
   actions: write
   contents: read
 
+env:
+  PATCH_WORKFLOW_FILE: patch-claude.yml
+
 concurrency:
   group: watch-claude-release
   cancel-in-progress: false
@@ -45,7 +48,7 @@ jobs:
           set -euo pipefail
           ACTIVE_RUNS="$(gh run list \
             --branch "$DEFAULT_BRANCH" \
-            --workflow patch-claude-from-npm.yml \
+            --workflow "$PATCH_WORKFLOW_FILE" \
             --limit 20 \
             --json status \
             --jq '[.[] | select(.status != "completed")] | length')"
@@ -87,7 +90,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run patch-claude-from-npm.yml \
+          gh workflow run "$PATCH_WORKFLOW_FILE" \
             -f native_version="${{ steps.latest.outputs.version }}"
           echo "Dispatched patch workflow for version ${{ steps.latest.outputs.version }}"
 

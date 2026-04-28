@@ -32,7 +32,7 @@ The important consequence: almost all real behavior lives in `patch-claude-displ
 - `patch-claude-display.ts`: ordered patch pipeline for extracted bundle text
 - `scripts/download-native-from-installer.sh`: exact upstream binary download flow via Anthropic's installer bucket
 - `scripts/patch-native-with-tweakcc.ts`: native binary read/write flow via `tweakcc`
-- `.github/workflows/patch-claude-from-npm.yml`: CI download, patch, sign, release path
+- `.github/workflows/patch-claude.yml`: CI download, patch, sign, release path
 - `install-patched-claude.sh`: installer that resolves release tags and downloads patched assets
 
 ## How The Patcher Is Structured
