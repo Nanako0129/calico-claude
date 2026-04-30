@@ -10,7 +10,6 @@ Here is an exhaustive list of things it changes:
 - Streams thinking live in the UI. This is helpful for instances where Claude thinks for over 10 minutes and you want to know if it's actually still doing something.
 - Shows subagent `Prompt:` blocks in the non-verbose UI.
 - Renames the startup header to `Connoisseur's Code v...` (this makes it easy to identify when Claude has auto updated and lost the patch).
-- Appends `(patched)` to plain `claude --version` output.
 
 #### Thinking note:
 
