@@ -71,7 +71,7 @@ jobs:
           set -euo pipefail
           MISSING=0
 
-          for SUFFIX in linux-x64 linux-arm64 macos-arm64; do
+          for SUFFIX in linux-x64 linux-arm64 macos-arm64 win32-x64 win32-arm64; do
             TAG="v${VERSION}-${SUFFIX}"
             if gh release view "$TAG" > /dev/null 2>&1; then
               echo "Found $TAG"

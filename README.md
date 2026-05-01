@@ -39,6 +39,11 @@ This installer detects your OS and CPU architecture and downloads the matching p
 curl -fsSL https://raw.githubusercontent.com/a-connoisseur/patch-claude-code/main/install-patched-claude.sh | bash
 ```
 
+On Windows, use PowerShell:
+```powershell
+irm https://raw.githubusercontent.com/a-connoisseur/patch-claude-code/main/install-patched-claude.ps1 | iex
+```
+
 If you'd rather avoid blindly running scripts from the internet, you can do it the manual way below.
 That said, the binaries are built on Github Actions and the patcher is also free for you to see and modify, so there's no reason to trust this repo or the release builds other than convenience.
 
@@ -48,10 +53,12 @@ That said, the binaries are built on Github Actions and the patcher is also free
    - macOS arm64: `macos-arm64`
    - Linux x64: `linux-x64`
    - Linux arm64: `linux-arm64`
+   - Windows x64: `win32-x64`
+   - Windows arm64: `win32-arm64`
 
-3. In that release, download the regular patched binary for your platform.
+2. In that release, download the regular patched binary for your platform.
 
-4. Follow the install instructions for your platform below.
+3. Follow the install instructions for your platform below.
 
 ### Install (Linux)
 
@@ -67,5 +74,13 @@ claude --version
 chmod +x ./claude.native.macos.patched
 sudo mv ./claude.native.macos.patched "$(which claude)"
 xattr -dr com.apple.quarantine "$(which claude)"
+claude --version
+```
+
+### Install (Windows)
+
+```powershell
+$target = (Get-Command claude).Source
+Copy-Item .\claude.native.windows.patched.exe $target -Force
 claude --version
 ```

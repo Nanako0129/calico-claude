@@ -34,6 +34,7 @@ The important consequence: almost all real behavior lives in `patch-claude-displ
 - `scripts/patch-native-with-tweakcc.ts`: native binary read/write flow via `tweakcc`
 - `.github/workflows/patch-claude.yml`: CI download, patch, sign, release path
 - `install-patched-claude.sh`: installer that resolves release tags and downloads patched assets
+- `install-patched-claude.ps1`: Windows installer that resolves release tags and downloads patched assets
 
 ## How The Patcher Is Structured
 
@@ -83,6 +84,13 @@ Linux note:
 - `tweakcc` 4.0.11 only handles the older ELF overlay path.
 - `scripts/vendored-elf-native.ts` exists specifically to keep latest Linux binaries patchable without waiting on upstream `tweakcc`.
 - For section-backed ELF binaries, `.bun` sits right before the ELF section-header table. Growing `.bun` content must move `e_shoff` forward and grow the containing `LOAD` segment; updating the section bytes alone overwrites section headers, detaches `.bun` from the segment table, and can produce runtime crashes on Linux x64.
+
+Windows note:
+
+- Windows native builds are PE binaries with a `.bun` section.
+- `tweakcc` currently has a PE read/write path, so Windows support should go through the same `scripts/patch-native-with-tweakcc.ts` flow first.
+- There is no vendored PE fallback yet. If Windows patching starts failing after an upstream format change, add a PE-specific fallback instead of changing the JS patcher.
+- CI can execute Windows x64 builds on `windows-latest` and Windows arm64 builds on `windows-11-arm`.
 
 ## Current Patch Inventory
 
@@ -304,10 +312,11 @@ Intent:
 Old bundle shape we match:
 
 - a literal tail shaped like ``}.VERSION} (Claude Code)`);return}``
+- newer builds append build-ref data with ``${HE()}`` and also carry the same version string in Commander option metadata
 
 What we rewrite:
 
-- inject `\n(patched)` before the return
+- inject `\n(patched)` immediately after `(Claude Code)`
 
 Why this exists:
 

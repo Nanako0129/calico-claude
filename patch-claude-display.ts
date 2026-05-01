@@ -1072,7 +1072,8 @@ function patchInstallerMigrationMessage(content, ctx = {}) {
 }
 
 function patchVersionOutput(content) {
-  const needle = '}.VERSION} (Claude Code)`);return}';
+  const needle = "}.VERSION} (Claude Code)";
+  const marker = "\\n(patched)";
   let candidates = 0;
   let patched = 0;
   let output = content;
@@ -1081,20 +1082,18 @@ function patchVersionOutput(content) {
   while (index !== -1) {
     candidates += 1;
 
-    const existingStart = Math.max(0, index - 64);
-    const existingSlice = output.slice(existingStart, index + needle.length + 32);
-    if (existingSlice.includes("\\n(patched)")) {
-      index = output.indexOf(needle, index + needle.length);
+    const markerStart = index + needle.length;
+    if (output.slice(markerStart, markerStart + marker.length) === marker) {
+      index = output.indexOf(needle, markerStart + marker.length);
       continue;
     }
 
-    const replacement = '}.VERSION} (Claude Code)\\n(patched)`);return}';
     output =
-      output.slice(0, index) +
-      replacement +
-      output.slice(index + needle.length);
+      output.slice(0, markerStart) +
+      marker +
+      output.slice(markerStart);
     patched += 1;
-    index = output.indexOf(needle, index + replacement.length);
+    index = output.indexOf(needle, markerStart + marker.length);
   }
 
   return {

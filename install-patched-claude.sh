@@ -50,8 +50,34 @@ detect_platform() {
           ;;
       esac
       ;;
+    MINGW*|MSYS*|CYGWIN*)
+      case "$arch" in
+        x86_64|amd64)
+          RELEASE_SUFFIX="win32-x64"
+          ASSET_NAME="claude.native.windows.patched.exe"
+          ;;
+        aarch64|arm64)
+          RELEASE_SUFFIX="win32-arm64"
+          ASSET_NAME="claude.native.windows.patched.exe"
+          ;;
+        *)
+          fail "Unsupported Windows architecture: ${arch}"
+          ;;
+      esac
+      ;;
     *)
       fail "Unsupported operating system: ${os}"
+      ;;
+  esac
+}
+
+is_windows_shell() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      return 0
+      ;;
+    *)
+      return 1
       ;;
   esac
 }
@@ -188,10 +214,28 @@ install_asset() {
   target_real="$(python3 - "$CLAUDE_PATH" <<'PY'
 import os
 import sys
-print(os.path.realpath(sys.argv[1]))
+target = os.path.realpath(sys.argv[1])
+if os.name == "nt" and not os.path.exists(target) and os.path.exists(target + ".exe"):
+    target += ".exe"
+print(target)
 PY
 )"
   target_dir="$(dirname "$target_real")"
+
+  if is_windows_shell && [[ ! -e "$target_real" && -e "${target_real}.exe" ]]; then
+    target_real="${target_real}.exe"
+    target_dir="$(dirname "$target_real")"
+  fi
+
+  if is_windows_shell; then
+    if [[ -w "$target_dir" && ( ! -e "$target_real" || -w "$target_real" ) ]]; then
+      cp "$DOWNLOADED_PATH" "$target_real"
+    else
+      fail "Target is not writable: ${target_real}. Re-run from an elevated shell or install manually."
+    fi
+    INSTALLED_PATH="$target_real"
+    return
+  fi
 
   if [[ -w "$target_dir" && ( ! -e "$target_real" || -w "$target_real" ) ]]; then
     install -m 0755 "$DOWNLOADED_PATH" "$target_real"

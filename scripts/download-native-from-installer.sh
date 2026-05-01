@@ -37,7 +37,7 @@ Usage:
   bash scripts/download-native-from-installer.sh [options]
 
 Options:
-  --platform <linux-x64|linux-arm64|macos-arm64|darwin-arm64>
+  --platform <linux-x64|linux-arm64|macos-arm64|darwin-arm64|win32-x64|win32-arm64>
   --version <version>
   --output <path>
   --manifest-out <path>
@@ -63,6 +63,12 @@ normalize_platform() {
       ;;
     macos-arm64|darwin-arm64)
       printf 'darwin-arm64\n'
+      ;;
+    win32-x64|windows-x64)
+      printf 'win32-x64\n'
+      ;;
+    win32-arm64|windows-arm64)
+      printf 'win32-arm64\n'
       ;;
     "")
       detect_platform
@@ -99,6 +105,19 @@ detect_platform() {
           ;;
         *)
           fail "Unsupported macOS architecture: ${arch}. Only Apple Silicon is supported."
+          ;;
+      esac
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      case "$arch" in
+        x86_64|amd64)
+          printf 'win32-x64\n'
+          ;;
+        aarch64|arm64)
+          printf 'win32-arm64\n'
+          ;;
+        *)
+          fail "Unsupported Windows architecture: ${arch}"
           ;;
       esac
       ;;
@@ -207,12 +226,38 @@ print(checksum)
 PY
 }
 
+read_manifest_binary() {
+  local platform="$1"
+  local manifest_path="$2"
+
+  python3 - "$platform" "$manifest_path" <<'PY'
+import json
+import sys
+
+platform = sys.argv[1]
+manifest_path = sys.argv[2]
+
+with open(manifest_path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+
+platform_data = manifest.get("platforms", {}).get(platform)
+if not platform_data:
+    raise SystemExit(f"Platform {platform} not found in manifest")
+
+binary = platform_data.get("binary")
+if not binary:
+    raise SystemExit(f"Binary name missing for platform {platform}")
+
+print(binary)
+PY
+}
+
 main() {
   parse_args "$@"
   require_cmd curl
   require_cmd python3
 
-  local platform install_script download_base_url expected_checksum actual_checksum
+  local platform install_script download_base_url expected_checksum actual_checksum binary_name
   platform="$(normalize_platform "$PLATFORM")"
 
   mkdir -p "$(dirname "$OUTPUT_PATH")"
@@ -227,8 +272,9 @@ main() {
 
   curl -fsSL "$download_base_url/$VERSION/manifest.json" -o "$MANIFEST_PATH"
   expected_checksum="$(read_manifest_checksum "$platform" "$MANIFEST_PATH")"
+  binary_name="$(read_manifest_binary "$platform" "$MANIFEST_PATH")"
 
-  curl -fsSL "$download_base_url/$VERSION/$platform/claude" -o "$OUTPUT_PATH"
+  curl -fsSL "$download_base_url/$VERSION/$platform/$binary_name" -o "$OUTPUT_PATH"
   chmod +x "$OUTPUT_PATH"
 
   actual_checksum="$(sha256_file "$OUTPUT_PATH")"
