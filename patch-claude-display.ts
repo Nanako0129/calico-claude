@@ -736,6 +736,110 @@ function patchThinkingStreaming(content) {
   // `streamingThinking.messages` inline with the other live transcript extras,
   // and the reducer patch below keeps that state in sync as blocks stream.
 
+  const replaceSegmentNeedle = (segment, before, after) => {
+    if (!segment.includes(before)) {
+      return {
+        segment,
+        changed: false,
+      };
+    }
+
+    return {
+      segment: segment.replace(before, after),
+      changed: true,
+    };
+  };
+
+  // 2.1.138 moved the UI stream reducer to a destructured options-bag shape.
+  // Patch it by semantic option names instead of assuming positional params.
+  if (createVirtualMessageHelper !== null) {
+    const destructuredStreamHandlerPattern =
+      /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{let\{([^}]*onStreamingThinking:[A-Za-z_$][\w$]*[^}]*)\}=\2;/g;
+    let destructuredMatch;
+    while ((destructuredMatch = destructuredStreamHandlerPattern.exec(output)) !== null) {
+      const eventParam = destructuredMatch[1];
+      const props = destructuredMatch[3];
+      const propVar = (name) => {
+        const match = props.match(new RegExp(`${name}:([A-Za-z_$][\\w$]*)`));
+        return match?.[1] ?? null;
+      };
+      const setModeParam = propVar("onSetStreamMode");
+      const setStreamingToolsParam = propVar("onStreamingToolUses");
+      const setStreamingThinkingParam = propVar("onStreamingThinking");
+
+      if (
+        setModeParam === null ||
+        setStreamingToolsParam === null ||
+        setStreamingThinkingParam === null
+      ) {
+        continue;
+      }
+
+      const handlerStart = destructuredMatch.index;
+      const handlerEnd = output.indexOf("function ", handlerStart + destructuredMatch[0].length);
+      if (handlerEnd === -1) {
+        continue;
+      }
+
+      const handlerSegment = output.slice(handlerStart, handlerEnd);
+      if (
+        !handlerSegment.includes(`type==="stream_request_start"`) ||
+        !handlerSegment.includes(`case"thinking_delta"`) ||
+        !handlerSegment.includes("content_block_start")
+      ) {
+        continue;
+      }
+
+      const requestStartBefore = `if(${eventParam}.type==="stream_request_start"){${setModeParam}("requesting");return}`;
+      const requestStartAfter = `if(${eventParam}.type==="stream_request_start"){${setStreamingThinkingParam}?.(null),${setModeParam}("requesting");return}`;
+
+      const messageStopBefore = `if(${eventParam}.event.type==="message_stop"){${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`;
+      const messageStopAfter = `if(${eventParam}.event.type==="message_stop"){${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`;
+
+      const thinkingStartBefore = `case"thinking":case"redacted_thinking":${setModeParam}("thinking");return;`;
+      const thinkingStartAfter = `case"thinking":case"redacted_thinking":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_streamingThinkingMessage=${createVirtualMessageHelper}({content:[${eventParam}.event.content_block.type==="redacted_thinking"?{type:"redacted_thinking",data:${eventParam}.event.content_block.data??""}:{type:"thinking",thinking:""}],isVirtual:!0});return{thinking:${eventParam}.event.content_block.type==="redacted_thinking"?${eventParam}.event.content_block.data??"":"",isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_streamingThinkingMessage,messages:[...(__cc_prevStreamingThinking?.messages??[]),{index:${eventParam}.event.index,message:__cc_streamingThinkingMessage}]}}),${setModeParam}("thinking");return;`;
+
+      const textStartBefore = `case"text":${setModeParam}("responding");return;`;
+      const textStartAfter = `case"text":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");return;`;
+
+      const messageDeltaIfBefore = `case"message_delta":if(${setModeParam}("responding"),${eventParam}.event.usage.output_tokens!=null)`;
+      const messageDeltaIfAfter = `case"message_delta":if(${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding"),${eventParam}.event.usage.output_tokens!=null)`;
+      const messageDeltaReturnBefore = `case"message_delta":${setModeParam}("responding");return;`;
+      const messageDeltaReturnAfter = `case"message_delta":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");return;`;
+
+      const thinkingDeltaBefore = `case"thinking_delta":return;`;
+      const thinkingDeltaAfter = `case"thinking_delta":{${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+${eventParam}.event.delta.thinking,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});return;}`;
+
+      const replacements = [
+        [requestStartBefore, requestStartAfter],
+        [messageStopBefore, messageStopAfter],
+        [thinkingStartBefore, thinkingStartAfter],
+        [textStartBefore, textStartAfter],
+        [messageDeltaIfBefore, messageDeltaIfAfter],
+        [messageDeltaReturnBefore, messageDeltaReturnAfter],
+        [thinkingDeltaBefore, thinkingDeltaAfter],
+      ];
+
+      let nextHandlerSegment = handlerSegment;
+      for (const [before, after] of replacements) {
+        const result = replaceSegmentNeedle(nextHandlerSegment, before, after);
+        if (!result.changed) {
+          continue;
+        }
+        candidates += 1;
+        nextHandlerSegment = result.segment;
+        if (nextHandlerSegment.includes(after)) {
+          patched += 1;
+        }
+      }
+
+      if (nextHandlerSegment !== handlerSegment) {
+        output = output.slice(0, handlerStart) + nextHandlerSegment + output.slice(handlerEnd);
+        destructuredStreamHandlerPattern.lastIndex = handlerStart + nextHandlerSegment.length;
+      }
+    }
+  }
+
   // Ensure streaming thinking state is reset and updated from thinking deltas.
   // Without this, some builds keep stale previous-turn thinking and only show
   // final thinking text after completion.
