@@ -84,6 +84,7 @@ Linux note:
 - `tweakcc` 4.0.11 only handles the older ELF overlay path.
 - `scripts/vendored-elf-native.ts` exists specifically to keep latest Linux binaries patchable without waiting on upstream `tweakcc`.
 - For section-backed ELF binaries, `.bun` sits right before the ELF section-header table. Growing `.bun` content must move `e_shoff` forward and grow the containing `LOAD` segment; updating the section bytes alone overwrites section headers, detaches `.bun` from the segment table, and can produce runtime crashes on Linux x64.
+- Some Linux builds also keep non-allocated metadata sections such as `.comment`, `.note.stapsdt`, `.symtab`, `.strtab`, and `.shstrtab` after `.bun`. The vendored ELF writer may shift those payloads and update their section-header offsets when `.bun` grows. It should still refuse to shift later allocated sections, because that can change runtime mapping semantics.
 
 Windows note:
 
