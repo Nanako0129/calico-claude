@@ -808,7 +808,11 @@ function patchThinkingStreaming(content) {
       const messageDeltaReturnAfter = `case"message_delta":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");return;`;
 
       const thinkingDeltaBefore = `case"thinking_delta":return;`;
-      const thinkingDeltaAfter = `case"thinking_delta":{${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+${eventParam}.event.delta.thinking,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});return;}`;
+      const thinkingDeltaBody = `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+${eventParam}.event.delta.thinking,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});`;
+      const thinkingDeltaAfter = `case"thinking_delta":{${thinkingDeltaBody}return;}`;
+      const thinkingDeltaProgressPattern = new RegExp(
+        `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+      );
 
       const replacements = [
         [requestStartBefore, requestStartAfter],
@@ -831,6 +835,18 @@ function patchThinkingStreaming(content) {
         if (nextHandlerSegment.includes(after)) {
           patched += 1;
         }
+      }
+
+      const nextThinkingDeltaProgressSegment = nextHandlerSegment.replace(
+        thinkingDeltaProgressPattern,
+        (_full, deltaVar, metricsVar) => {
+          return `case"thinking_delta":{${thinkingDeltaBody}let{delta:${deltaVar}}=${eventParam}.event;if("estimated_tokens"in ${deltaVar}&&typeof ${deltaVar}.estimated_tokens==="number")${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${deltaVar}.estimated_tokens});return}`;
+        }
+      );
+      if (nextThinkingDeltaProgressSegment !== nextHandlerSegment) {
+        candidates += 1;
+        patched += 1;
+        nextHandlerSegment = nextThinkingDeltaProgressSegment;
       }
 
       if (nextHandlerSegment !== handlerSegment) {
@@ -897,6 +913,12 @@ function patchThinkingStreaming(content) {
               : `case"thinking_delta":{${appendOutputParam}(${eventParam}.event.delta.thinking);${thinkingDeltaBody}return;}`;
           const thinkingDeltaBareAfter =
             thinkingDeltaBody === null ? null : `case"thinking_delta":{${thinkingDeltaBody}return;}`;
+          const thinkingDeltaProgressPattern =
+            thinkingDeltaBody === null
+              ? null
+              : new RegExp(
+                  `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+                );
 
           const wg6Replacements = [
             [requestStartBefore, requestStartAfter],
@@ -922,6 +944,20 @@ function patchThinkingStreaming(content) {
               if (nextWg6Segment.includes(after)) {
                 patched += 1;
               }
+            }
+          }
+
+          if (thinkingDeltaProgressPattern !== null) {
+            const nextThinkingDeltaProgressSegment = nextWg6Segment.replace(
+              thinkingDeltaProgressPattern,
+              (_full, deltaVar, metricsVar) => {
+                return `case"thinking_delta":{${thinkingDeltaBody}let{delta:${deltaVar}}=${eventParam}.event;if("estimated_tokens"in ${deltaVar}&&typeof ${deltaVar}.estimated_tokens==="number")${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${deltaVar}.estimated_tokens});return}`;
+              }
+            );
+            if (nextThinkingDeltaProgressSegment !== nextWg6Segment) {
+              candidates += 1;
+              patched += 1;
+              nextWg6Segment = nextThinkingDeltaProgressSegment;
             }
           }
 

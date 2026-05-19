@@ -236,6 +236,7 @@ Old bundle shapes we match:
 - older reducers called a helper inside `case"thinking_delta":<helper>(event.delta.thinking);return;`
 - 2.1.116-style reducers can also use a bare `case"thinking_delta":return;`, which means the live thinking state patch must no longer rely on that helper call existing
 - 2.1.138-style UI reducers can be `function <name>(event, opts){let{onSetStreamMode, onStreamingToolUses, onStreamingThinking, ...}=opts;...}` and should be patched by those option names, not by a nearby `type!=="stream_event"` filter
+- 2.1.144-style UI reducers can keep `thinking_delta` inside `case"content_block_delta":switch(event.delta.type){...}` with a non-empty progress body like `let{delta}=event.event;if("estimated_tokens"in delta)...;return`, so the live thinking patch must inject state updates ahead of that existing progress handler instead of assuming an empty `thinking_delta` case
 - current main-screen renderer shapes can carry `placeholderElement:` and `streamingText:` but omit `showThinkingHint:`, so the prop-threading matcher must not depend on that prop being present before injecting `streamingThinking:`
 - the duplicate live-thinking suppressor should match the semantic row shape around `param:{type:"thinking",thinking:<var>.thinking}` and the surrounding `marginTop:1` wrapper, not a specific wrapper component identifier
 
