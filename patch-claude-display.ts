@@ -589,7 +589,7 @@ function patchThinkingStreaming(content) {
   let displayCandidates = 0;
   let displayPatched = 0;
   const thinkingDisplayPattern =
-    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.type!=="disabled"&&!([A-Za-z_$][\w$]*)\(process\.env\.CLAUDE_CODE_DISABLE_THINKING\),([A-Za-z_$][\w$]*)=\1\?\2\.display(?:\?\?void 0)?:void 0,([A-Za-z_$][\w$]*)=void 0;/g;
+    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.type!=="disabled"&&!([A-Za-z_$][\w$]*)\(process\.env\.CLAUDE_CODE_DISABLE_THINKING\),([A-Za-z_$][\w$]*)=\1(?:&&[A-Za-z_$][\w$]*\(\)&&[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\))?\?\2\.display(?:\?\?void 0)?:void 0,([A-Za-z_$][\w$]*)=void 0;/g;
   output = output.replace(
     thinkingDisplayPattern,
     (full, enabledVar, thinkingConfigVar, envFlagHelper, displayVar, requestVar) => {
@@ -808,10 +808,13 @@ function patchThinkingStreaming(content) {
       const messageDeltaReturnAfter = `case"message_delta":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");return;`;
 
       const thinkingDeltaBefore = `case"thinking_delta":return;`;
-      const thinkingDeltaBody = `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+${eventParam}.event.delta.thinking,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});`;
+      const thinkingDeltaBody = `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingDelta=typeof ${eventParam}.event.delta.thinking==="string"?${eventParam}.event.delta.thinking:"",__cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+__cc_nextStreamingThinkingDelta,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});`;
       const thinkingDeltaAfter = `case"thinking_delta":{${thinkingDeltaBody}return;}`;
       const thinkingDeltaProgressPattern = new RegExp(
-        `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+        `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+      );
+      const thinkingDeltaProgressWithTextPattern = new RegExp(
+        `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:([A-Za-z_$][\\w$]*)\\(\\1\\.thinking\\)\\}\\);return\\}`
       );
 
       const replacements = [
@@ -847,6 +850,17 @@ function patchThinkingStreaming(content) {
         candidates += 1;
         patched += 1;
         nextHandlerSegment = nextThinkingDeltaProgressSegment;
+      }
+      const nextThinkingDeltaProgressWithTextSegment = nextHandlerSegment.replace(
+        thinkingDeltaProgressWithTextPattern,
+        (_full, deltaVar, metricsVar, estimateHelper) => {
+          return `case"thinking_delta":{${thinkingDeltaBody}let{delta:${deltaVar}}=${eventParam}.event;if("estimated_tokens"in ${deltaVar}&&typeof ${deltaVar}.estimated_tokens==="number")${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${deltaVar}.estimated_tokens});else if("thinking"in ${deltaVar}&&typeof ${deltaVar}.thinking==="string"&&${deltaVar}.thinking.length>0)${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${estimateHelper}(${deltaVar}.thinking)});return}`;
+        }
+      );
+      if (nextThinkingDeltaProgressWithTextSegment !== nextHandlerSegment) {
+        candidates += 1;
+        patched += 1;
+        nextHandlerSegment = nextThinkingDeltaProgressWithTextSegment;
       }
 
       if (nextHandlerSegment !== handlerSegment) {
@@ -906,7 +920,7 @@ function patchThinkingStreaming(content) {
           const thinkingDeltaBody =
             createVirtualMessageHelper === null
               ? null
-              : `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+${eventParam}.event.delta.thinking,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});`;
+              : `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingDelta=typeof ${eventParam}.event.delta.thinking==="string"?${eventParam}.event.delta.thinking:"",__cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+__cc_nextStreamingThinkingDelta,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});`;
           const thinkingDeltaAfter =
             thinkingDeltaBody === null
               ? null
@@ -917,7 +931,13 @@ function patchThinkingStreaming(content) {
             thinkingDeltaBody === null
               ? null
               : new RegExp(
-                  `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+                  `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+                );
+          const thinkingDeltaProgressWithTextPattern =
+            thinkingDeltaBody === null
+              ? null
+              : new RegExp(
+                  `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:([A-Za-z_$][\\w$]*)\\(\\1\\.thinking\\)\\}\\);return\\}`
                 );
 
           const wg6Replacements = [
@@ -958,6 +978,19 @@ function patchThinkingStreaming(content) {
               candidates += 1;
               patched += 1;
               nextWg6Segment = nextThinkingDeltaProgressSegment;
+            }
+          }
+          if (thinkingDeltaProgressWithTextPattern !== null) {
+            const nextThinkingDeltaProgressWithTextSegment = nextWg6Segment.replace(
+              thinkingDeltaProgressWithTextPattern,
+              (_full, deltaVar, metricsVar, estimateHelper) => {
+                return `case"thinking_delta":{${thinkingDeltaBody}let{delta:${deltaVar}}=${eventParam}.event;if("estimated_tokens"in ${deltaVar}&&typeof ${deltaVar}.estimated_tokens==="number")${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${deltaVar}.estimated_tokens});else if("thinking"in ${deltaVar}&&typeof ${deltaVar}.thinking==="string"&&${deltaVar}.thinking.length>0)${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${estimateHelper}(${deltaVar}.thinking)});return}`;
+              }
+            );
+            if (nextThinkingDeltaProgressWithTextSegment !== nextWg6Segment) {
+              candidates += 1;
+              patched += 1;
+              nextWg6Segment = nextThinkingDeltaProgressWithTextSegment;
             }
           }
 
