@@ -524,10 +524,34 @@ function patchThinkingStreaming(content) {
 
   let propCandidates = 0;
   let propPatched = 0;
-  const streamingVarMatch = output.match(/hidePastThinking:!0,streamingThinking:([A-Za-z_$][\w$]*)/);
+  const identifierPattern = "[A-Za-z_$][\\w$]*";
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let streamingVar =
+    output.match(/hidePastThinking:!0,streamingThinking:([A-Za-z_$][\w$]*)/)?.[1] ?? null;
 
-  if (streamingVarMatch) {
-    const streamingVar = streamingVarMatch[1];
+  if (streamingVar === null) {
+    const onStreamingThinkingPattern = /onStreamingThinking:([A-Za-z_$][\w$]*)/g;
+    let onStreamingThinkingMatch;
+    while ((onStreamingThinkingMatch = onStreamingThinkingPattern.exec(output)) !== null) {
+      const setStreamingThinkingVar = onStreamingThinkingMatch[1];
+      const anchor = onStreamingThinkingMatch.index;
+      const searchStart = Math.max(0, anchor - 50000);
+      const searchSegment = output.slice(searchStart, anchor);
+      const statePattern = new RegExp(
+        `\\[(${identifierPattern}),${escapeRegExp(setStreamingThinkingVar)}\\]=${identifierPattern}\\.useState\\(null\\)`,
+        "g"
+      );
+      let stateMatch;
+      while ((stateMatch = statePattern.exec(searchSegment)) !== null) {
+        streamingVar = stateMatch[1];
+      }
+      if (streamingVar !== null) {
+        break;
+      }
+    }
+  }
+
+  if (streamingVar !== null) {
     const createElementCallPattern = /createElement\(([A-Za-z_$][\w$]*),\{([^{}]*?)\}\)/g;
     const promptRendererCallPattern =
       /createElement\(([A-Za-z_$][\w$]*),\{([\s\S]{0,2000}?placeholderElement:[\s\S]{0,2000}?agentDefinitions:[^}]*?onOpenRateLimitOptions:[^}]*?isLoading:)([^,}]+)(,streamingText:[^}]*?(?:showThinkingHint:[^}]*?)?isBriefOnly:[^}]*?)\}\)/g;
@@ -685,10 +709,32 @@ function patchThinkingStreaming(content) {
     /let [A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\(\{content:\[[A-Za-z_$][\w$]*\.contentBlock\]\}\);return [A-Za-z_$][\w$]*\.uuid=([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[[A-Za-z_$][\w$]*\]\)/
   );
   let createVirtualMessageHelper = transcriptToolUseHelpersMatch?.[1] ?? null;
+  let transcriptStreamingThinkingVar = null;
+  const rendererStreamingThinkingMatch = output.match(
+    /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),showAllInTranscript:/
+  );
+  if (rendererStreamingThinkingMatch) {
+    transcriptStreamingThinkingVar = rendererStreamingThinkingMatch[1];
+  } else if (streamingVar !== null) {
+    const rendererSignaturePattern =
+      /(\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,)(showAllInTranscript:)/;
+    output = output.replace(rendererSignaturePattern, (full, beforeStreamingThinking, afterStreamingThinking) => {
+      if (full.includes("streamingThinking:")) {
+        return full;
+      }
+      candidates += 1;
+      patched += 1;
+      transcriptStreamingThinkingVar = "__cc_streamingThinking";
+      return `${beforeStreamingThinking}streamingThinking:${transcriptStreamingThinkingVar},${afterStreamingThinking}`;
+    });
+  }
+
   const transcriptStreamingThinkingMatch = output.match(
     /streamingToolUses:[A-Za-z_$][\w$]*,[^}]*streamingThinking:([A-Za-z_$][\w$]*),streamingText:/
   );
-  const transcriptStreamingThinkingVar = transcriptStreamingThinkingMatch?.[1];
+  if (transcriptStreamingThinkingVar === null) {
+    transcriptStreamingThinkingVar = transcriptStreamingThinkingMatch?.[1] ?? null;
+  }
   if (transcriptStreamingThinkingVar) {
     let inlineThinkingCandidates = 0;
     let inlineThinkingPatched = 0;
@@ -758,6 +804,7 @@ function patchThinkingStreaming(content) {
     let destructuredMatch;
     while ((destructuredMatch = destructuredStreamHandlerPattern.exec(output)) !== null) {
       const eventParam = destructuredMatch[1];
+      const optionsParam = destructuredMatch[2];
       const props = destructuredMatch[3];
       const propVar = (name) => {
         const match = props.match(new RegExp(`${name}:([A-Za-z_$][\\w$]*)`));
@@ -795,6 +842,8 @@ function patchThinkingStreaming(content) {
 
       const messageStopBefore = `if(${eventParam}.event.type==="message_stop"){${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`;
       const messageStopAfter = `if(${eventParam}.event.type==="message_stop"){${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`;
+      const messageStopFinalizeBefore = `if(${eventParam}.event.type==="message_stop"){${optionsParam}.displayTransform?.finalize(),${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`;
+      const messageStopFinalizeAfter = `if(${eventParam}.event.type==="message_stop"){${optionsParam}.displayTransform?.finalize(),${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`;
 
       const thinkingStartBefore = `case"thinking":case"redacted_thinking":${setModeParam}("thinking");return;`;
       const thinkingStartAfter = `case"thinking":case"redacted_thinking":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_streamingThinkingMessage=${createVirtualMessageHelper}({content:[${eventParam}.event.content_block.type==="redacted_thinking"?{type:"redacted_thinking",data:${eventParam}.event.content_block.data??""}:{type:"thinking",thinking:""}],isVirtual:!0});return{thinking:${eventParam}.event.content_block.type==="redacted_thinking"?${eventParam}.event.content_block.data??"":"",isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_streamingThinkingMessage,messages:[...(__cc_prevStreamingThinking?.messages??[]),{index:${eventParam}.event.index,message:__cc_streamingThinkingMessage}]}}),${setModeParam}("thinking");return;`;
@@ -806,6 +855,8 @@ function patchThinkingStreaming(content) {
       const messageDeltaIfAfter = `case"message_delta":if(${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding"),${eventParam}.event.usage.output_tokens!=null)`;
       const messageDeltaReturnBefore = `case"message_delta":${setModeParam}("responding");return;`;
       const messageDeltaReturnAfter = `case"message_delta":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");return;`;
+      const messageDeltaBlockBefore = `case"message_delta":{${setModeParam}("responding");`;
+      const messageDeltaBlockAfter = `case"message_delta":{${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");`;
 
       const thinkingDeltaBefore = `case"thinking_delta":return;`;
       const thinkingDeltaBody = `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingDelta=typeof ${eventParam}.event.delta.thinking==="string"?${eventParam}.event.delta.thinking:"",__cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+__cc_nextStreamingThinkingDelta,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});`;
@@ -819,11 +870,13 @@ function patchThinkingStreaming(content) {
 
       const replacements = [
         [requestStartBefore, requestStartAfter],
+        [messageStopFinalizeBefore, messageStopFinalizeAfter],
         [messageStopBefore, messageStopAfter],
         [thinkingStartBefore, thinkingStartAfter],
         [textStartBefore, textStartAfter],
         [messageDeltaIfBefore, messageDeltaIfAfter],
         [messageDeltaReturnBefore, messageDeltaReturnAfter],
+        [messageDeltaBlockBefore, messageDeltaBlockAfter],
         [thinkingDeltaBefore, thinkingDeltaAfter],
       ];
 
@@ -914,6 +967,8 @@ function patchThinkingStreaming(content) {
 
           const messageDeltaBefore = `case"message_delta":${setModeParam}("responding");return;`;
           const messageDeltaAfter = `case"message_delta":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");return;`;
+          const messageDeltaBlockBefore = `case"message_delta":{${setModeParam}("responding");`;
+          const messageDeltaBlockAfter = `case"message_delta":{${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");`;
 
           const thinkingDeltaBefore = `case"thinking_delta":${appendOutputParam}(${eventParam}.event.delta.thinking);return;`;
           const thinkingDeltaBareBefore = `case"thinking_delta":return;`;
@@ -955,6 +1010,7 @@ function patchThinkingStreaming(content) {
           if (thinkingDeltaBareAfter !== null) {
             wg6Replacements.push([thinkingDeltaBareBefore, thinkingDeltaBareAfter]);
           }
+          wg6Replacements.push([messageDeltaBlockBefore, messageDeltaBlockAfter]);
 
           let nextWg6Segment = wg6Segment;
           for (const [before, after] of wg6Replacements) {
