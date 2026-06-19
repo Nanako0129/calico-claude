@@ -241,6 +241,7 @@ Old bundle shapes we match:
 - current main-screen renderer shapes can carry `placeholderElement:` and `streamingText:` but omit `showThinkingHint:`, so the prop-threading matcher must not depend on that prop being present before injecting `streamingThinking:`
 - 2.1.168-style transcript renderers can drop `hidePastThinking:` and `streamingThinking:` from the renderer signature entirely while the top-level app still has an `onStreamingThinking:<setter>` callback backed by nearby `useState(null)`. In that shape, rediscover the state variable from the setter and re-inject `streamingThinking:` into both the transcript renderer call sites and the transcript renderer destructuring signature.
 - 2.1.168-style UI reducers can run `displayTransform?.finalize()` inside the `message_stop` branch before switching to `"tool-use"`, and can use a block-form `case"message_delta":{...}`. The reducer patch must preserve those existing side effects while adding streaming-thinking cleanup before the stream transitions to normal response state.
+- 2.1.183-style UI reducers can keep `onStreamingThinking:<setter>` on the outer event dispatcher while moving the stream-event switch into a separate inner handler that destructures `onSetStreamMode`, `onStreamingToolUses`, `onStreamingText`, and `displayTransform`, but not `onStreamingThinking`. In that shape, inject `onStreamingThinking` into the inner handler destructuring, then patch `stream_request_start`, thinking/redacted-thinking block start, `thinking_delta`, text/message transitions, and `message_stop` there.
 - the duplicate live-thinking suppressor should match the semantic row shape around `param:{type:"thinking",thinking:<var>.thinking}` and the surrounding `marginTop:1` wrapper, not a specific wrapper component identifier
 
 Why this exists:
@@ -255,6 +256,7 @@ Likely break signs:
 - live streaming shows two thinking blocks at once
 - live thinking pins itself to the bottom of the transcript instead of staying above the later streamed text/tool blocks
 - patch count drops partially rather than fully; this often means only one of the sub-fixes drifted
+- patch count still looks nonzero but live thinking is broken; check whether the reducer/event fix actually touched the stream-event handler, not just renderer prop threading or final assistant-message summary paths
 
 ### `subagent-prompt`
 

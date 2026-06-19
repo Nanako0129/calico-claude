@@ -923,6 +923,177 @@ function patchThinkingStreaming(content) {
     }
   }
 
+  // 2.1.183 keeps onStreamingThinking on the outer dispatcher but moves the
+  // stream-event switch into an inner handler that omits it from destructuring.
+  // Re-introduce the option there, then patch the same semantic stream cases.
+  if (createVirtualMessageHelper !== null) {
+    const missingStreamingThinkingHandlerPattern =
+      /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*)?\)\{let\{([^}]*)\}=\2;/g;
+    let missingStreamingThinkingMatch;
+    while ((missingStreamingThinkingMatch = missingStreamingThinkingHandlerPattern.exec(output)) !== null) {
+      const eventParam = missingStreamingThinkingMatch[1];
+      const optionsParam = missingStreamingThinkingMatch[2];
+      const props = missingStreamingThinkingMatch[3];
+      if (props.includes("onStreamingThinking:")) {
+        continue;
+      }
+
+      const propVar = (name) => {
+        const aliasMatch = props.match(new RegExp(`${name}:(${identifierPattern})`));
+        if (aliasMatch) {
+          return aliasMatch[1];
+        }
+        const shorthandMatch = props.match(new RegExp(`(?:^|,)${name}(?:,|$)`));
+        return shorthandMatch ? name : null;
+      };
+      const setModeParam = propVar("onSetStreamMode");
+      const setStreamingToolsParam = propVar("onStreamingToolUses");
+      const displayTransformParam = propVar("displayTransform");
+      const setStreamingThinkingParam = "__cc_onStreamingThinking";
+
+      if (setModeParam === null || setStreamingToolsParam === null) {
+        continue;
+      }
+
+      const handlerStart = missingStreamingThinkingMatch.index;
+      const handlerEnd = output.indexOf("function ", handlerStart + missingStreamingThinkingMatch[0].length);
+      if (handlerEnd === -1) {
+        continue;
+      }
+
+      const handlerSegment = output.slice(handlerStart, handlerEnd);
+      if (
+        !handlerSegment.includes(`type==="stream_request_start"`) ||
+        !handlerSegment.includes(`case"thinking_delta"`) ||
+        !handlerSegment.includes("content_block_start")
+      ) {
+        continue;
+      }
+
+      const thinkingDeltaBody = `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_nextStreamingThinkingDelta=typeof ${eventParam}.event.delta.thinking==="string"?${eventParam}.event.delta.thinking:"",__cc_nextStreamingThinkingText=(__cc_prevStreamingThinking?.thinking??"")+__cc_nextStreamingThinkingDelta,__cc_nextStreamingThinkingIndex=__cc_prevStreamingThinking?.currentIndex??${eventParam}.event.index,__cc_nextStreamingThinkingMessage=${createVirtualMessageHelper}({content:[{type:"thinking",thinking:__cc_nextStreamingThinkingText}],isVirtual:!0}),__cc_replacedStreamingThinkingMessage=!1,__cc_nextStreamingThinkingMessages=(__cc_prevStreamingThinking?.messages??[]).map((__cc_entry)=>__cc_entry.index===__cc_nextStreamingThinkingIndex?(__cc_replacedStreamingThinkingMessage=!0,{...__cc_entry,message:__cc_nextStreamingThinkingMessage}):__cc_entry);if(!__cc_replacedStreamingThinkingMessage)__cc_nextStreamingThinkingMessages=[...__cc_nextStreamingThinkingMessages,{index:__cc_nextStreamingThinkingIndex,message:__cc_nextStreamingThinkingMessage}];return __cc_prevStreamingThinking?{...__cc_prevStreamingThinking,thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:__cc_nextStreamingThinkingIndex,currentMessage:__cc_nextStreamingThinkingMessage,messages:__cc_nextStreamingThinkingMessages}:{thinking:__cc_nextStreamingThinkingText,isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_nextStreamingThinkingMessage,messages:[{index:${eventParam}.event.index,message:__cc_nextStreamingThinkingMessage}]}});`;
+
+      const replacements = [
+        [
+          `let{${props}}=${optionsParam};`,
+          `let{${props},onStreamingThinking:${setStreamingThinkingParam}}=${optionsParam};`,
+        ],
+        [
+          `if(${eventParam}.type==="stream_request_start"){${setModeParam}("requesting");return}`,
+          `if(${eventParam}.type==="stream_request_start"){${setStreamingThinkingParam}?.(null),${setModeParam}?.("requesting");return}`,
+        ],
+        [
+          `if(${eventParam}.type==="stream_request_start"){${setModeParam}?.("requesting");return}`,
+          `if(${eventParam}.type==="stream_request_start"){${setStreamingThinkingParam}?.(null),${setModeParam}?.("requesting");return}`,
+        ],
+        [
+          `if(${eventParam}.event.type==="message_stop"){${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`,
+          `if(${eventParam}.event.type==="message_stop"){${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("tool-use"),${setStreamingToolsParam}?.(()=>[]);return}`,
+        ],
+        [
+          `if(${eventParam}.event.type==="message_stop"){${setModeParam}?.("tool-use"),${setStreamingToolsParam}?.(()=>[]);return}`,
+          `if(${eventParam}.event.type==="message_stop"){${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("tool-use"),${setStreamingToolsParam}?.(()=>[]);return}`,
+        ],
+        [
+          `case"thinking":case"redacted_thinking":${setModeParam}("thinking");return;`,
+          `case"thinking":case"redacted_thinking":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_streamingThinkingMessage=${createVirtualMessageHelper}({content:[${eventParam}.event.content_block.type==="redacted_thinking"?{type:"redacted_thinking",data:${eventParam}.event.content_block.data??""}:{type:"thinking",thinking:""}],isVirtual:!0});return{thinking:${eventParam}.event.content_block.type==="redacted_thinking"?${eventParam}.event.content_block.data??"":"",isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_streamingThinkingMessage,messages:[...(__cc_prevStreamingThinking?.messages??[]),{index:${eventParam}.event.index,message:__cc_streamingThinkingMessage}]}}),${setModeParam}?.("thinking");return;`,
+        ],
+        [
+          `case"thinking":case"redacted_thinking":${setModeParam}?.("thinking");return;`,
+          `case"thinking":case"redacted_thinking":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>{let __cc_streamingThinkingMessage=${createVirtualMessageHelper}({content:[${eventParam}.event.content_block.type==="redacted_thinking"?{type:"redacted_thinking",data:${eventParam}.event.content_block.data??""}:{type:"thinking",thinking:""}],isVirtual:!0});return{thinking:${eventParam}.event.content_block.type==="redacted_thinking"?${eventParam}.event.content_block.data??"":"",isStreaming:!0,streamingEndedAt:void 0,currentIndex:${eventParam}.event.index,currentMessage:__cc_streamingThinkingMessage,messages:[...(__cc_prevStreamingThinking?.messages??[]),{index:${eventParam}.event.index,message:__cc_streamingThinkingMessage}]}}),${setModeParam}?.("thinking");return;`,
+        ],
+        [
+          `case"text":${setModeParam}("responding");return;`,
+          `case"text":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("responding");return;`,
+        ],
+        [
+          `case"text":${setModeParam}?.("responding");return;`,
+          `case"text":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("responding");return;`,
+        ],
+        [
+          `case"message_delta":${setModeParam}("responding");return;`,
+          `case"message_delta":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("responding");return;`,
+        ],
+        [
+          `case"message_delta":${setModeParam}?.("responding");return;`,
+          `case"message_delta":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("responding");return;`,
+        ],
+        [
+          `case"message_delta":{${setModeParam}("responding");`,
+          `case"message_delta":{${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("responding");`,
+        ],
+        [
+          `case"message_delta":{${setModeParam}?.("responding");`,
+          `case"message_delta":{${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("responding");`,
+        ],
+        [
+          `case"thinking_delta":return;`,
+          `case"thinking_delta":{${thinkingDeltaBody}return;}`,
+        ],
+      ];
+
+      if (displayTransformParam !== null) {
+        replacements.push(
+          [
+            `if(${eventParam}.event.type==="message_stop"){${displayTransformParam}.finalize(),${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`,
+            `if(${eventParam}.event.type==="message_stop"){${displayTransformParam}?.finalize(),${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("tool-use"),${setStreamingToolsParam}?.(()=>[]);return}`,
+          ],
+          [
+            `if(${eventParam}.event.type==="message_stop"){${displayTransformParam}?.finalize(),${setModeParam}?.("tool-use"),${setStreamingToolsParam}?.(()=>[]);return}`,
+            `if(${eventParam}.event.type==="message_stop"){${displayTransformParam}?.finalize(),${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}?.("tool-use"),${setStreamingToolsParam}?.(()=>[]);return}`,
+          ]
+        );
+      }
+
+      let nextHandlerSegment = handlerSegment;
+      for (const [before, after] of replacements) {
+        const result = replaceSegmentNeedle(nextHandlerSegment, before, after);
+        if (!result.changed) {
+          continue;
+        }
+        candidates += 1;
+        nextHandlerSegment = result.segment;
+        if (nextHandlerSegment.includes(after)) {
+          patched += 1;
+        }
+      }
+
+      const thinkingDeltaProgressPattern = new RegExp(
+        `case"thinking_delta":\\{let\\{delta:(${identifierPattern})\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)(${identifierPattern})\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+      );
+      const thinkingDeltaProgressWithTextPattern = new RegExp(
+        `case"thinking_delta":\\{let\\{delta:(${identifierPattern})\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)(${identifierPattern})\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:(${identifierPattern})\\(\\1\\.thinking\\)\\}\\);return\\}`
+      );
+
+      const nextThinkingDeltaProgressSegment = nextHandlerSegment.replace(
+        thinkingDeltaProgressPattern,
+        (_full, deltaVar, metricsVar) => {
+          return `case"thinking_delta":{${thinkingDeltaBody}let{delta:${deltaVar}}=${eventParam}.event;if("estimated_tokens"in ${deltaVar}&&typeof ${deltaVar}.estimated_tokens==="number")${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${deltaVar}.estimated_tokens});return}`;
+        }
+      );
+      if (nextThinkingDeltaProgressSegment !== nextHandlerSegment) {
+        candidates += 1;
+        patched += 1;
+        nextHandlerSegment = nextThinkingDeltaProgressSegment;
+      }
+      const nextThinkingDeltaProgressWithTextSegment = nextHandlerSegment.replace(
+        thinkingDeltaProgressWithTextPattern,
+        (_full, deltaVar, metricsVar, estimateHelper) => {
+          return `case"thinking_delta":{${thinkingDeltaBody}let{delta:${deltaVar}}=${eventParam}.event;if("estimated_tokens"in ${deltaVar}&&typeof ${deltaVar}.estimated_tokens==="number")${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${deltaVar}.estimated_tokens});else if("thinking"in ${deltaVar}&&typeof ${deltaVar}.thinking==="string"&&${deltaVar}.thinking.length>0)${metricsVar}?.({type:"thinking_progress",estimatedTokensDelta:${estimateHelper}(${deltaVar}.thinking)});return}`;
+        }
+      );
+      if (nextThinkingDeltaProgressWithTextSegment !== nextHandlerSegment) {
+        candidates += 1;
+        patched += 1;
+        nextHandlerSegment = nextThinkingDeltaProgressWithTextSegment;
+      }
+
+      if (nextHandlerSegment !== handlerSegment) {
+        output = output.slice(0, handlerStart) + nextHandlerSegment + output.slice(handlerEnd);
+        missingStreamingThinkingHandlerPattern.lastIndex = handlerStart + nextHandlerSegment.length;
+      }
+    }
+  }
+
   // Ensure streaming thinking state is reset and updated from thinking deltas.
   // Without this, some builds keep stale previous-turn thinking and only show
   // final thinking text after completion.
