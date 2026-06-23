@@ -573,6 +573,10 @@ function patchThinkingStreaming(content) {
     const createElementCallPattern = /createElement\(([A-Za-z_$][\w$]*),\{([^{}]*?)\}\)/g;
     const promptRendererCallPattern =
       /createElement\(([A-Za-z_$][\w$]*),\{([\s\S]{0,2000}?placeholderElement:[\s\S]{0,2000}?agentDefinitions:[^}]*?onOpenRateLimitOptions:[^}]*?isLoading:)([^,}]+)(,streamingText:[^}]*?(?:showThinkingHint:[^}]*?)?isBriefOnly:[^}]*?)\}\)/g;
+    const jsxMainRendererPropsPattern =
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
+    const jsxTranscriptRendererPropsPattern =
+      /(screen:[^,}]+,agentDefinitions:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
 
     output = output.replace(createElementCallPattern, (full, component, props) => {
       if (!props.includes("streamingToolUses:")) {
@@ -619,6 +623,23 @@ function patchThinkingStreaming(content) {
         return full;
       }
     );
+
+    const injectStreamingThinking = (full, before, after) => {
+      if (full.includes("streamingThinking:")) {
+        return full;
+      }
+
+      propCandidates += 1;
+      const replacement = `${before}streamingThinking:${streamingVar},${after}`;
+      if (replacement !== full) {
+        propPatched += 1;
+        return replacement;
+      }
+      return full;
+    };
+
+    output = output.replace(jsxMainRendererPropsPattern, injectStreamingThinking);
+    output = output.replace(jsxTranscriptRendererPropsPattern, injectStreamingThinking);
   }
 
   candidates += propCandidates;
@@ -1557,6 +1578,32 @@ function patchWelcomePatchedBadge(content) {
     (full) => {
       candidates += 1;
       const replacement = `"Welcome to Connoisseur's Code for "`;
+      if (replacement !== full) {
+        patched += 1;
+        return replacement;
+      }
+      return full;
+    }
+  );
+
+  output = output.replace(
+    /"Welcome to Claude Code"/g,
+    (full) => {
+      candidates += 1;
+      const replacement = `"Welcome to Connoisseur's Code"`;
+      if (replacement !== full) {
+        patched += 1;
+        return replacement;
+      }
+      return full;
+    }
+  );
+
+  output = output.replace(
+    /(color:"claude",bold:!0,children:\[)"Claude Code"(," "\])/g,
+    (full, prefix, suffix) => {
+      candidates += 1;
+      const replacement = `${prefix}"Connoisseur's Code"${suffix}`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
