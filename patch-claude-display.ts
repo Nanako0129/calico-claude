@@ -1561,6 +1561,19 @@ function patchWelcomePatchedBadge(content) {
   );
 
   output = output.replace(
+    /([A-Za-z_$][\w$]*)\.(jsx|jsxs)\(([A-Za-z_$][\w$]*),\{bold:!0,children:"Claude Code"\}\)/g,
+    (full, reactVar, jsxFactory, textComponent) => {
+      candidates += 1;
+      const replacement = `${reactVar}.${jsxFactory}(${textComponent},{bold:!0,children:"Connoisseur's Code"})`;
+      if (replacement !== full) {
+        patched += 1;
+        return replacement;
+      }
+      return full;
+    }
+  );
+
+  output = output.replace(
     /title:(`Claude Code v\$\{[\s\S]*?\.VERSION\}`),color:"professionalBlue",defaultTab:"general"/g,
     (full, titleExpr) => {
       candidates += 1;

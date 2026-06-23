@@ -405,8 +405,10 @@ Intent:
 Old bundle shapes we match:
 
 - bold text node rendering `"Claude Code"`
+- JSX text props shaped like `{bold:!0,children:"Claude Code"}`
 - help/settings title template like ``title:(`Claude Code v${...VERSION}`),color:"professionalBlue",defaultTab:"general"``
 - welcome copy `"Welcome to Claude Code for "`
+- welcome copy `"Welcome to Claude Code"`
 - styled title helpers shaped like `<colorFn>("claude",<themeVar>)("Claude Code")`
 - same helper with padded text `(" Claude Code ")`
 
