@@ -112,7 +112,8 @@ Old bundle shape we match:
 - a switch arm with `case"collapsed_read_search"`
 - one build shape returns directly from the case
 - another build shape uses a block form `case"collapsed_read_search":{ ... }`
-- both forms contain a React `createElement(...)` call with a `verbose:` prop
+- both forms contain a React renderer call with a `verbose:` prop
+- older builds use `createElement(...)`; 2.1.186-style builds use JSX-runtime calls like `.jsx(...)` or `.jsxs(...)`
 
 What we rewrite:
 
@@ -140,6 +141,7 @@ Old bundle shape we match:
 - a nearby switch arm for `case"update":`
 - the `create` arm returns a simple write renderer with `{filePath,content,verbose}`
 - the `update` arm renders a richer diff component using `structuredPatch`
+- 2.1.186-style builds can use JSX-runtime calls like `.jsx(...)` and `.jsxs(...)` instead of `createElement(...)`
 
 What we rewrite:
 
@@ -168,6 +170,8 @@ Old bundle shape we match:
 - function body anchored near `"diffAddedWord";else if(!`
 - child parts render with `backgroundColor:<expr>`
 - the function also knows the diff `type` and a dimming flag parameter
+- older builds put `key:` before `backgroundColor:` in a `createElement(...)` props object
+- 2.1.186-style builds put the key after the props object in a JSX-runtime call, so match by the `backgroundColor:` and `part-${...}-${...}` shape instead of assuming prop order
 
 What we rewrite:
 
@@ -193,13 +197,15 @@ Old bundle shape we match:
 
 - switch arm `case"thinking":`
 - an early return like `if(!... )return null;`
-- renderer props containing `isTranscriptMode:` and `hideInTranscript:`
+- renderer props containing `isTranscriptMode:`
+- older builds also carry `hideInTranscript:`, but newer builds can omit it
+- renderer calls can be either `createElement(...)` or JSX-runtime `.jsx(...)` / `.jsxs(...)`
 
 What we rewrite:
 
 - remove the early null-return gate
 - force `isTranscriptMode:!0`
-- force `hideInTranscript:!1`
+- force `hideInTranscript:!1` when that prop exists
 
 Why this exists:
 
@@ -209,6 +215,36 @@ Likely break signs:
 
 - thinking blocks disappear from the main message flow
 - only final output appears while reasoning remains hidden
+
+### `redacted-thinking-inline`
+
+Intent:
+
+- render redacted thinking summaries inline using the same renderer as normal thinking blocks
+
+Old bundle shapes we match:
+
+- adjacent switch arms for `case"redacted_thinking":` and `case"thinking":`
+- the redacted arm returns a placeholder/summary component
+- the thinking arm renders a component with `addMargin:`, `param:`, `isTranscriptMode:`, and `verbose:`
+- older builds use `createElement(...)` and carry `hideInTranscript:`
+- 2.1.186-style builds use `.jsx(...)` and can omit `hideInTranscript:`
+
+What we rewrite:
+
+- replace the redacted arm with a thinking-renderer call
+- synthesize a `{type:"thinking",thinking:<redacted data>}` param
+- force transcript/verbose visibility, and force `hideInTranscript:!1` only when upstream still has that prop
+
+Why this exists:
+
+- redacted thinking summaries otherwise stay hidden or render as a generic placeholder
+
+Likely break signs:
+
+- redacted summaries disappear while normal thinking still appears
+- `redacted-thinking-inline` candidate count drops to `0`
+- the redacted and thinking switch arms are no longer adjacent
 
 ### `thinking-streaming`
 
@@ -344,6 +380,7 @@ Intent:
 Old bundle shape we match:
 
 - string payload containing `switched from npm to native installer`
+- 2.1.186 no longer contains this string; `0` candidates is expected there unless this patch is retargeted to a newer installation warning
 
 What we rewrite:
 
@@ -357,6 +394,7 @@ Likely break signs:
 
 - upstream rewrites the migration copy and the needle vanishes
 - patch count drops to `0`
+- on 2.1.186, first confirm whether the old migration warning still exists before treating this as a regression
 
 ### `welcome-badge`
 

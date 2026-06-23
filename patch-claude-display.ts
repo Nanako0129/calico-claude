@@ -139,13 +139,15 @@ function patchCollapsedReadSearch(content, ctx = {}) {
     const end = endCandidates.length > 0 ? Math.min(...endCandidates) : output.length;
     const segment = output.slice(start, end);
 
-    if (!segment.includes("createElement(") || !segment.includes("verbose:")) {
+    const hasRendererCall =
+      segment.includes("createElement(") || segment.includes("jsx(") || segment.includes("jsxs(");
+    if (!hasRendererCall || !segment.includes("verbose:")) {
       index = start + o7qCaseNeedle.length;
       continue;
     }
 
     const callMatch = segment.match(
-      /createElement\(([A-Za-z_$][\w$]*),\{message:[^}]*inProgressToolUseIDs:[^}]*shouldAnimate:[^}]*verbose:[^,}]+,tools:[^}]*lookups:[^}]*isActiveGroup:[^}]*\}\)/
+      /(?:createElement|jsx|jsxs)\([A-Za-z_$][\w$]*,\{message:[^}]*inProgressToolUseIDs:[^}]*shouldAnimate:[^}]*verbose:[^,}]+,tools:[^}]*lookups:[^}]*isActiveGroup:[^}]*\}\)/
     );
     if (!callMatch) {
       index = start + o7qCaseNeedle.length;
@@ -208,7 +210,7 @@ function patchWriteCreateDiffColors(content) {
     }
 
     const createReturnMatch = createSegment.match(
-      /return ([A-Za-z_$][\w$]*)\.createElement\(([A-Za-z_$][\w$]*),\{filePath:([A-Za-z_$][\w$]*),content:([A-Za-z_$][\w$]*),verbose:([A-Za-z_$][\w$]*)\}\)/
+      /return ([A-Za-z_$][\w$]*)\.(createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{filePath:([A-Za-z_$][\w$]*),content:([A-Za-z_$][\w$]*),verbose:([A-Za-z_$][\w$]*)\}\)/
     );
     if (!createReturnMatch) {
       index = updateStart + updateNeedle.length;
@@ -216,7 +218,7 @@ function patchWriteCreateDiffColors(content) {
     }
 
     const updateRendererMatch = updateSegment.match(
-      /createElement\(([A-Za-z_$][\w$]*),\{filePath:[^}]*structuredPatch:[^}]*style:([A-Za-z_$][\w$]*),verbose:[A-Za-z_$][\w$]*/
+      /(?:createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{filePath:[^}]*structuredPatch:[^}]*style:([A-Za-z_$][\w$]*),verbose:[A-Za-z_$][\w$]*/
     );
     if (!updateRendererMatch) {
       index = updateStart + updateNeedle.length;
@@ -226,21 +228,22 @@ function patchWriteCreateDiffColors(content) {
     candidates += 1;
 
     const reactNs = createReturnMatch[1];
-    const fileVar = createReturnMatch[3];
-    const contentVar = createReturnMatch[4];
-    const verboseVar = createReturnMatch[5];
+    const jsxFactory = createReturnMatch[2];
+    const fileVar = createReturnMatch[4];
+    const contentVar = createReturnMatch[5];
+    const verboseVar = createReturnMatch[6];
     const diffRenderer = updateRendererMatch[1];
     const styleVar = updateRendererMatch[2];
 
     const lineCounterMatch = createSegment.match(
-      /let [A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*\);return [A-Za-z_$][\w$]*\.createElement\([A-Za-z_$][\w$]*,null,"Wrote "/
+      /let [A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*\);return [A-Za-z_$][\w$]*\.(?:createElement|jsxs)\([A-Za-z_$][\w$]*,(?:null,|\{children:\[)"Wrote "/
     );
     const lineCountExpr = lineCounterMatch
       ? `${lineCounterMatch[1]}(${contentVar})`
       : `${contentVar}===""?0:${contentVar}.split(\`\\n\`).length`;
 
     const before = createReturnMatch[0];
-    const after = `return ${reactNs}.createElement(${diffRenderer},{filePath:${fileVar},structuredPatch:[{oldStart:1,oldLines:0,newStart:1,newLines:${lineCountExpr},lines:${contentVar}===""?[]:${contentVar}.split(\`\\n\`).map((__cc_line)=>"+"+__cc_line)}],firstLine:${contentVar}.split(\`\\n\`)[0]??null,fileContent:"",style:${styleVar},verbose:${verboseVar},previewHint:void 0})`;
+    const after = `return ${reactNs}.${jsxFactory}(${diffRenderer},{filePath:${fileVar},structuredPatch:[{oldStart:1,oldLines:0,newStart:1,newLines:${lineCountExpr},lines:${contentVar}===""?[]:${contentVar}.split(\`\\n\`).map((__cc_line)=>"+"+__cc_line)}],firstLine:${contentVar}.split(\`\\n\`)[0]??null,fileContent:"",style:${styleVar},verbose:${verboseVar},previewHint:void 0})`;
 
     if (!createSegment.includes(before)) {
       index = updateStart + updateNeedle.length;
@@ -307,17 +310,24 @@ function patchWordDiffLineBackgrounds(content) {
     const dimVar = params[3];
     const typeVar = typeVarMatch[1];
 
-    const childBgPattern =
+    const legacyChildBgPattern =
       /(key:`part-\$\{[A-Za-z_$][\w$]*\}-\$\{[A-Za-z_$][\w$]*\}`,backgroundColor:)([A-Za-z_$][\w$]*)(\},[A-Za-z_$][\w$]*\)\))/;
+    const jsxChildBgPattern =
+      /(backgroundColor:)([A-Za-z_$][\w$]*)(,children:[A-Za-z_$][\w$]*\},`part-\$\{[A-Za-z_$][\w$]*\}-\$\{[A-Za-z_$][\w$]*\}`\)\))/;
 
-    if (!childBgPattern.test(segment)) {
+    if (!legacyChildBgPattern.test(segment) && !jsxChildBgPattern.test(segment)) {
       index = anchorIndex + anchor.length;
       continue;
     }
 
     candidates += 1;
-    const nextSegment = segment.replace(childBgPattern, (_full, prefix, bgVar, suffix) => {
+    const backgroundFallback = (bgVar) =>
+      `${bgVar}??(${typeVar}==="add"?${dimVar}?"diffAddedDimmed":"diffAdded":${dimVar}?"diffRemovedDimmed":"diffRemoved")`;
+    let nextSegment = segment.replace(legacyChildBgPattern, (_full, prefix, bgVar, suffix) => {
       return `${prefix}${bgVar}??(${typeVar}==="add"?${dimVar}?"diffAddedDimmed":"diffAdded":${dimVar}?"diffRemovedDimmed":"diffRemoved")${suffix}`;
+    });
+    nextSegment = nextSegment.replace(jsxChildBgPattern, (_full, prefix, bgVar, suffix) => {
+      return `${prefix}${backgroundFallback(bgVar)}${suffix}`;
     });
 
     if (nextSegment !== segment) {
@@ -374,8 +384,8 @@ function patchThinkingCase(content, ctx = {}) {
       }
     );
     nextSegment = nextSegment.replace(
-      /createElement\(([A-Za-z_$][\w$]*),\{([^}]*)\}/g,
-      (full, component, props) => {
+      /((?:createElement|jsx|jsxs)\([A-Za-z_$][\w$]*,\{)([^}]*)\}/g,
+      (full, prefix, props) => {
         let nextProps = props;
         nextProps = nextProps.replace(/isTranscriptMode:[^,}]+/g, (entry) => {
           const desired = ctx.preserveLength ? "isTranscriptMode:1" : "isTranscriptMode:!0";
@@ -394,7 +404,7 @@ function patchThinkingCase(content, ctx = {}) {
         if (nextProps === props) {
           return full;
         }
-        return `createElement(${component},{${nextProps}}`;
+        return `${prefix}${nextProps}}`;
       }
     );
 
@@ -444,18 +454,22 @@ function patchRedactedThinkingSummaries(content) {
     const redactedSegment = output.slice(redactedStart, thinkingStart);
     const thinkingSegment = output.slice(thinkingStart, thinkingEnd);
 
+    const hasRedactedRendererCall =
+      redactedSegment.includes("createElement(") ||
+      redactedSegment.includes("jsx(") ||
+      redactedSegment.includes("jsxs(");
     if (
       thinkingStart - redactedStart > maxRendererGap ||
       thinkingEnd - thinkingStart > maxRendererGap ||
-      !redactedSegment.includes("createElement(") ||
-      !thinkingSegment.includes("hideInTranscript:")
+      !hasRedactedRendererCall ||
+      !thinkingSegment.includes("isTranscriptMode:")
     ) {
       index = redactedStart + redactedNeedle.length;
       continue;
     }
 
     const thinkingRendererMatch = thinkingSegment.match(
-      /([A-Za-z_$][\w$]*)\.createElement\(([A-Za-z_$][\w$]*),\{addMargin:([A-Za-z_$][\w$]*),param:([A-Za-z_$][\w$]*),isTranscriptMode:[^,}]+,verbose:[^,}]+,hideInTranscript:[^}]+\}\)/
+      /([A-Za-z_$][\w$]*)\.(createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{addMargin:([A-Za-z_$][\w$]*),param:([A-Za-z_$][\w$]*),isTranscriptMode:[^,}]+,verbose:[^,}]+(?:,hideInTranscript:[^}]+)?\}\)/
     );
     if (!thinkingRendererMatch) {
       index = redactedStart + redactedNeedle.length;
@@ -463,16 +477,20 @@ function patchRedactedThinkingSummaries(content) {
     }
 
     const reactNs = thinkingRendererMatch[1];
-    const thinkingComponent = thinkingRendererMatch[2];
-    const addMarginVar = thinkingRendererMatch[3];
-    const paramVar = thinkingRendererMatch[4];
+    const jsxFactory = thinkingRendererMatch[2];
+    const thinkingComponent = thinkingRendererMatch[3];
+    const addMarginVar = thinkingRendererMatch[4];
+    const paramVar = thinkingRendererMatch[5];
+    const hideInTranscriptProp = thinkingRendererMatch[0].includes("hideInTranscript:")
+      ? ",hideInTranscript:!1"
+      : "";
 
     candidates += 1;
 
     const replacement =
-      `case"redacted_thinking":{return ${reactNs}.createElement(${thinkingComponent},{` +
+      `case"redacted_thinking":{return ${reactNs}.${jsxFactory}(${thinkingComponent},{` +
       `addMargin:${addMarginVar},param:{type:"thinking",thinking:${paramVar}.data??""},` +
-      `isTranscriptMode:!0,verbose:!0,hideInTranscript:!1})}`;
+      `isTranscriptMode:!0,verbose:!0${hideInTranscriptProp}})}`;
 
     if (redactedSegment !== replacement) {
       output = output.slice(0, redactedStart) + replacement + output.slice(thinkingStart);
