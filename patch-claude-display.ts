@@ -9,7 +9,7 @@ function printHelp() {
   console.log("");
   console.log("Usage:");
   console.log(
-    "  node patch-claude-display.ts --file <path> [--dry-run] [--disable <ids>] [--enable <ids>] [--list-patches]"
+    "  node patch-claude-display.ts --file <path> [--dry-run] [--disable <ids>] [--enable <ids>] [--list-patches] [--assert-all]"
   );
   console.log("");
   console.log("Options:");
@@ -18,6 +18,9 @@ function printHelp() {
   console.log("  --disable <ids> Comma-separated patch ids to disable");
   console.log("  --enable <ids>  Comma-separated patch ids to enable");
   console.log("  --list-patches  Print available patch ids and exit");
+  console.log(
+    "  --assert-all    Exit non-zero if any selected patch applied 0 changes"
+  );
   console.log("  --help, -h      Show this help");
 }
 
@@ -41,6 +44,7 @@ function parseArgs(argv) {
     disable: [],
     enable: [],
     listPatches: false,
+    assertAll: false,
     help: false,
   };
 
@@ -71,6 +75,8 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg === "--list-patches") {
       opts.listPatches = true;
+    } else if (arg === "--assert-all") {
+      opts.assertAll = true;
     } else if (arg === "--help" || arg === "-h") {
       opts.help = true;
     } else {
@@ -1746,11 +1752,12 @@ const PATCH_MODULES = [
     description: "Append (patched) to plain --version output",
     apply: patchVersionOutput,
   },
-  {
-    id: "installer-label",
-    description: "Replace npm/native installer warning text with (patched)",
-    apply: patchInstallerMigrationMessage,
-  },
+  // NOTE: the "installer-label" module (patchInstallerMigrationMessage, kept
+  // defined above) is intentionally NOT registered. Its target string
+  // "switched from npm to native installer" was removed by Anthropic and no
+  // longer exists in current Claude bundles (verified absent in 2.1.206), so it
+  // can never apply and would make --assert-all fail on every build. Re-add this
+  // entry if a future Claude version reintroduces that migration warning.
   {
     id: "welcome-badge",
     description: "Rename startup and help Claude Code titles to Calico Claude",
@@ -1868,6 +1875,30 @@ function main() {
       continue;
     }
     console.log(`  ${module.id} candidates: ${result.candidates}, patched: ${result.patched}`);
+  }
+
+  if (opts.assertAll) {
+    const failedModules = [];
+    for (const module of PATCH_MODULES) {
+      const result = patchResults.get(module.id);
+      if (result.skipped) {
+        continue;
+      }
+      if (result.patched === 0) {
+        failedModules.push(module.id);
+      }
+    }
+
+    if (failedModules.length > 0) {
+      console.error("");
+      console.error(
+        `Error: --assert-all failed; the following patch module(s) applied 0 changes: ${failedModules.join(", ")}`
+      );
+      console.error(
+        "This usually means the target bundle changed shape (upstream refactor) or is already patched."
+      );
+      process.exit(1);
+    }
   }
 
   if (nextContent === original) {

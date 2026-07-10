@@ -10,30 +10,26 @@ type PatchOptions = {
   output: string;
   disable: string[];
   enable: string[];
+  assertAll: boolean;
 };
 
-type NativeInstallation = {
-  path: string;
-  kind: "native";
+type NativeContentHandle = {
+  content: string;
+  write(patchedContent: string): Promise<void>;
 };
 
-type TweakccModule = {
-  readContent(installation: NativeInstallation): Promise<string>;
-  writeContent(installation: NativeInstallation, content: string): Promise<void>;
+type NativeContentModule = {
+  readNativeContent(binaryPath: string): Promise<NativeContentHandle>;
 };
 
-type VendoredElfModule = {
-  canVendoredElfHandle(binaryPath: string): boolean;
-  readVendoredElfContent(binaryPath: string): string;
-  writeVendoredElfContent(binaryPath: string, content: string): void;
-};
+const nativeContent = require("./native-content.ts") as NativeContentModule;
 
 function printHelp(): void {
   console.log("Patch native Claude binaries via tweakcc");
   console.log("");
   console.log("Usage:");
   console.log(
-    "  node scripts/patch-native-with-tweakcc.ts --input <native-binary> [--output <path>] [--disable <ids>] [--enable <ids>]"
+    "  node scripts/patch-native-with-tweakcc.ts --input <native-binary> [--output <path>] [--disable <ids>] [--enable <ids>] [--assert-all]"
   );
 }
 
@@ -56,6 +52,7 @@ function parseArgs(argv: string[]): PatchOptions {
     output: "",
     disable: [],
     enable: [],
+    assertAll: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -101,6 +98,11 @@ function parseArgs(argv: string[]): PatchOptions {
       continue;
     }
 
+    if (arg === "--assert-all") {
+      opts.assertAll = true;
+      continue;
+    }
+
     if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -120,24 +122,6 @@ function parseArgs(argv: string[]): PatchOptions {
   return opts;
 }
 
-async function loadTweakcc(): Promise<TweakccModule> {
-  const imported = await import("tweakcc");
-  const merged =
-    imported.default && typeof imported.default === "object"
-      ? { ...imported.default, ...imported }
-      : imported;
-
-  if (typeof merged.readContent !== "function" || typeof merged.writeContent !== "function") {
-    throw new Error("Loaded tweakcc module does not expose readContent/writeContent API");
-  }
-
-  return merged as TweakccModule;
-}
-
-function loadVendoredElfModule(): VendoredElfModule {
-  return require("./vendored-elf-native.ts") as VendoredElfModule;
-}
-
 async function patchNativeBinary(opts: PatchOptions): Promise<void> {
   const inputPath = path.resolve(opts.input);
   const outputPath = path.resolve(opts.output);
@@ -151,29 +135,8 @@ async function patchNativeBinary(opts: PatchOptions): Promise<void> {
     fs.chmodSync(outputPath, 0o755);
   }
 
-  const tweakcc = await loadTweakcc();
-  const installation: NativeInstallation = { path: outputPath, kind: "native" };
-  let originalContent: string;
-  let writePatchedContent = async (patchedContent: string): Promise<void> => {
-    await tweakcc.writeContent(installation, patchedContent);
-  };
-
-  try {
-    originalContent = await tweakcc.readContent(installation);
-  } catch (readError) {
-    const vendoredElf = loadVendoredElfModule();
-    if (!vendoredElf.canVendoredElfHandle(outputPath)) {
-      throw readError;
-    }
-
-    console.warn(
-      `Warning: tweakcc could not extract JavaScript from ELF binary; falling back to vendored ELF handler for ${outputPath}`
-    );
-    originalContent = vendoredElf.readVendoredElfContent(outputPath);
-    writePatchedContent = async (patchedContent: string): Promise<void> => {
-      vendoredElf.writeVendoredElfContent(outputPath, patchedContent);
-    };
-  }
+  const handle = await nativeContent.readNativeContent(outputPath);
+  const originalContent = handle.content;
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-native-patch-"));
   const tempContentPath = path.join(tempDir, "content.js");
@@ -188,23 +151,14 @@ async function patchNativeBinary(opts: PatchOptions): Promise<void> {
   if (opts.disable.length > 0) {
     patchArgs.push("--disable", opts.disable.join(","));
   }
+  if (opts.assertAll) {
+    patchArgs.push("--assert-all");
+  }
 
   try {
     execFileSync(process.execPath, patchArgs, { stdio: "inherit" });
     const patchedContent = fs.readFileSync(tempContentPath, "utf8");
-    try {
-      await writePatchedContent(patchedContent);
-    } catch (writeError) {
-      const vendoredElf = loadVendoredElfModule();
-      if (!vendoredElf.canVendoredElfHandle(outputPath)) {
-        throw writeError;
-      }
-
-      console.warn(
-        `Warning: tweakcc could not repack ELF binary; falling back to vendored ELF handler for ${outputPath}`
-      );
-      vendoredElf.writeVendoredElfContent(outputPath, patchedContent);
-    }
+    await handle.write(patchedContent);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
