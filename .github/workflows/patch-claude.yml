@@ -245,10 +245,13 @@ jobs:
             exit 1
           fi
 
-          # First round: loose match on the brand string (Phase 4 will tighten this).
+          # Match the full brand string. The TUI separates words with
+          # cursor-column escapes (raw: `Calico^[[19GClaude`), so after the ANSI
+          # strip above the two words collapse to `CalicoClaude` with no space.
+          # Tolerate both the spaced and unspaced forms.
           # -a: the pty capture may contain control bytes that trip binary detection.
-          if ! grep -aqi "Calico" "$CLEAN"; then
-            echo "PTY smoke test failed: 'Calico' branding not found in TUI output." >&2
+          if ! grep -aqiE "Calico ?Claude" "$CLEAN"; then
+            echo "PTY smoke test failed: 'Calico Claude' branding not found in TUI output." >&2
             exit 1
           fi
 
