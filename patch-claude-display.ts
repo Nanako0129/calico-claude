@@ -1593,7 +1593,7 @@ function patchWelcomePatchedBadge(content) {
     /([A-Za-z_$][\w$]*)\.createElement\(([A-Za-z_$][\w$]*),\{bold:!0\},"Claude Code"\)/g,
     (full, reactVar, textComponent) => {
       candidates += 1;
-      const replacement = `${reactVar}.createElement(${textComponent},{bold:!0},"Connoisseur's Code")`;
+      const replacement = `${reactVar}.createElement(${textComponent},{bold:!0},"Calico Claude")`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1606,7 +1606,7 @@ function patchWelcomePatchedBadge(content) {
     /([A-Za-z_$][\w$]*)\.(jsx|jsxs)\(([A-Za-z_$][\w$]*),\{bold:!0,children:"Claude Code"\}\)/g,
     (full, reactVar, jsxFactory, textComponent) => {
       candidates += 1;
-      const replacement = `${reactVar}.${jsxFactory}(${textComponent},{bold:!0,children:"Connoisseur's Code"})`;
+      const replacement = `${reactVar}.${jsxFactory}(${textComponent},{bold:!0,children:"Calico Claude"})`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1619,7 +1619,7 @@ function patchWelcomePatchedBadge(content) {
     /title:(`Claude Code v\$\{[\s\S]*?\.VERSION\}`),color:"professionalBlue",defaultTab:"general"/g,
     (full, titleExpr) => {
       candidates += 1;
-      const replacement = `title:${titleExpr}.replace("Claude Code","Connoisseur's Code"),color:"professionalBlue",defaultTab:"general"`;
+      const replacement = `title:${titleExpr}.replace("Claude Code","Calico Claude"),color:"professionalBlue",defaultTab:"general"`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1632,7 +1632,7 @@ function patchWelcomePatchedBadge(content) {
     /"Welcome to Claude Code for "/g,
     (full) => {
       candidates += 1;
-      const replacement = `"Welcome to Connoisseur's Code for "`;
+      const replacement = `"Welcome to Calico Claude for "`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1645,7 +1645,7 @@ function patchWelcomePatchedBadge(content) {
     /"Welcome to Claude Code"/g,
     (full) => {
       candidates += 1;
-      const replacement = `"Welcome to Connoisseur's Code"`;
+      const replacement = `"Welcome to Calico Claude"`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1658,7 +1658,7 @@ function patchWelcomePatchedBadge(content) {
     /(color:"claude",bold:!0,children:\[)"Claude Code"(," "\])/g,
     (full, prefix, suffix) => {
       candidates += 1;
-      const replacement = `${prefix}"Connoisseur's Code"${suffix}`;
+      const replacement = `${prefix}"Calico Claude"${suffix}`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1671,7 +1671,7 @@ function patchWelcomePatchedBadge(content) {
     /([A-Za-z_$][\w$]*)\("claude",([A-Za-z_$][\w$]*)\)\("Claude Code"\)/g,
     (full, colorFn, themeVar) => {
       candidates += 1;
-      const replacement = `${colorFn}("claude",${themeVar})("Connoisseur's Code")`;
+      const replacement = `${colorFn}("claude",${themeVar})("Calico Claude")`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1684,7 +1684,7 @@ function patchWelcomePatchedBadge(content) {
     /([A-Za-z_$][\w$]*)\("claude",([A-Za-z_$][\w$]*)\)\(" Claude Code "\)/g,
     (full, colorFn, themeVar) => {
       candidates += 1;
-      const replacement = `${colorFn}("claude",${themeVar})(" Connoisseur's Code ")`;
+      const replacement = `${colorFn}("claude",${themeVar})(" Calico Claude ")`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1753,7 +1753,7 @@ const PATCH_MODULES = [
   },
   {
     id: "welcome-badge",
-    description: "Rename startup and help Claude Code titles to Connoisseur's Code",
+    description: "Rename startup and help Claude Code titles to Calico Claude",
     apply: patchWelcomePatchedBadge,
   },
 ];

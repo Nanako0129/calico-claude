@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO_SLUG="${PATCH_CLAUDE_REPO:-a-connoisseur/patch-claude-code}"
+REPO_SLUG="${PATCH_CLAUDE_REPO:-Nanako0129/calico-claude}"
 API_BASE_URL="https://api.github.com/repos/${REPO_SLUG}"
 
 log() {

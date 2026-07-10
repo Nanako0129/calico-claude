@@ -1,4 +1,11 @@
-# Patch Claude Code
+# Calico Claude
+
+> **Calico Claude** is a self-hosted, verifiable supply chain for patched native Claude Code binaries.
+> It is a fork of [`a-connoisseur/patch-claude-code`](https://github.com/a-connoisseur/patch-claude-code)
+> (reviewed at upstream commit `729494e`). The display patches are unchanged in intent; this fork adds
+> its own branding ("Calico Claude"), patch-integrity assertions, dependency pinning, and a CI pipeline
+> that publishes sha256 checksums plus build provenance attestations. Releases live at
+> [`Nanako0129/calico-claude`](https://github.com/Nanako0129/calico-claude).
 
 ## What this does
 
@@ -9,7 +16,7 @@ Here is an exhaustive list of things it changes:
 - Hard disables spinner tips.
 - Streams thinking live in the UI. This is helpful for instances where Claude thinks for over 10 minutes and you want to know if it's actually still doing something.
 - Shows subagent `Prompt:` blocks in the non-verbose UI.
-- Renames the startup header to `Connoisseur's Code v...` (this makes it easy to identify when Claude has auto updated and lost the patch).
+- Renames the startup header to `Calico Claude v...` (this makes it easy to identify when Claude has auto updated and lost the patch).
 
 #### Thinking note:
 
@@ -36,12 +43,12 @@ claude --version
 
 This installer detects your OS and CPU architecture and downloads the matching patched release for that version and platform.
 ```bash
-curl -fsSL https://raw.githubusercontent.com/a-connoisseur/patch-claude-code/main/install-patched-claude.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.sh | bash
 ```
 
 On Windows, use PowerShell:
 ```powershell
-irm https://raw.githubusercontent.com/a-connoisseur/patch-claude-code/main/install-patched-claude.ps1 | iex
+irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.ps1 | iex
 ```
 
 If you'd rather avoid blindly running scripts from the internet, you can do it the manual way below.
