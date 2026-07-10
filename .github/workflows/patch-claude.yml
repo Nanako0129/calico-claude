@@ -210,16 +210,21 @@ jobs:
 
           sleep 12
 
-          # Check the TUI process itself (not the `script` wrapper) for liveness.
-          if pgrep -f "$PATCHED_PATH" > /dev/null 2>&1; then
+          # The TUI runs as the child of the `script` wrapper. Check/kill it via
+          # its parent pid: matching on the binary path (pkill -f) also matches
+          # the wrapper's own cmdline and kills it before it flushes the
+          # typescript file, leaving the capture empty.
+          TUI_PIDS="$(pgrep -P "$PTY_PID" 2>/dev/null || true)"
+          if [ -n "$TUI_PIDS" ]; then
             ALIVE=1
           else
             ALIVE=0
           fi
 
-          # Kill the TUI inside the pty and let `script` exit on its own so it
-          # flushes the typescript file; killing `script` first loses the output.
-          pkill -f "$PATCHED_PATH" 2>/dev/null || true
+          # Kill only the TUI and let `script` exit on its own so it flushes.
+          if [ -n "$TUI_PIDS" ]; then
+            kill $TUI_PIDS 2>/dev/null || true
+          fi
           for _ in $(seq 1 20); do
             kill -0 "$PTY_PID" 2>/dev/null || break
             sleep 0.5
