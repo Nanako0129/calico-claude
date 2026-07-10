@@ -402,7 +402,7 @@ Likely break signs:
 
 Intent:
 
-- rename visible startup/help branding from `Claude Code` to `Connoisseur's Code`
+- rename visible startup/help branding from `Claude Code` to `Calico Claude`
 
 Old bundle shapes we match:
 
@@ -416,7 +416,7 @@ Old bundle shapes we match:
 
 What we rewrite:
 
-- replace those visible strings with `Connoisseur's Code`
+- replace those visible strings with `Calico Claude`
 
 Why this exists:
 
