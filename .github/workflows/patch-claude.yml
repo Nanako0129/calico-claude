@@ -210,13 +210,22 @@ jobs:
 
           sleep 12
 
-          if kill -0 "$PTY_PID" 2>/dev/null; then
+          # Check the TUI process itself (not the `script` wrapper) for liveness.
+          if pgrep -f "$PATCHED_PATH" > /dev/null 2>&1; then
             ALIVE=1
           else
             ALIVE=0
           fi
-          kill "$PTY_PID" 2>/dev/null || true
+
+          # Kill the TUI inside the pty and let `script` exit on its own so it
+          # flushes the typescript file; killing `script` first loses the output.
           pkill -f "$PATCHED_PATH" 2>/dev/null || true
+          for _ in $(seq 1 20); do
+            kill -0 "$PTY_PID" 2>/dev/null || break
+            sleep 0.5
+          done
+          kill "$PTY_PID" 2>/dev/null || true
+          wait "$PTY_PID" 2>/dev/null || true
 
           # Strip common ANSI/OSC escape sequences before matching visible text.
           perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\e\][^\a]*(?:\a|\e\\)//g; s/\e[()][A-Za-z0-9]//g' "$OUT" > "$CLEAN" 2>/dev/null || cp "$OUT" "$CLEAN"
@@ -232,7 +241,8 @@ jobs:
           fi
 
           # First round: loose match on the brand string (Phase 4 will tighten this).
-          if ! grep -qi "Calico" "$CLEAN"; then
+          # -a: the pty capture may contain control bytes that trip binary detection.
+          if ! grep -aqi "Calico" "$CLEAN"; then
             echo "PTY smoke test failed: 'Calico' branding not found in TUI output." >&2
             exit 1
           fi
