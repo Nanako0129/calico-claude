@@ -23,6 +23,10 @@ jobs:
     runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+    env:
+      HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     defaults:
       run:
         shell: bash
@@ -74,7 +78,7 @@ jobs:
         id: tweakcc
         run: |
           set -euo pipefail
-          npm install
+          npm ci
           VERSION="$(node -e "console.log(require('./node_modules/tweakcc/package.json').version)")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -161,7 +165,8 @@ jobs:
 
           node scripts/patch-native-with-tweakcc.ts \
             --input work/claude.native.original \
-            --output "$PATCHED_PATH"
+            --output "$PATCHED_PATH" \
+            --assert-all
           chmod +x "$PATCHED_PATH"
 
           if [ "$NEEDS_CODESIGN" = "true" ]; then
@@ -173,8 +178,121 @@ jobs:
             grep -F "(patched)" work/version.txt
           else
             echo "Skipping runtime check for non-native runner architecture."
-            node -e "import('tweakcc').then(async (t) => { const content = await t.readContent({ path: process.argv[1], kind: 'native' }); if (!content.includes('}.VERSION} (Claude Code)\\\\n(patched)')) { console.error('Patched version marker not found in extracted bundle'); process.exit(1); } })" "$PATCHED_PATH"
           fi
+
+      - name: Verify patched bundle
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          PATCHED_PATH="work/${{ matrix.patched_asset_name }}"
+          node scripts/verify-patched-binary.ts --input "$PATCHED_PATH"
+
+      - name: PTY smoke test (non-Windows)
+        id: pty
+        if: steps.check.outputs.skip != 'true' && !startsWith(matrix.platform_label, 'windows')
+        run: |
+          set -uo pipefail
+
+          PATCHED_PATH="work/${{ matrix.patched_asset_name }}"
+          OUT="work/pty-smoke.raw.log"
+          CLEAN="work/pty-smoke.clean.log"
+          CONFIG_DIR="$(mktemp -d)"
+          export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+
+          # Launch the patched TUI under a pseudo-terminal so the welcome banner
+          # renders. BSD (macOS) and util-linux `script` take different arguments.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            script -q "$OUT" "$PATCHED_PATH" &
+          else
+            script -qec "$PATCHED_PATH" "$OUT" &
+          fi
+          PTY_PID=$!
+
+          sleep 12
+
+          if kill -0 "$PTY_PID" 2>/dev/null; then
+            ALIVE=1
+          else
+            ALIVE=0
+          fi
+          kill "$PTY_PID" 2>/dev/null || true
+          pkill -f "$PATCHED_PATH" 2>/dev/null || true
+
+          # Strip common ANSI/OSC escape sequences before matching visible text.
+          perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\e\][^\a]*(?:\a|\e\\)//g; s/\e[()][A-Za-z0-9]//g' "$OUT" > "$CLEAN" 2>/dev/null || cp "$OUT" "$CLEAN"
+
+          echo "process_alive=$ALIVE"
+          echo "----- cleaned pty output (first 40 lines) -----"
+          head -n 40 "$CLEAN" || true
+          echo "-----------------------------------------------"
+
+          if [ "$ALIVE" != "1" ]; then
+            echo "PTY smoke test failed: patched binary exited before 12s." >&2
+            exit 1
+          fi
+
+          # First round: loose match on the brand string (Phase 4 will tighten this).
+          if ! grep -qi "Calico" "$CLEAN"; then
+            echo "PTY smoke test failed: 'Calico' branding not found in TUI output." >&2
+            exit 1
+          fi
+
+          echo "PTY smoke test passed."
+
+      - name: Upload PTY smoke output on failure
+        if: failure() && steps.pty.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-smoke-${{ matrix.release_suffix }}
+          path: |
+            work/pty-smoke.raw.log
+            work/pty-smoke.clean.log
+          if-no-files-found: ignore
+
+      - name: Windows smoke test
+        if: steps.check.outputs.skip != 'true' && startsWith(matrix.platform_label, 'windows')
+        run: |
+          set -euo pipefail
+          PATCHED_PATH="work/${{ matrix.patched_asset_name }}"
+          "$PATCHED_PATH" --version | tee work/version.txt
+          grep -F "(patched)" work/version.txt
+          "$PATCHED_PATH" --help > work/help.txt
+          echo "Windows smoke test passed."
+
+      - name: E2E test (optional, requires ANTHROPIC_API_KEY)
+        if: steps.check.outputs.skip != 'true' && env.HAS_ANTHROPIC_KEY == 'true' && !startsWith(matrix.platform_label, 'windows')
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          PATCHED_PATH="work/${{ matrix.patched_asset_name }}"
+          CONFIG_DIR="$(mktemp -d)"
+          export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+          OUT="$("$PATCHED_PATH" --print --model claude-3-5-haiku-latest "Reply with the single word: pong")"
+          echo "e2e output: $OUT"
+          if [ -z "$OUT" ]; then
+            echo "E2E test failed: empty response from model." >&2
+            exit 1
+          fi
+
+      - name: Generate checksums
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          ASSET="${{ matrix.patched_asset_name }}"
+          cd work
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > checksums.txt
+          else
+            shasum -a 256 "$ASSET" > checksums.txt
+          fi
+          cat checksums.txt
+
+      - name: Attest build provenance
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: work/${{ matrix.patched_asset_name }}
 
       - name: Write metadata
         if: steps.check.outputs.skip != 'true'
@@ -206,4 +324,5 @@ jobs:
             --title "$TITLE" \
             --notes "Patched native Claude ${{ matrix.platform_label }} build via tweakcc API (version: ${{ steps.tweakcc.outputs.version }}), source version \`${VERSION}\`" \
             work/metadata.txt \
+            work/checksums.txt \
             "$PATCHED_PATH"
