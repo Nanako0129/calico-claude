@@ -16,6 +16,7 @@ const nativeContent = require("./native-content.ts") as NativeContentModule;
 
 type VerifyOptions = {
   input: string;
+  disable: string[];
 };
 
 // Each module's expected post-patch signature. `presence` markers must be found
@@ -137,8 +138,21 @@ const CHECKS: Check[] = [
   },
 ];
 
+function parsePatchIds(value: string): string[] {
+  const ids = value
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+  if (ids.length === 0) {
+    throw new Error("Expected a comma-separated list for --disable");
+  }
+
+  return ids;
+}
+
 function parseArgs(argv: string[]): VerifyOptions {
-  const opts: VerifyOptions = { input: "" };
+  const opts: VerifyOptions = { input: "", disable: [] };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -149,6 +163,16 @@ function parseArgs(argv: string[]): VerifyOptions {
         throw new Error("Missing value for --input");
       }
       opts.input = value;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--disable") {
+      const value = argv[i + 1];
+      if (!value) {
+        throw new Error("Missing value for --disable");
+      }
+      opts.disable.push(...parsePatchIds(value));
       i += 1;
       continue;
     }
@@ -165,6 +189,12 @@ function parseArgs(argv: string[]): VerifyOptions {
     throw new Error("--input is required");
   }
 
+  const validIds = new Set(CHECKS.map((check) => check.id));
+  const invalid = opts.disable.filter((id) => !validIds.has(id));
+  if (invalid.length > 0) {
+    throw new Error(`Unknown --disable patch id(s): ${invalid.join(", ")}`);
+  }
+
   return opts;
 }
 
@@ -172,7 +202,14 @@ function printHelp(): void {
   console.log("Verify a patched native Claude binary contains all expected patches");
   console.log("");
   console.log("Usage:");
-  console.log("  node scripts/verify-patched-binary.ts --input <patched-binary>");
+  console.log(
+    "  node scripts/verify-patched-binary.ts --input <patched-binary> [--disable <ids>]"
+  );
+  console.log("");
+  console.log("  --disable <ids>  Comma-separated patch ids that were intentionally");
+  console.log("                   NOT applied. Their normal check is skipped; for");
+  console.log("                   presence-type modules the marker is reverse-asserted");
+  console.log("                   to be ABSENT, confirming the patch really is missing.");
 }
 
 function evaluateCheck(check: Check, content: string): string | null {
@@ -225,11 +262,39 @@ async function main(): Promise<void> {
 
   console.log(`Verifying patched bundle extracted from: ${inputPath}`);
 
+  const disableSet = new Set(opts.disable);
+
   const failures: { id: string; detail: string }[] = [];
+  let verifiedCount = 0;
+  let skippedCount = 0;
   for (const check of CHECKS) {
+    if (disableSet.has(check.id)) {
+      // This module was intentionally not applied. Skip its normal check, and
+      // for presence-type modules reverse-assert the marker is ABSENT so the
+      // disable is proven (the patch really isn't in the bundle), not merely
+      // ignored.
+      if (check.kind === "presence" && check.marker !== undefined) {
+        if (markerPresent(content, check.marker)) {
+          console.log(`  FAIL ${check.id}`);
+          failures.push({
+            id: check.id,
+            detail: `disabled module marker unexpectedly present (${check.describe})`,
+          });
+        } else {
+          console.log(`  skip ${check.id} (disabled; marker confirmed absent)`);
+          skippedCount += 1;
+        }
+      } else {
+        console.log(`  skip ${check.id} (disabled)`);
+        skippedCount += 1;
+      }
+      continue;
+    }
+
     const detail = evaluateCheck(check, content);
     if (detail === null) {
       console.log(`  ok   ${check.id}`);
+      verifiedCount += 1;
     } else {
       console.log(`  FAIL ${check.id}`);
       failures.push({ id: check.id, detail });
@@ -246,7 +311,13 @@ async function main(): Promise<void> {
   }
 
   console.log("");
-  console.log(`All ${CHECKS.length} patch modules verified.`);
+  if (skippedCount > 0) {
+    console.log(
+      `${verifiedCount} patch module(s) verified, ${skippedCount} disabled/skipped.`
+    );
+  } else {
+    console.log(`All ${CHECKS.length} patch modules verified.`);
+  }
 }
 
 void main();

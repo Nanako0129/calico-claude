@@ -27,6 +27,11 @@ jobs:
       attestations: write
     env:
       HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+      # Patch modules intentionally left un-applied. Referenced by both the Apply
+      # and Verify steps so the two stay in lockstep — edit this one line to change
+      # the disable set. tool-call-verbose is off by user preference (thinking-only
+      # expansion; no bash/read tool-call auto-expansion).
+      DISABLED_MODULES: tool-call-verbose
     defaults:
       run:
         shell: bash
@@ -166,6 +171,7 @@ jobs:
           node scripts/patch-native-with-tweakcc.ts \
             --input work/claude.native.original \
             --output "$PATCHED_PATH" \
+            --disable "$DISABLED_MODULES" \
             --assert-all
           chmod +x "$PATCHED_PATH"
 
@@ -185,7 +191,7 @@ jobs:
         run: |
           set -euo pipefail
           PATCHED_PATH="work/${{ matrix.patched_asset_name }}"
-          node scripts/verify-patched-binary.ts --input "$PATCHED_PATH"
+          node scripts/verify-patched-binary.ts --input "$PATCHED_PATH" --disable "$DISABLED_MODULES"
 
       - name: PTY smoke test (non-Windows)
         id: pty
