@@ -6,7 +6,8 @@
     "node": ">=23.6.0"
   },
   "scripts": {
-    "patch:native": "node scripts/patch-native-with-tweakcc.ts"
+    "patch:native": "node scripts/patch-native-with-tweakcc.ts",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "node-lief": "1.1.1",

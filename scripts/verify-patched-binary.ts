@@ -53,6 +53,37 @@ function markerPresent(content: string, marker: RegExp | string): boolean {
 
 const CHECKS: Check[] = [
   {
+    id: "active-turn-prompt-id",
+    kind: "custom",
+    describe: "remora-scoped prompt identity header with per-agent frozen turn id",
+    run: (content: string): string | null => {
+      const requiredStrings = [
+        '"calico-active-turn-adapter:v1"',
+        '"x-calico-prompt-id"',
+        '"x-calico-active-turn-version":"1"',
+      ];
+      const missing = requiredStrings.filter((marker) => !content.includes(marker));
+      if (missing.length > 0) {
+        return `missing marker(s): ${missing.join(", ")}`;
+      }
+      const frozenAgentContext =
+        /process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*\.__calicoPromptId===void 0&&\([A-Za-z_$][\w$]*\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?[A-Za-z_$][\w$]*\(\)\),\1\.run\(/;
+      if (!frozenAgentContext.test(content)) {
+        return "missing nested-agent prompt inheritance at AsyncLocalStorage boundary";
+      }
+      const sourceGate =
+        /__calicoQueryKind==="main"\|\|__calicoQueryKind==="subagent"/;
+      if (!sourceGate.test(content)) {
+        return "missing main/subagent query-source gate";
+      }
+      const protectedHeaderOrder =
+        /"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.__calicoPromptId&&\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\}/;
+      return protectedHeaderOrder.test(content)
+        ? null
+        : "Calico-owned headers are missing or can be overridden by custom headers";
+    },
+  },
+  {
     id: "custom-context-window",
     kind: "custom",
     describe: "validated opt-in context resolver and effective status-line window",

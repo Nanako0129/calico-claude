@@ -18,7 +18,9 @@ Here is an exhaustive list of things it changes:
 - Shows subagent `Prompt:` blocks in the non-verbose UI.
 - Renames the startup header to `Calico Claude v...` (this makes it easy to identify when Claude has auto updated and lost the patch).
 - Adds a dormant, opt-in custom-model context adapter. It changes nothing unless
-  `CALICO_MODEL_CONTEXT_WINDOWS` is supplied by a launcher such as Remora.
+  `CALICO_MODEL_CONTEXT_WINDOWS` is supplied by a launcher such as remora.
+- Adds a dormant active-turn identity adapter for remora. It changes nothing
+  unless the launcher sets `REMORA_ACTIVE=1`.
 
 ### Optional custom-model context windows
 
@@ -39,16 +41,40 @@ status-line denominator. In this opt-in mode Calico also bypasses Claude's separ
 precompute-buffer deductions, so the compact percentage is applied once to the raw mapped window. With
 the values above, status-line consumers see 353.4K usable tokens and compaction starts at 334.8K.
 
-Remora users should select its `calico` context mode instead of exporting these variables manually.
-The default Remora `stock` mode does not require Calico and remains capped at Claude Code's native 200K.
+remora users should select its `calico` context mode instead of exporting these variables manually.
+The default remora `stock` mode does not require Calico and remains capped at Claude Code's native 200K.
+
+### Optional active-turn identity
+
+Claude Code already maintains a prompt UUID across the initial model request and
+its tool-result continuations. When `REMORA_ACTIVE=1`, Calico exposes that value
+to a compatible gateway as `x-calico-prompt-id` and sends
+`x-calico-active-turn-version: 1`. Spawned agents freeze the prompt UUID in
+their async context, and nested agents inherit the frozen parent value, so a
+background agent keeps its original turn identity if the main session accepts a
+later user prompt.
+
+Only Claude's own `main` and `subagent` query-source classes receive these
+headers. Quota checks, token counting, compaction, side queries, and other
+auxiliary requests are excluded so they cannot read or overwrite agentic turn
+state. Calico-owned header values are written after custom headers and therefore
+cannot be replaced through `ANTHROPIC_CUSTOM_HEADERS`.
+
+The adapter marker is `calico-active-turn-adapter:v1`. The patch gate requires
+both the AsyncLocalStorage capture and HTTP header anchors; if either upstream
+shape changes, the module applies nothing and the release build fails. The
+adapter does not store or forward Codex backend state. A compatible gateway
+must still capture and replay the server-issued `x-codex-turn-state`; the Calico
+header only provides the Claude-side turn boundary. Plain Calico launches do
+not emit either header.
 
 ## Trust and security
 
-Calico replaces the native Claude Code executable, so installing it is a supply-chain decision rather than a normal Remora configuration change. Releases are built in GitHub Actions from Anthropic's native installer, use pinned patch dependencies, fail when a selected patch no longer matches the upstream bundle, and publish SHA-256 checksums plus GitHub provenance attestations.
+Calico replaces the native Claude Code executable, so installing it is a supply-chain decision rather than a normal remora configuration change. Releases are built in GitHub Actions from Anthropic's native installer, use pinned patch dependencies, fail when a selected patch no longer matches the upstream bundle, and publish SHA-256 checksums plus GitHub provenance attestations.
 
-The context adapter is dormant by default. It never contacts a server or reads credentials; it only accepts a child-process environment map. Exact model matching, bounded integer validation, malformed-input fallback, and Remora's binary capability check prevent a broad or silent context increase. Plain Claude Code launches without those variables retain stock context behavior.
+The context adapter is dormant by default. It never contacts a server or reads credentials; it only accepts a child-process environment map. Exact model matching, bounded integer validation, malformed-input fallback, and remora's binary capability check prevent a broad or silent context increase. Plain Claude Code launches without those variables retain stock context behavior.
 
-Before installation, review the workflow and patch source, verify the release checksum and attestation, and keep a copy or reinstall path for the official Claude binary. Remora's approval-gated installer deliberately does not install Calico on the user's behalf.
+Before installation, review the workflow and patch source, verify the release checksum and attestation, and keep a copy or reinstall path for the official Claude binary. remora's approval-gated installer deliberately does not install Calico on the user's behalf.
 
 #### Thinking note:
 

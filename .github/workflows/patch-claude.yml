@@ -84,6 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
+          npm test
           VERSION="$(node -e "console.log(require('./node_modules/tweakcc/package.json').version)")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 

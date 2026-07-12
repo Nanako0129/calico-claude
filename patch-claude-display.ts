@@ -1772,7 +1772,115 @@ function patchCustomContextWindows(content) {
   return { content: output, candidates, patched };
 }
 
+function patchActiveTurnPromptIdentity(content) {
+  const original = content;
+  let agentCandidates = 0;
+  let agentPatched = 0;
+  let clientCandidates = 0;
+  let clientPatched = 0;
+  let output = content;
+
+  // Claude already owns a prompt-scoped UUID that remains stable from one
+  // user prompt through its tool-result continuations. Discover the minified
+  // getter semantically instead of depending on its current symbol name.
+  const promptGetterMatch = output.match(
+    /function ([A-Za-z_$][\w$]*)\(\)\{return ([A-Za-z_$][\w$]*)\.promptId\}function [A-Za-z_$][\w$]*\(e\)\{\2\.promptId=e\}/
+  );
+  if (!promptGetterMatch) {
+    return { content: output, candidates, patched };
+  }
+  const promptGetter = promptGetterMatch[1];
+
+  // Reuse Claude's own query-source classifier so quota checks, token counts,
+  // compaction, side queries, and other auxiliary traffic cannot enter the
+  // active-turn namespace.
+  const sourceClassifierMatch = output.match(
+    /function ([A-Za-z_$][\w$]*)\(e\)\{if\(e===void 0\)return;if\(e\.startsWith\("repl_main_thread"\)\|\|e==="sdk"\)return"main";if\(e\.startsWith\("agent:"\)\|\|e==="hook_agent"\)return"subagent";return"auxiliary"\}/
+  );
+  if (!sourceClassifierMatch) {
+    return { content: original, candidates: 0, patched: 0 };
+  }
+  const sourceClassifier = sourceClassifierMatch[1];
+
+  // Every spawned agent enters the same AsyncLocalStorage boundary. Freeze
+  // the current prompt id there so a background agent keeps its spawning turn
+  // even after the main session accepts another user prompt.
+  const agentContextPattern =
+    /(function [A-Za-z_$][\w$]*\(e,t\)\{return )([A-Za-z_$][\w$]*)\.run\(e,t\)(\}function [A-Za-z_$][\w$]*\(\)\{return\{agentType:"main",agentId:)/g;
+  output = output.replace(
+    agentContextPattern,
+    (full, prefix, storage, suffix) => {
+      agentCandidates += 1;
+      agentPatched += 1;
+      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetter}()),${storage}.run(e,t)${suffix}`;
+    }
+  );
+
+  // Add a versioned, Calico-owned header only inside a remora child process.
+  // Main-session requests use the live prompt id; agent requests prefer the
+  // value frozen at their AsyncLocalStorage entry point.
+  const clientStartPattern =
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+  let clientStartMatch;
+  while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
+    const start = clientStartMatch.index;
+    const nextAsyncFunction = output.indexOf(
+      "async function ",
+      start + clientStartMatch[0].length
+    );
+    const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
+    const segment = output.slice(start, end);
+    if (
+      !segment.includes('"X-Claude-Code-Session-Id"') ||
+      !segment.includes('"x-claude-code-agent-id"') ||
+      segment.includes('"x-calico-active-turn-version"')
+    ) {
+      continue;
+    }
+
+    const localsPattern =
+      /,c=([A-Za-z_$][\w$]*)\(i\)\?void 0:i,u=([A-Za-z_$][\w$]*)\(\),p=\{/;
+    const localsMatch = segment.match(localsPattern);
+    if (!localsMatch) {
+      continue;
+    }
+
+    let nextSegment = segment.replace(
+      localsPattern,
+      `,c=$1(i)?void 0:i,__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(o),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(c?.__calicoPromptId??${promptGetter}()):void 0,u=$2(),p={`
+    );
+    nextSegment = nextSegment.replace(
+      /(\"X-Claude-Code-Session-Id\":[A-Za-z_$][\w$]*\(\),)(\.\.\.u,)/,
+      '$1$2...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},'
+    );
+    if (nextSegment === segment) {
+      continue;
+    }
+
+    clientCandidates += 1;
+    clientPatched += 1;
+    output = output.slice(0, start) + nextSegment + output.slice(end);
+    clientStartPattern.lastIndex = start + nextSegment.length;
+  }
+
+  const candidates = agentCandidates + clientCandidates;
+  if (
+    agentCandidates !== 1 ||
+    agentPatched !== 1 ||
+    clientCandidates !== 1 ||
+    clientPatched !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+  return { content: output, candidates, patched: agentPatched + clientPatched };
+}
+
 const PATCH_MODULES = [
+  {
+    id: "active-turn-prompt-id",
+    description: "Expose stable prompt and per-agent turn identity to remora gateways",
+    apply: patchActiveTurnPromptIdentity,
+  },
   {
     id: "custom-context-window",
     description: "Allow exact opt-in custom model context windows",
@@ -1986,4 +2094,10 @@ function main() {
   console.log(`Patched: ${targetPath}`);
 }
 
-main();
+module.exports = {
+  patchActiveTurnPromptIdentity,
+};
+
+if (require.main === module) {
+  main();
+}
