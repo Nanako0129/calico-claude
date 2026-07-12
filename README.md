@@ -85,6 +85,56 @@ Before installation, review the workflow and patch source, verify the release ch
 ```
 - Settings can come from `~/.claude/settings.json`, `.claude/settings.json`, or `.claude/settings.local.json`.
 
+## Questions and answers
+
+### Does Calico send prompts or credentials anywhere?
+
+No. Calico is a patched native Claude Code executable, not a gateway or hosted service. The build pipeline downloads Anthropic's native binary, applies reviewable local patches, and publishes the result. Claude Code still sends data to whichever provider or gateway its runtime configuration selects.
+
+### Does Calico itself route Claude Code to OpenAI models?
+
+No. The OpenAI routing comes from a launcher such as remora plus an Anthropic-compatible gateway. Calico contributes UI transparency, optional custom-model context handling, and a stable prompt identity for compatible active-turn bridges.
+
+### Will Claude Code updates remove the patches?
+
+Yes. The official updater can install a new version and move the `claude` symlink to that unpatched binary. Re-run the Calico installer after every Claude Code update, then verify the new release before relying on it.
+
+### Why can the startup banner say Calico while a newer adapter is missing?
+
+The branding patch and functional adapters are separate modules. An older Calico build may still print the patched banner but lack a later `custom-context-window` or `active-turn-prompt-id` module. Use the binary verifier, or `remora doctor --online` when using remora, instead of treating the banner as a complete capability check.
+
+### Can I keep official Claude and Calico side by side?
+
+Yes. This avoids updater contention and makes rollback explicit. Download and verify the patched release, install it under a separate name, and point remora at that path:
+
+```bash
+install -m 0755 ./claude.native.patched ~/.local/bin/calico-claude
+~/.local/bin/calico-claude --version
+```
+
+```toml
+[runtime]
+claude_binary = "/absolute/path/to/.local/bin/calico-claude"
+```
+
+Leave the official `~/.local/bin/claude` symlink under Anthropic's updater. A separately named Calico binary does not update automatically; replace it only after verifying a matching newer release.
+
+### Does the active-turn adapter bypass Codex quota limits?
+
+No. It only exposes Claude's existing prompt boundary to a compatible gateway. The gateway must preserve the server-issued Codex state, and OpenAI still decides whether a recognized turn may continue under fair-use policy.
+
+### How do I verify the installed binary?
+
+Check the release SHA-256 and GitHub attestation first. From a source checkout, the structural verifier confirms every enabled patch module:
+
+```bash
+node scripts/verify-patched-binary.ts \
+  --input "$(command -v calico-claude)" \
+  --disable tool-call-verbose
+```
+
+The verifier must report `active-turn-prompt-id` and `custom-context-window` as `ok`; a patched version label alone is insufficient.
+
 ## Quick Start
 
 ### Prerequisite
