@@ -61,13 +61,29 @@ if ($versionOutput -notmatch "([0-9]+\.[0-9]+\.[0-9]+)") {
 $claudeVersion = $Matches[1]
 $releaseTag = "v$claudeVersion-$releaseSuffix"
 $headers = Get-GitHubHeaders
-$releaseApiUrl = "$apiBaseUrl/releases/tags/$releaseTag"
+$releaseApiUrl = "$apiBaseUrl/releases?per_page=100"
 
 try {
-  $release = Invoke-RestMethod -Uri $releaseApiUrl -Headers $headers
+  $releases = Invoke-RestMethod -Uri $releaseApiUrl -Headers $headers
 } catch {
-  Fail "Could not find a patched release for Claude $claudeVersion on $releaseSuffix"
+  Fail "Could not list patched releases for Claude $claudeVersion on $releaseSuffix"
 }
+
+$escapedTag = [regex]::Escape($releaseTag)
+$release = $releases |
+  Where-Object { -not $_.draft -and $_.tag_name -match "^$escapedTag(?:-(\d+))?$" } |
+  ForEach-Object {
+    $rank = if ($_.tag_name -match "-(\d+)$") { [int]$Matches[1] } else { 1 }
+    [pscustomobject]@{ Rank = $rank; Release = $_ }
+  } |
+  Sort-Object Rank -Descending |
+  Select-Object -First 1 |
+  Select-Object -ExpandProperty Release
+
+if (-not $release) {
+  Fail "Could not find $releaseTag or a published rebuild suffix"
+}
+$releaseTag = $release.tag_name
 
 $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
 if (-not $asset) {

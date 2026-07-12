@@ -73,7 +73,7 @@ claude --version
 
 ### Automatic Install
 
-This installer detects your OS and CPU architecture and downloads the matching patched release for that version and platform.
+This installer detects your OS and CPU architecture and downloads the matching patched release for that version and platform. If an immutable rebuild such as `-2` exists, it selects the highest published rebuild suffix instead of overwriting or silently using the older artifact.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.sh | bash
 ```

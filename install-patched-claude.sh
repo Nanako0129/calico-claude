@@ -145,11 +145,11 @@ fetch_release_metadata() {
   local release_json_file release_metadata release_api_url expected_tag
   release_json_file="$(mktemp)" || fail "Failed to create temporary file for release metadata"
   expected_tag="v${CLAUDE_VERSION}-${RELEASE_SUFFIX}"
-  release_api_url="${API_BASE_URL}/releases/tags/${expected_tag}"
+  release_api_url="${API_BASE_URL}/releases?per_page=100"
 
   github_api_get "$release_api_url" "$release_json_file" || {
     rm -f "$release_json_file"
-    fail "Could not find a patched release for Claude ${CLAUDE_VERSION} on ${RELEASE_SUFFIX}"
+    fail "Could not list patched releases for Claude ${CLAUDE_VERSION} on ${RELEASE_SUFFIX}"
   }
 
   if [[ ! -s "$release_json_file" ]]; then
@@ -158,34 +158,45 @@ fetch_release_metadata() {
   fi
 
   release_metadata="$(
-    python3 - "$ASSET_NAME" "$release_json_file" <<'PY'
+    python3 - "$ASSET_NAME" "$release_json_file" "$expected_tag" <<'PY'
 import json
+import re
 import sys
 
 asset_name = sys.argv[1]
 release_json_file = sys.argv[2]
+expected_tag = sys.argv[3]
 
 with open(release_json_file, encoding="utf-8") as handle:
-    release = json.load(handle)
+    releases = json.load(handle)
 
-if not isinstance(release, dict):
+if not isinstance(releases, list):
     raise SystemExit(1)
 
-tag = release.get("tag_name", "")
-if not tag:
-    raise SystemExit(1)
+pattern = re.compile(rf"^{re.escape(expected_tag)}(?:-(\d+))?$")
+candidates = []
+for release in releases:
+    if not isinstance(release, dict) or release.get("draft"):
+        continue
+    tag = release.get("tag_name", "")
+    match = pattern.fullmatch(tag)
+    if not match:
+        continue
+    rank = int(match.group(1) or "1")
+    candidates.append((rank, release))
 
-for asset in release.get("assets", []):
-    if asset.get("name") == asset_name:
-        print(tag)
-        print(asset["browser_download_url"])
-        raise SystemExit(0)
+for _, release in sorted(candidates, key=lambda item: item[0], reverse=True):
+    for asset in release.get("assets", []):
+        if asset.get("name") == asset_name:
+            print(release["tag_name"])
+            print(asset["browser_download_url"])
+            raise SystemExit(0)
 
 raise SystemExit(1)
 PY
   )" || {
     rm -f "$release_json_file"
-    fail "Could not find the ${ASSET_NAME} asset in release ${expected_tag}"
+    fail "Could not find the ${ASSET_NAME} asset in ${expected_tag} or a verified rebuild suffix"
   }
 
   rm -f "$release_json_file"
