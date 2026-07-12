@@ -1706,7 +1706,78 @@ function patchWelcomePatchedBadge(content) {
   };
 }
 
+function patchCustomContextWindows(content) {
+  let candidates = 0;
+  let patched = 0;
+  let output = content;
+
+  // Claude Code normally assigns unknown custom model ids a 200K context
+  // window. Calico keeps that default unless a launcher supplies an exact,
+  // validated model-to-window map. Exact matching is intentional: a typo must
+  // fail closed to Claude's stock behavior instead of widening another model.
+  const resolverPattern =
+    /(function [A-Za-z_$][\w$]*\(e,t\)\{)(if\([A-Za-z_$][\w$]*\(e\)\)return 1e6;if\(t\?\.includes\()/g;
+
+  output = output.replace(resolverPattern, (full, functionStart, originalBody) => {
+    candidates += 1;
+    const helpers =
+      'function __calico_context_window(e){try{let t=process.env.CALICO_MODEL_CONTEXT_WINDOWS;if(!t)return null;let r=JSON.parse(t);if(!r||typeof r!=="object"||Array.isArray(r)||!Object.hasOwn(r,e))return null;let n=r[e];if(!Number.isInteger(n)||n<100000||n>1000000)return null;return n}catch{return null}}' +
+      'function __calico_display_window(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)}';
+    const replacement =
+      `${helpers}${functionStart}let __calico_window=__calico_context_window(e);` +
+      `if(__calico_window!==null)return __calico_window;${originalBody}`;
+    patched += 1;
+    return replacement;
+  });
+
+  // Claude's stock pipeline subtracts an output reserve and may precompute at
+  // a separate buffer fraction. In opt-in Calico mode, use the raw mapped
+  // window and the explicit percentage as the single compact boundary.
+  const effectiveWindowPattern =
+    /(function [A-Za-z_$][\w$]*\(e,t\)\{let r=Math\.min\([A-Za-z_$][\w$]*\(e\),[A-Za-z_$][\w$]*\),n=[A-Za-z_$][\w$]*\(\)\?t:void 0,\{window:o\}=[A-Za-z_$][\w$]*\(e,n\);return )(o-r)(\})/g;
+  output = output.replace(
+    effectiveWindowPattern,
+    (full, prefix, originalReturn, suffix) => {
+      candidates += 1;
+      patched += 1;
+      return `${prefix}process.env.CALICO_MODEL_CONTEXT_WINDOWS?o:${originalReturn}${suffix}`;
+    }
+  );
+
+  const precomputePattern =
+    /(function [A-Za-z_$][\w$]*\(e,t\)\{)(return Math\.min\(e-Math\.round\(e\*t\.precomputeBufferFraction\),([A-Za-z_$][\w$]*)\(e,t\)\)\})/g;
+  output = output.replace(
+    precomputePattern,
+    (full, functionStart, originalBody, percentFn) => {
+      candidates += 1;
+      patched += 1;
+      return `${functionStart}if(process.env.CALICO_MODEL_CONTEXT_WINDOWS)return ${percentFn}(e,t);${originalBody}`;
+    }
+  );
+
+  // Status-line consumers (including TokenBar) receive an effective display
+  // window while the internal model/compact logic continues to use the raw
+  // provider window. This mirrors Codex's raw-vs-usable distinction.
+  const statuslinePattern =
+    /context_window:([A-Za-z_$][\w$]*)\(([^,{}]+),([A-Za-z_$][\w$]*)\),exceeds_200k_tokens:/g;
+  output = output.replace(
+    statuslinePattern,
+    (full, contextFn, usage, windowValue) => {
+      candidates += 1;
+      patched += 1;
+      return `context_window:${contextFn}(${usage},__calico_display_window(${windowValue})),exceeds_200k_tokens:`;
+    }
+  );
+
+  return { content: output, candidates, patched };
+}
+
 const PATCH_MODULES = [
+  {
+    id: "custom-context-window",
+    description: "Allow exact opt-in custom model context windows",
+    apply: patchCustomContextWindows,
+  },
   {
     id: "tool-call-verbose",
     description: "Force verbose collapsed read/search rendering",

@@ -53,6 +53,23 @@ function markerPresent(content: string, marker: RegExp | string): boolean {
 
 const CHECKS: Check[] = [
   {
+    id: "custom-context-window",
+    kind: "custom",
+    describe: "validated opt-in context resolver and effective status-line window",
+    run: (content: string): string | null => {
+      const required = [
+        "CALICO_MODEL_CONTEXT_WINDOWS",
+        "CALICO_CONTEXT_DISPLAY_PERCENT",
+        "__calico_context_window",
+        "__calico_display_window",
+        "CALICO_MODEL_CONTEXT_WINDOWS?o:o-r",
+        "if(process.env.CALICO_MODEL_CONTEXT_WINDOWS)return",
+      ];
+      const missing = required.filter((marker) => !content.includes(marker));
+      return missing.length > 0 ? `missing marker(s): ${missing.join(", ")}` : null;
+    },
+  },
+  {
     id: "tool-call-verbose",
     kind: "presence",
     marker: /case"collapsed_read_search":(?:return|\{)[\s\S]{0,600}?verbose:!0/,

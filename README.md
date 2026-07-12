@@ -17,6 +17,38 @@ Here is an exhaustive list of things it changes:
 - Streams thinking live in the UI. This is helpful for instances where Claude thinks for over 10 minutes and you want to know if it's actually still doing something.
 - Shows subagent `Prompt:` blocks in the non-verbose UI.
 - Renames the startup header to `Calico Claude v...` (this makes it easy to identify when Claude has auto updated and lost the patch).
+- Adds a dormant, opt-in custom-model context adapter. It changes nothing unless
+  `CALICO_MODEL_CONTEXT_WINDOWS` is supplied by a launcher such as Remora.
+
+### Optional custom-model context windows
+
+Stock Claude Code safely treats an unknown custom model id as a 200K model. Calico can instead use an
+exact model-to-window map when the gateway advertises a larger operational ceiling:
+
+```bash
+export CALICO_MODEL_CONTEXT_WINDOWS='{"gpt-5.6-sol":372000}'
+export CALICO_CONTEXT_DISPLAY_PERCENT=95
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=372000
+export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=90
+claude --model gpt-5.6-sol
+```
+
+The map is parsed locally, accepts only exact model ids and integer windows from 100K through 1M, and
+falls back to Claude Code's stock behavior on malformed input. The display percentage only affects the
+status-line denominator. In this opt-in mode Calico also bypasses Claude's separate output-reserve and
+precompute-buffer deductions, so the compact percentage is applied once to the raw mapped window. With
+the values above, status-line consumers see 353.4K usable tokens and compaction starts at 334.8K.
+
+Remora users should select its `calico` context mode instead of exporting these variables manually.
+The default Remora `stock` mode does not require Calico and remains capped at Claude Code's native 200K.
+
+## Trust and security
+
+Calico replaces the native Claude Code executable, so installing it is a supply-chain decision rather than a normal Remora configuration change. Releases are built in GitHub Actions from Anthropic's native installer, use pinned patch dependencies, fail when a selected patch no longer matches the upstream bundle, and publish SHA-256 checksums plus GitHub provenance attestations.
+
+The context adapter is dormant by default. It never contacts a server or reads credentials; it only accepts a child-process environment map. Exact model matching, bounded integer validation, malformed-input fallback, and Remora's binary capability check prevent a broad or silent context increase. Plain Claude Code launches without those variables retain stock context behavior.
+
+Before installation, review the workflow and patch source, verify the release checksum and attestation, and keep a copy or reinstall path for the official Claude binary. Remora's approval-gated installer deliberately does not install Calico on the user's behalf.
 
 #### Thinking note:
 
