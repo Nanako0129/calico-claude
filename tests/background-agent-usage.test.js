@@ -5,6 +5,9 @@ const vm = require("node:vm");
 const {
   patchBackgroundAgentUsage,
 } = require("../patch-claude-display.ts");
+const {
+  evaluatePatchModule,
+} = require("../scripts/verify-patched-binary.ts");
 
 const fixture = `
 function fQn(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[]}}
@@ -14,8 +17,44 @@ function a9r(e){return{toolUseCount:e.toolUseCount,tokenCount:mQn(e),lastActivit
 function asyncLoopFixture(){hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),s);let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});if(tRu(de,s))return}
 `;
 
-function runtime() {
-  const result = patchBackgroundAgentUsage(fixture);
+function renameToken(source, from, to) {
+  const escaped = from.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&");
+  return source.replace(
+    new RegExp(`(?<![A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])`, "g"),
+    to
+  );
+}
+
+function renamedFixture() {
+  const renames = [
+    ["fQn", "uQn"],
+    ["mQn", "dQn"],
+    ["hQn", "pQn"],
+    ["a9r", "l3r"],
+    ["Z0u", "i9u"],
+    ["RTy", "ZTy"],
+    ["fCs", "xCs"],
+    ["tRu", "wRu"],
+    ["e", "trackerState"],
+    ["t", "eventFrame"],
+    ["r", "activityFormatter"],
+    ["n", "requestContext"],
+    ["o", "usageFrame"],
+    ["i", "contentItem"],
+    ["s", "toolInput"],
+    ["re", "trackerRecord"],
+    ["_e", "eventRecord"],
+    ["ie", "activityContext"],
+    ["g", "transcriptEntries"],
+    ["oe", "resultMessage"],
+    ["de", "completionStatus"],
+    ["ee", "suppressTelemetry"],
+  ];
+  return renames.reduce((source, [from, to]) => renameToken(source, from, to), fixture);
+}
+
+function runtime(source = fixture) {
+  const result = patchBackgroundAgentUsage(source);
   assert.equal(result.candidates, 4);
   assert.equal(result.patched, 4);
   const context = { Y0u: 5, Th: "Task", Oy: "REPL", ZAt: () => undefined };
@@ -195,9 +234,68 @@ test("refreshes finalized usage from a wrapper mutated after it was first sample
   assert.equal(context.mQn(tracker), 215);
 });
 
+test("matches renamed function, parameter, and seam locals", () => {
+  const renamed = renamedFixture();
+  const { context, result } = runtime(renamed);
+
+  assert.match(result.content, /function uQn\(\)\{return\{toolUseCount:0/);
+  assert.match(
+    result.content,
+    /pQn\(trackerRecord,eventRecord,activityContext,contentItem\.options\.tools\),__calicoRefreshAgentUsage\(trackerRecord,transcriptEntries\)/
+  );
+  assert.match(
+    result.content,
+    /__calicoRefreshAgentUsage\(trackerRecord,resultMessage\),i9u\(trackerState,l3r\(trackerRecord\),toolInput\)/
+  );
+
+  const tracker = context.uQn();
+  context.pQn(tracker, assistant("renamed", { input_tokens: 17, output_tokens: 4 }));
+  assert.equal(context.dQn(tracker), 21);
+});
+
+test("binary verifier rejects empty helpers hidden behind dead exact markers", () => {
+  const patched = patchBackgroundAgentUsage(fixture).content;
+  assert.equal(evaluatePatchModule("background-agent-usage", patched), null);
+
+  const trackHelper = patched.match(
+    /function __calicoTrackAgentUsage[\s\S]*?(?=function __calicoRefreshAgentUsage)/
+  )?.[0];
+  const refreshHelper = patched.match(
+    /function __calicoRefreshAgentUsage[\s\S]*?(?=function fQn\()/
+  )?.[0];
+  assert.ok(trackHelper);
+  assert.ok(refreshHelper);
+
+  const emptyTrack = patched.replace(
+    trackHelper,
+    `var __calicoTrackAgentUsage=()=>{};/*${trackHelper}*/`
+  );
+  const emptyRefresh = patched.replace(
+    refreshHelper,
+    `var __calicoRefreshAgentUsage=()=>{};/*${refreshHelper}*/`
+  );
+  const helperBlock = trackHelper + refreshHelper;
+  const destructuredHelpers = patched.replace(
+    helperBlock,
+    `var {__calicoTrackAgentUsage,__calicoRefreshAgentUsage}={__calicoTrackAgentUsage:()=>{},__calicoRefreshAgentUsage:()=>{}};/*${helperBlock}*/`
+  );
+  const commentOnlyHelpers = patched.replace(helperBlock, `/*${helperBlock}*/`);
+
+  assert.notEqual(evaluatePatchModule("background-agent-usage", emptyTrack), null);
+  assert.notEqual(evaluatePatchModule("background-agent-usage", emptyRefresh), null);
+  assert.notEqual(
+    evaluatePatchModule("background-agent-usage", destructuredHelpers),
+    null
+  );
+  assert.notEqual(
+    evaluatePatchModule("background-agent-usage", commentOnlyHelpers),
+    null
+  );
+});
+
 test("fails atomically when either native anchor is missing", () => {
   for (const broken of [
-    fixture.replace("function fQn()", "function changedTracker()"),
+    fixture.replace("toolUseCount:0", "toolUseCount:1"),
     fixture.replace('if(t.type!=="assistant")return;', 'if(t.type!=="assistant")break_here;'),
   ]) {
     const result = patchBackgroundAgentUsage(broken);
@@ -205,4 +303,40 @@ test("fails atomically when either native anchor is missing", () => {
     assert.equal(result.content, broken);
     assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
   }
+});
+
+test("fails atomically when progress and completion seams disagree", () => {
+  for (const broken of [
+    fixture.replace("let oe=RTy(s,e,g)", "let oe=RTy(other,e,g)"),
+    fixture.replace("let oe=RTy(s,e,g)", "let oe=RTy(s,other,g)"),
+  ]) {
+    const result = patchBackgroundAgentUsage(broken);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, broken);
+    assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
+  }
+});
+
+test("fails atomically when completion is deferred into an arrow callback", () => {
+  const deferred = fixture.replace(
+    "let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});",
+    "queueMicrotask(()=>{let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});});"
+  );
+  const result = patchBackgroundAgentUsage(deferred);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, deferred);
+  assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
+});
+
+test("fails atomically when progress and completion matches come from different functions", () => {
+  const split = fixture.replace(
+    "function asyncLoopFixture(){hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),s);let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});if(tRu(de,s))return}",
+    "function progressFixture(){hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),s)}function completionFixture(){let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});if(tRu(de,s))return}"
+  );
+  const result = patchBackgroundAgentUsage(split);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, split);
+  assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
 });

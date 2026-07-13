@@ -1774,25 +1774,109 @@ function patchCustomContextWindows(content) {
 
 function patchBackgroundAgentUsage(content) {
   const original = content;
-  const trackerNeedle =
-    'function fQn(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[]}}';
-  const eventNeedle =
-    'if(t.type!=="assistant")return;let o=t.message.usage;e.latestInputTokens=o.input_tokens+(o.cache_creation_input_tokens??0)+(o.cache_read_input_tokens??0),e.cumulativeOutputTokens+=o.output_tokens;';
-  const progressNeedle =
-    'hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),s);';
-  const completionNeedle =
-    'let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});if(tRu';
-  const trackerCount = content.split(trackerNeedle).length - 1;
-  const eventCount = content.split(eventNeedle).length - 1;
-  const progressCount = content.split(progressNeedle).length - 1;
-  const completionCount = content.split(completionNeedle).length - 1;
+  const identifierPattern = "[A-Za-z_$][\\w$]*";
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const trackerPattern = new RegExp(
+    `function (${identifierPattern})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:\\[\\]\\}\\}`,
+    "g"
+  );
+  const totalPattern = new RegExp(
+    `function (${identifierPattern})\\((${identifierPattern})\\)\\{return \\2\\.latestInputTokens\\+\\2\\.cumulativeOutputTokens\\}`,
+    "g"
+  );
+  const accountingPattern = new RegExp(
+    `if\\((${identifierPattern})\\.type!=="assistant"\\)return;let (${identifierPattern})=\\1\\.message\\.usage;(${identifierPattern})\\.latestInputTokens=\\2\\.input_tokens\\+\\(\\2\\.cache_creation_input_tokens\\?\\?0\\)\\+\\(\\2\\.cache_read_input_tokens\\?\\?0\\),\\3\\.cumulativeOutputTokens\\+=\\2\\.output_tokens;`,
+    "g"
+  );
+  const trackerMatches = [...content.matchAll(trackerPattern)];
+  const totalMatches = [...content.matchAll(totalPattern)];
+  const accountingMatches = [...content.matchAll(accountingPattern)];
+  const trackerName = trackerMatches[0]?.[1];
+  const totalName = totalMatches[0]?.[1];
+  const accountingMatch = accountingMatches[0];
+  const eventVar = accountingMatch?.[1];
+  const usageVar = accountingMatch?.[2];
+  const trackerVar = accountingMatch?.[3];
+  const eventIndex = accountingMatch?.index ?? -1;
+  const eventFunctionStart = eventIndex === -1 ? -1 : content.lastIndexOf("function ", eventIndex);
+  const eventHeaderMatch =
+    eventFunctionStart === -1
+      ? null
+      : content
+          .slice(eventFunctionStart, eventIndex)
+          .match(new RegExp(`^function (${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\)\\{`));
+  const eventName = eventHeaderMatch?.[1];
+  const headerTracker = eventHeaderMatch?.[2];
+  const headerEvent = eventHeaderMatch?.[3];
+  const summaryPattern = totalName
+    ? new RegExp(
+        `function (${identifierPattern})\\((${identifierPattern})\\)\\{return\\{toolUseCount:\\2\\.toolUseCount,tokenCount:${escapeRegExp(totalName)}\\(\\2\\),lastActivity:\\2\\.recentActivities\\.at\\(-1\\),recentActivities:\\[\\.\\.\\.\\2\\.recentActivities\\]\\}\\}`,
+        "g"
+      )
+    : null;
+  const summaryMatches = summaryPattern ? [...content.matchAll(summaryPattern)] : [];
+  const summaryName = summaryMatches[0]?.[1];
+  const progressPattern =
+    eventName && summaryName
+      ? new RegExp(
+          `${escapeRegExp(eventName)}\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\.options\\.tools\\),(${identifierPattern})\\((${identifierPattern}),${escapeRegExp(summaryName)}\\(\\1\\),(${identifierPattern})\\);`,
+          "g"
+        )
+      : null;
+  const completionPattern = new RegExp(
+    `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,(${identifierPattern}),\\{suppressTelemetry:(${identifierPattern})\\}\\);`,
+    "g"
+  );
+  const progressMatches = progressPattern ? [...content.matchAll(progressPattern)] : [];
+  const completionMatches = [...content.matchAll(completionPattern)];
+  const progressMatch = progressMatches[0];
+  const completionMatch = completionMatches[0];
+  const progressOwner = progressMatch?.[6];
+  const progressStatus = progressMatch?.[7];
+  const progressIndex = progressMatch?.index ?? -1;
+  const progressFunctionStart =
+    progressIndex === -1 ? -1 : content.lastIndexOf("function ", progressIndex);
+  const progressEnd =
+    progressIndex === -1 || !progressMatch ? -1 : progressIndex + progressMatch[0].length;
+  const completionResult = completionMatch?.[1];
+  const completionStatus = completionMatch?.[3];
+  const completionOwner = completionMatch?.[4];
+  const completionTranscript = completionMatch?.[5];
+  const completionIndex = completionMatch?.index ?? -1;
+  const completionFunctionStart =
+    completionIndex === -1 ? -1 : content.lastIndexOf("function ", completionIndex);
+  const progressToCompletionSegment =
+    progressEnd === -1 || completionIndex === -1
+      ? ""
+      : content.slice(progressEnd, completionIndex);
+  const completionRemainsDirect =
+    progressEnd !== -1 &&
+    completionIndex >= progressEnd &&
+    !progressToCompletionSegment.includes("=>") &&
+    !progressToCompletionSegment.includes("function ");
+  const trackerCount = trackerMatches.length;
+  const eventCount = accountingMatches.length;
+  const progressCount = progressMatches.length;
+  const completionCount = completionMatches.length;
   const candidates = trackerCount + eventCount + progressCount + completionCount;
 
   if (
     trackerCount !== 1 ||
+    totalMatches.length !== 1 ||
     eventCount !== 1 ||
+    !eventName ||
+    !accountingMatch ||
+    headerTracker !== trackerVar ||
+    headerEvent !== eventVar ||
+    summaryMatches.length !== 1 ||
     progressCount !== 1 ||
-    completionCount !== 1
+    completionCount !== 1 ||
+    progressOwner !== completionOwner ||
+    progressStatus !== completionStatus ||
+    progressFunctionStart === -1 ||
+    completionFunctionStart === -1 ||
+    progressFunctionStart !== completionFunctionStart ||
+    !completionRemainsDirect
   ) {
     return { content: original, candidates, patched: 0 };
   }
@@ -1805,28 +1889,24 @@ function patchBackgroundAgentUsage(content) {
   const trackerReplacement =
     'function __calicoTrackAgentUsage(e,t,r,n){if(!t||typeof t!=="object")return;let o=["input_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((s)=>typeof t[s]==="number"),i=(t.input_tokens??0)+(t.cache_creation_input_tokens??0)+(t.cache_read_input_tokens??0);if(o&&(n||i>0))e.latestInputTokens=i;let s=typeof t.output_tokens==="number"&&Number.isFinite(t.output_tokens)?Math.max(0,t.output_tokens):0;if(r==null){if(s>0)e.cumulativeOutputTokens+=s;return}let a=e.responseOutputTokens.get(r)??0;if(s>a)e.cumulativeOutputTokens+=s-a;if(s>a||!e.responseOutputTokens.has(r))e.responseOutputTokens.set(r,Math.max(a,s))}' +
     'function __calicoRefreshAgentUsage(e,t){if(!Array.isArray(t))return;let r=!1;for(let n=t.length-1;n>=0;n--){let o=t[n];if(o?.type==="assistant")r=!0,__calicoTrackAgentUsage(e,o.message?.usage,o.message?.id,o.message?.stop_reason!=null);else if(o?.type==="user"&&r)break}}' +
-    'function fQn(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[],activeMessageId:null,responseOutputTokens:new Map}}';
+    `function ${trackerName}(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[],activeMessageId:null,responseOutputTokens:new Map}}`;
   const eventReplacement =
-    'if(t.type==="stream_event"){if(t.event.type==="message_start")e.activeMessageId=t.event.message.id,__calicoTrackAgentUsage(e,t.event.message.usage,e.activeMessageId,!1);else if(t.event.type==="message_delta")__calicoTrackAgentUsage(e,t.event.usage,e.activeMessageId,t.event.delta.stop_reason!=null);else if(t.event.type==="message_stop")e.activeMessageId=null;return}if(t.type!=="assistant")return;let o=t.message.usage;__calicoTrackAgentUsage(e,o,t.message.id,t.message.stop_reason!=null);';
+    `if(${eventVar}.type==="stream_event"){if(${eventVar}.event.type==="message_start")${trackerVar}.activeMessageId=${eventVar}.event.message.id,__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.message.usage,${trackerVar}.activeMessageId,!1);else if(${eventVar}.event.type==="message_delta")__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.usage,${trackerVar}.activeMessageId,${eventVar}.event.delta.stop_reason!=null);else if(${eventVar}.event.type==="message_stop")${trackerVar}.activeMessageId=null;return}if(${eventVar}.type!=="assistant")return;let ${usageVar}=${eventVar}.message.usage;__calicoTrackAgentUsage(${trackerVar},${usageVar},${eventVar}.message.id,${eventVar}.message.stop_reason!=null);`;
+  const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),__calicoRefreshAgentUsage(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
+  const completionRefresh = `__calicoRefreshAgentUsage(${progressMatch[1]},${completionResult}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
 
-  let output = original.replace(trackerNeedle, trackerReplacement);
-  output = output.replace(eventNeedle, eventReplacement);
-  output = output.replace(
-    progressNeedle,
-    'hQn(re,_e,ie,i.options.tools),__calicoRefreshAgentUsage(re,g),Z0u(e,a9r(re),s);'
-  );
-  output = output.replace(
-    completionNeedle,
-    'let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});__calicoRefreshAgentUsage(re,oe),Z0u(e,a9r(re),s);if(tRu'
-  );
+  let output = original.replace(trackerPattern, trackerReplacement);
+  output = output.replace(accountingPattern, eventReplacement);
+  output = output.replace(progressPattern, progressReplacement);
+  output = output.replace(completionPattern, (full) => full + completionRefresh);
 
   if (
     output.split("function __calicoTrackAgentUsage").length - 1 !== 1 ||
     output.split("function __calicoRefreshAgentUsage").length - 1 !== 1 ||
     output.split("responseOutputTokens:new Map").length - 1 !== 1 ||
     output.split(eventReplacement).length - 1 !== 1 ||
-    output.split("__calicoRefreshAgentUsage(re,g)").length - 1 !== 1 ||
-    output.split("__calicoRefreshAgentUsage(re,oe)").length - 1 !== 1
+    output.split(progressReplacement).length - 1 !== 1 ||
+    output.split(completionRefresh).length - 1 !== 1
   ) {
     return { content: original, candidates, patched: 0 };
   }
@@ -1836,34 +1916,193 @@ function patchBackgroundAgentUsage(content) {
 
 function patchStatuslineCommittedUsage(content) {
   const original = content;
-  const wrapperNeedle =
-    'let Kn={message:{...wo,content:ZJr([Zr],n,i.agentId,{requestId:ge??void 0,messageId:wo.id})},requestId:ge??void 0,...OG(i.querySource,i.spawnedBySkill,i.activeSkill,i.activeMcpServer,i.activeMcpTool),type:"assistant",uuid:sar.randomUUID(),timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_}};';
-  const terminalNeedle =
-    'for(let Ou of _r)Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null;';
-  const aggregationNeedle = 'pn=xAe(pn,ar.usage);';
-  const cloneNeedles = [
-    'eo.push({src:an.message,dst:lo.message})',
-    'eo.push({src:an.message,dst:Gi.message})',
-  ];
-  const cloneSyncNeedle =
-    'for(let{src:_i,dst:Ii}of eo)Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details;';
-  const selectorNeedle = 'S=aJt(o),b=sw(y,UE())';
-  const wrapperCount = content.split(wrapperNeedle).length - 1;
-  const terminalCount = content.split(terminalNeedle).length - 1;
-  const aggregationCount = content.split(aggregationNeedle).length - 1;
-  const cloneCounts = cloneNeedles.map((needle) => content.split(needle).length - 1);
-  const cloneSyncCount = content.split(cloneSyncNeedle).length - 1;
-  const selectorCount = content.split(selectorNeedle).length - 1;
+  const identifierPattern = "[A-Za-z_$][\\w$]*";
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const reducerPattern = new RegExp(
+    `function (${identifierPattern})\\((${identifierPattern})\\)\\{for\\(let (${identifierPattern})=\\2\\.length-1;\\3>=0;\\3--\\)\\{let (${identifierPattern})=\\2\\[\\3\\],(${identifierPattern})=\\4\\?(${identifierPattern})\\(\\4\\):void 0;if\\(\\5\\)return\\{input_tokens:\\5\\.input_tokens,output_tokens:\\5\\.output_tokens,cache_creation_input_tokens:\\5\\.cache_creation_input_tokens\\?\\?0,cache_read_input_tokens:\\5\\.cache_read_input_tokens\\?\\?0\\}\\}return null\\}`,
+    "g"
+  );
+  const wrapperPattern = new RegExp(
+    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\}\\};`,
+    "g"
+  );
+  const terminalPattern = new RegExp(
+    `for\\(let (${identifierPattern}) of (${identifierPattern})\\)\\1\\.message\\.usage=(${identifierPattern}),\\1\\.message\\.stop_reason=(${identifierPattern}),\\1\\.message\\.stop_details=(${identifierPattern})\\.delta\\.stop_details\\?\\?null;`,
+    "g"
+  );
+  const cloneSyncPattern = new RegExp(
+    `for\\(let\\{src:(${identifierPattern}),dst:(${identifierPattern})\\}of (${identifierPattern})\\)\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details;`,
+    "g"
+  );
+  const reducerMatches = [...content.matchAll(reducerPattern)];
+  const reducerName = reducerMatches[0]?.[1];
+  const selectorPattern = reducerName
+    ? new RegExp(
+        `(${identifierPattern})=${escapeRegExp(reducerName)}\\((${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern})\\(\\)\\)`,
+        "g"
+      )
+    : null;
+  const wrapperMatches = [...content.matchAll(wrapperPattern)];
+  const wrapperMatch = wrapperMatches[0];
+  const wrapperIndex = wrapperMatch?.index ?? -1;
+  const wrapperLocal = wrapperMatch?.[1];
+  const wrapperFunctionStart = wrapperIndex === -1 ? -1 : content.lastIndexOf("function ", wrapperIndex);
+  const terminalMatches = [...content.matchAll(terminalPattern)];
+  const terminalMatch = terminalMatches[0];
+  const terminalIndex = terminalMatch?.index ?? -1;
+  const terminalFunctionStart = terminalIndex === -1 ? -1 : content.lastIndexOf("function ", terminalIndex);
+  const terminalItem = terminalMatch?.[1];
+  const terminalArray = terminalMatch?.[2];
+  const terminalUsage = terminalMatch?.[3];
+  const terminalStop = terminalMatch?.[4];
+  const terminalRawEvent = terminalMatch?.[5];
+  const aggregationPattern =
+    terminalUsage && terminalRawEvent
+      ? new RegExp(
+          `case"message_delta":\\{${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\);`,
+          "g"
+        )
+      : null;
+  const aggregationSegment =
+    terminalFunctionStart === -1 ? "" : content.slice(terminalFunctionStart, terminalIndex);
+  const aggregationMatches = aggregationPattern
+    ? [...aggregationSegment.matchAll(aggregationPattern)]
+    : [];
+  const firstMessageDelta = aggregationSegment.match(/case"message_delta":\{/);
+  const canonicalAggregation = aggregationMatches[0];
+  const canonicalAggregationIsFirst =
+    canonicalAggregation !== undefined &&
+    firstMessageDelta !== null &&
+    canonicalAggregation.index === firstMessageDelta.index;
+  const canonicalAggregationIndex =
+    terminalFunctionStart === -1 || canonicalAggregation?.index === undefined
+      ? -1
+      : terminalFunctionStart + canonicalAggregation.index;
+  const terminalDirectSegment =
+    canonicalAggregationIndex === -1
+      ? ""
+      : content.slice(canonicalAggregationIndex, terminalIndex);
+  const terminalCommitIsDirect =
+    canonicalAggregationIndex !== -1 &&
+    !terminalDirectSegment.includes("=>") &&
+    !terminalDirectSegment.includes("function ");
+  const cloneSyncMatches = [...content.matchAll(cloneSyncPattern)];
+  const selectorCandidates = selectorPattern ? [...content.matchAll(selectorPattern)] : [];
+  const selectorMatches = selectorCandidates.filter((match) => {
+    const index = match.index ?? -1;
+    const functionStart = content.lastIndexOf("function ", index);
+    const functionEnd = content.indexOf("function ", index + match[0].length);
+    const segment = content.slice(functionStart, functionEnd === -1 ? content.length : functionEnd);
+    return segment.includes("context_window:");
+  });
+  const cloneArray = cloneSyncMatches[0]?.[3];
+  const cloneRegistrationPattern = cloneArray
+    ? new RegExp(
+        `${escapeRegExp(cloneArray)}\\.push\\(\\{src:(${identifierPattern})\\.message,dst:(${identifierPattern})\\.message\\}\\)`,
+        "g"
+      )
+    : null;
+  const cloneMatches = cloneRegistrationPattern
+    ? [...content.matchAll(cloneRegistrationPattern)]
+    : [];
+  const cloneSyncMatch = cloneSyncMatches[0];
+  const cloneSyncIndex = cloneSyncMatch?.index ?? -1;
+  const cloneSyncFunctionStart =
+    cloneSyncIndex === -1 ? -1 : content.lastIndexOf("function ", cloneSyncIndex);
+  const cloneSyncFunctionEnd =
+    cloneSyncFunctionStart === -1
+      ? -1
+      : content.indexOf("function ", cloneSyncIndex + (cloneSyncMatch?.[0].length ?? 0));
+  const cloneSyncFunctionSegment =
+    cloneSyncFunctionStart === -1
+      ? ""
+      : content.slice(
+          cloneSyncFunctionStart,
+          cloneSyncFunctionEnd === -1 ? content.length : cloneSyncFunctionEnd
+        );
+  const cloneEventPattern = new RegExp(
+    `if\\((${identifierPattern})\\.type==="stream_event"&&\\1\\.event\\.type==="message_delta"\\)\\{`,
+    "g"
+  );
+  const cloneEventMatches = [...cloneSyncFunctionSegment.matchAll(cloneEventPattern)].filter(
+    (match) => {
+      const relativeIndex = match.index ?? -1;
+      return (
+        relativeIndex !== -1 &&
+        cloneSyncFunctionStart + relativeIndex + match[0].length <= cloneSyncIndex
+      );
+    }
+  );
+  const cloneEventMatch = cloneEventMatches.at(-1);
+  const cloneEventSource = cloneEventMatch?.[1];
+  const cloneEventIndex =
+    cloneSyncFunctionStart === -1 || cloneEventMatch?.index === undefined
+      ? -1
+      : cloneSyncFunctionStart + cloneEventMatch.index;
+  const cloneSyncDirectSegment =
+    cloneEventIndex === -1 ? "" : content.slice(cloneEventIndex, cloneSyncIndex);
+  const cloneSyncIsDirect =
+    cloneEventIndex !== -1 &&
+    !cloneSyncDirectSegment.includes("=>") &&
+    !cloneSyncDirectSegment.includes("function ");
+  const cloneRegistrationFunctionStarts = cloneMatches.map((match) => {
+    const index = match.index ?? -1;
+    return index === -1 ? -1 : content.lastIndexOf("function ", index);
+  });
+  const wrapperCount = wrapperMatches.length;
+  const terminalCount = terminalMatches.length;
+  const aggregationCount = canonicalAggregationIsFirst ? 1 : 0;
+  const cloneSyncCount = cloneSyncMatches.length;
+  const selectorCount = selectorMatches.length;
   const candidates =
-    wrapperCount + terminalCount + cloneCounts.reduce((sum, count) => sum + count, 0) + cloneSyncCount + selectorCount;
+    wrapperCount + terminalCount + cloneMatches.length + cloneSyncCount + selectorCount;
+  const wrapperFunctionEnd =
+    wrapperIndex === -1 || !wrapperMatch
+      ? -1
+      : content.indexOf("function ", wrapperIndex + wrapperMatch[0].length);
+  const wrapperFunctionSegment =
+    wrapperFunctionStart === -1
+      ? ""
+      : content.slice(
+          wrapperFunctionStart,
+          wrapperFunctionEnd === -1 ? content.length : wrapperFunctionEnd
+        );
+  const wrapperPushPattern =
+    terminalArray && wrapperLocal
+      ? new RegExp(`${escapeRegExp(terminalArray)}\\.push\\(${escapeRegExp(wrapperLocal)}\\)`)
+      : null;
+  const cloneSources = new Set(cloneMatches.map((match) => match[1]));
+  const cloneSource = cloneMatches[0]?.[1];
+  const wrapperAndTerminalShareFunction =
+    wrapperFunctionStart !== -1 && terminalFunctionStart === wrapperFunctionStart;
+  const cloneRegistrationsOwnSync =
+    cloneSyncFunctionStart !== -1 &&
+    cloneRegistrationFunctionStarts.every((start) => start === cloneSyncFunctionStart);
+  const cloneSourcesMatchStreamEvent =
+    cloneEventSource !== undefined &&
+    cloneSources.size === 1 &&
+    cloneSource === cloneEventSource;
+  const wrapperOwnsTerminalArray =
+    terminalIndex > wrapperIndex &&
+    wrapperPushPattern !== null &&
+    wrapperPushPattern.test(content.slice(wrapperIndex + (wrapperMatch?.[0].length ?? 0), terminalIndex));
+  const cloneArrayIsDistinctFromTerminal = cloneArray !== terminalArray;
 
   if (
+    reducerMatches.length !== 1 ||
     wrapperCount !== 1 ||
     terminalCount !== 1 ||
     aggregationCount !== 1 ||
-    cloneCounts.some((count) => count !== 1) ||
+    cloneMatches.length !== 2 ||
     cloneSyncCount !== 1 ||
-    selectorCount !== 1
+    selectorCount !== 1 ||
+    !wrapperAndTerminalShareFunction ||
+    !wrapperOwnsTerminalArray ||
+    !terminalCommitIsDirect ||
+    !cloneRegistrationsOwnSync ||
+    !cloneSourcesMatchStreamEvent ||
+    !cloneSyncIsDirect ||
+    !cloneArrayIsDistinctFromTerminal
   ) {
     return { content: original, candidates, patched: 0 };
   }
@@ -1872,28 +2111,34 @@ function patchStatuslineCommittedUsage(content) {
     'function __calicoUsageHasAccountingSignal(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)}' +
     'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}' +
     'function __calicoStatuslineMessages(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})}';
-  const wrapperReplacement = wrapperNeedle.replace(
-    'timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_}};',
-    'timestamp:new Date().toISOString(),...!1,__calicoUsageState:{committed:!1,usage:null},..._&&{advisorModel:_}};'
+  const wrapperTailPattern = new RegExp(
+    `,\\.\\.\\.!1,\\.\\.\\.${identifierPattern}&&\\{advisorModel:${identifierPattern}\\}\\};$`
   );
-  const terminalReplacement =
-    'for(let Ou of _r)Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null,Se!=null&&!__calicoUsageIsExactAllZero(ar.usage)&&__calicoUsageHasAccountingSignal(pn)&&(Ou.__calicoUsageState.committed=!0,Ou.__calicoUsageState.usage=pn);';
-  const cloneReplacements = [
-    'eo.push({src:an,dst:lo})',
-    'eo.push({src:an,dst:Gi})',
-  ];
-  const cloneSyncReplacement =
-    'for(let{src:_i,dst:Ii}of eo)Ii.message.usage=_i.message.usage,Ii.message.stop_reason=_i.message.stop_reason,Ii.message.stop_details=_i.message.stop_details,Ii.__calicoUsageState=_i.__calicoUsageState;';
-  const selectorReplacement = 'S=aJt(__calicoStatuslineMessages(o)),b=sw(y,UE())';
-
-  let output = original.replace(wrapperNeedle, wrapperReplacement);
-  output = output.replace(terminalNeedle, terminalReplacement);
-  for (let index = 0; index < cloneNeedles.length; index += 1) {
-    output = output.replace(cloneNeedles[index], cloneReplacements[index]);
+  const wrapperReplacement = wrapperMatch[0].replace(
+    wrapperTailPattern,
+    `,...!1,__calicoUsageState:{committed:!1,usage:null},...${wrapperMatch[10]}&&{advisorModel:${wrapperMatch[10]}}};`
+  );
+  if (wrapperReplacement === wrapperMatch[0]) {
+    return { content: original, candidates, patched: 0 };
   }
-  output = output.replace(cloneSyncNeedle, cloneSyncReplacement);
+  const terminalReplacement = `for(let ${terminalItem} of ${terminalArray})${terminalItem}.message.usage=${terminalUsage},${terminalItem}.message.stop_reason=${terminalStop},${terminalItem}.message.stop_details=${terminalRawEvent}.delta.stop_details??null,${terminalStop}!=null&&!__calicoUsageIsExactAllZero(${terminalRawEvent}.usage)&&__calicoUsageHasAccountingSignal(${terminalUsage})&&(${terminalItem}.__calicoUsageState.committed=!0,${terminalItem}.__calicoUsageState.usage=${terminalUsage});`;
+  const cloneReplacements = cloneMatches.map(
+    (match) => `${cloneArray}.push({src:${match[1]},dst:${match[2]}})`
+  );
+  const cloneSyncSource = cloneSyncMatches[0][1];
+  const cloneSyncDestination = cloneSyncMatches[0][2];
+  const cloneSyncReplacement = `for(let{src:${cloneSyncSource},dst:${cloneSyncDestination}}of ${cloneArray})${cloneSyncDestination}.message.usage=${cloneSyncSource}.message.usage,${cloneSyncDestination}.message.stop_reason=${cloneSyncSource}.message.stop_reason,${cloneSyncDestination}.message.stop_details=${cloneSyncSource}.message.stop_details,${cloneSyncDestination}.__calicoUsageState=${cloneSyncSource}.__calicoUsageState;`;
+  const selectorMatch = selectorMatches[0];
+  const selectorReplacement = `${selectorMatch[1]}=${reducerName}(__calicoStatuslineMessages(${selectorMatch[2]})),${selectorMatch[3]}=${selectorMatch[4]}(${selectorMatch[5]},${selectorMatch[6]}())`;
 
-  const selectorIndex = output.indexOf(selectorNeedle);
+  let output = original.replace(wrapperPattern, wrapperReplacement);
+  output = output.replace(terminalPattern, terminalReplacement);
+  let cloneIndex = 0;
+  output = output.replace(cloneRegistrationPattern, () => cloneReplacements[cloneIndex++]);
+  output = output.replace(cloneSyncPattern, cloneSyncReplacement);
+
+  const selectorOutputMatch = [...output.matchAll(selectorPattern)][0];
+  const selectorIndex = selectorOutputMatch?.index ?? -1;
   const functionStart = output.lastIndexOf("function ", selectorIndex);
   if (selectorIndex === -1 || functionStart === -1) {
     return { content: original, candidates, patched: 0 };
@@ -1901,7 +2146,7 @@ function patchStatuslineCommittedUsage(content) {
 
   output =
     output.slice(0, functionStart) + accountingHelper + output.slice(functionStart);
-  output = output.replace(selectorNeedle, selectorReplacement);
+  output = output.replace(selectorPattern, selectorReplacement);
 
   if (
     output.split(wrapperReplacement).length - 1 !== 1 ||

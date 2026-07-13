@@ -6,6 +6,9 @@ const {
   patchCustomContextWindows,
   patchStatuslineCommittedUsage,
 } = require("../patch-claude-display.ts");
+const {
+  evaluatePatchModule,
+} = require("../scripts/verify-patched-binary.ts");
 
 const committedUsageFixture = `
 function ZJr(e){return e}
@@ -13,13 +16,58 @@ function OG(){return {}}
 var sar={randomUUID:()=>"uuid"};
 function makeAssistant(usage,stopReason,content){return{id:"m",model:"model",usage,stop_reason:stopReason,content:content||[]}}
 function xAe(previous,delta){let r=delta?.cache_creation,n=(r?.ephemeral_1h_input_tokens??0)+(r?.ephemeral_5m_input_tokens??0);return{input_tokens:delta?.input_tokens!==null&&delta?.input_tokens>0?delta.input_tokens:previous?.input_tokens??0,output_tokens:delta?.output_tokens??previous?.output_tokens??0,cache_creation_input_tokens:delta?.cache_creation_input_tokens!==null&&delta?.cache_creation_input_tokens>0?delta.cache_creation_input_tokens:n>0?n:previous?.cache_creation_input_tokens??0,cache_read_input_tokens:delta?.cache_read_input_tokens!==null&&delta?.cache_read_input_tokens>0?delta.cache_read_input_tokens:previous?.cache_read_input_tokens??0}}
-function query(messageStartUsage,stopReason,commit,rawTerminalUsage,clone,copyForState,terminalEvents){let wo=makeAssistant(messageStartUsage,null),Zr={type:"text",text:""},n={},i={agentId:"a"},_r=[],eo=[],pn=wo.usage,Se=stopReason,ar={usage:rawTerminalUsage??messageStartUsage,delta:{stop_details:null}},ge=null,_=null;let Kn={message:{...wo,content:ZJr([Zr],n,i.agentId,{requestId:ge??void 0,messageId:wo.id})},requestId:ge??void 0,...OG(i.querySource,i.spawnedBySkill,i.activeSkill,i.activeMcpServer,i.activeMcpTool),type:"assistant",uuid:sar.randomUUID(),timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_}};_r.push(Kn);let stateCopy=copyForState?{...Kn}:null,an=Kn,lo=an,Gi=an;if(clone)lo={...an,message:{...an.message,content:[...an.message.content]}},eo.push({src:an.message,dst:lo.message}),Gi={...an,message:{...an.message,content:[...an.message.content]}},eo.push({src:an.message,dst:Gi.message});if(commit!==!1){for(let event of terminalEvents??[{usage:ar.usage,stopReason:Se}]){ar={usage:event.usage,delta:{stop_details:null}},Se=event.stopReason,pn=xAe(pn,ar.usage);for(let Ou of _r)Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null;for(let{src:_i,dst:Ii}of eo)Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details;}}return copyForState?[stateCopy]:clone?[lo,Gi]:_r}
+function cloneDownstream(an,base,clone){let eo=[],lo=base,Gi=base;if(clone)lo={...base,message:{...base.message,content:[...base.message.content]}},eo.push({src:an.message,dst:lo.message}),Gi={...base,message:{...base.message,content:[...base.message.content]}},eo.push({src:an.message,dst:Gi.message});if(an.type==="stream_event"&&an.event.type==="message_delta"){for(let{src:_i,dst:Ii}of eo)Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details;}return[lo,Gi]}
+function query(messageStartUsage,stopReason,commit,rawTerminalUsage,clone,copyForState,terminalEvents){let wo=makeAssistant(messageStartUsage,null),Zr={type:"text",text:""},n={},i={agentId:"a"},_r=[],pn=wo.usage,Se=stopReason,ar={usage:rawTerminalUsage??messageStartUsage,delta:{stop_details:null}},ge=null,_=null;let Kn={message:{...wo,content:ZJr([Zr],n,i.agentId,{requestId:ge??void 0,messageId:wo.id})},requestId:ge??void 0,...OG(i.querySource,i.spawnedBySkill,i.activeSkill,i.activeMcpServer,i.activeMcpTool),type:"assistant",uuid:sar.randomUUID(),timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_}};_r.push(Kn);let stateCopy=copyForState?{...Kn}:null;if(commit!==!1){for(let event of terminalEvents??[{usage:ar.usage,stopReason:Se}]){ar={usage:event.usage,delta:{stop_details:null}},Se=event.stopReason;switch("message_delta"){case"message_delta":{pn=xAe(pn,ar.usage);for(let Ou of _r)Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null;break}}}}let cloneResult=cloneDownstream({...Kn,type:"stream_event",event:{type:"message_delta"}},Kn,clone);return copyForState?[stateCopy]:clone?cloneResult:_r}
 function LCe(e){if(e?.type==="assistant"&&"usage"in e.message&&e.message.model!=="internal")return e.message.usage;return}
 function aJt(e){for(let t=e.length-1;t>=0;t--){let r=e[t],n=r?LCe(r):void 0;if(n)return{input_tokens:n.input_tokens,output_tokens:n.output_tokens,cache_creation_input_tokens:n.cache_creation_input_tokens??0,cache_read_input_tokens:n.cache_read_input_tokens??0}}return null}
 function pK_(e,t){return{current_usage:e,context_window_size:t}}
 function MB(){}function Iy(){}function RF(){return"model"}function sw(){return 200000}function UE(){}
 function fK_(e,t,r,n,o,i,s,a,l,c,u,d,p,f){let m=MB(),g=Iy(),y=RF({permissionMode:e,mainLoopModel:s,exceeds200kTokens:t}),_=n?.outputStyle||"default",S=aJt(o),b=sw(y,UE());return{context_window:pK_(S,b)}}
 `;
+
+function renameToken(source, from, to) {
+  const escaped = from.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&");
+  return source.replace(
+    new RegExp(`(?<![A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])`, "g"),
+    to
+  );
+}
+
+function renamedCommittedUsageFixture() {
+  const renames = [
+    ["ZJr", "buildContent"],
+    ["OG", "buildMetadata"],
+    ["sar", "uuidNamespace"],
+    ["xAe", "aggregateUsage"],
+    ["aJt", "usageReducer"],
+    ["pK_", "usagePayload"],
+    ["sw", "contextWindow"],
+    ["UE", "windowOptions"],
+    ["Kn", "assistantWrapper"],
+    ["wo", "baseMessage"],
+    ["Zr", "contentBlock"],
+    ["n", "renderContext"],
+    ["i", "agentContext"],
+    ["ge", "requestId"],
+    ["_", "advisorModel"],
+    ["_r", "assistantEntries"],
+    ["eo", "clonePairs"],
+    ["pn", "aggregatedUsage"],
+    ["Se", "terminalStop"],
+    ["ar", "terminalEvent"],
+    ["Ou", "assistantEntry"],
+    ["_i", "cloneSource"],
+    ["Ii", "cloneDestination"],
+    ["an", "originalWrapper"],
+    ["lo", "firstClone"],
+    ["Gi", "secondClone"],
+    ["S", "selectedUsage"],
+    ["b", "windowSize"],
+    ["o", "messageEntries"],
+    ["y", "modelContext"],
+  ];
+  return renames.reduce((source, [from, to]) => renameToken(source, from, to), committedUsageFixture);
+}
 
 const customContextFixture = `
 function resolve(e,t){if(check(e))return 1e6;if(t?.includes("model"))return 200000;return 200000}
@@ -38,8 +86,8 @@ function usage(input, output, cacheCreation = 0, cacheRead = 0) {
   };
 }
 
-function loadCommittedFixture() {
-  const result = patchStatuslineCommittedUsage(committedUsageFixture);
+function loadCommittedFixture(source = committedUsageFixture) {
+  const result = patchStatuslineCommittedUsage(source);
   assert.equal(result.candidates, 6);
   assert.equal(result.patched, 6);
 
@@ -288,10 +336,75 @@ test("custom context window display percentage composes with statusline payload"
   );
 });
 
+test("matches renamed wrapper, terminal, selector, and clone locals", () => {
+  const renamed = renamedCommittedUsageFixture();
+  const { context, result } = loadCommittedFixture(renamed);
+  const completed = context.query(usage(333, 44), "end_turn");
+
+  assert.match(result.content, /let assistantWrapper=\{message:\{\.\.\.baseMessage/);
+  assert.match(result.content, /case"message_delta":\{aggregatedUsage=aggregateUsage\(aggregatedUsage,terminalEvent\.usage\);/);
+  assert.match(result.content, /for\(let assistantEntry of assistantEntries\)assistantEntry\.message\.usage=aggregatedUsage/);
+  assert.match(result.content, /selectedUsage=usageReducer\(__calicoStatuslineMessages\(messageEntries\)\),windowSize=contextWindow\(modelContext,windowOptions\(\)\)/);
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
+});
+
+test("statusline selector is bound to the discovered usage reducer", () => {
+  const variant = committedUsageFixture
+    .replace("function fK_(", "function wrong(e){return null}function fK_(")
+    .replace("S=aJt(o),b=sw(y,UE())", "S=wrong(o),b=sw(y,UE())");
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
+});
+
+test("binary verifier rejects dead helpers and broken wrapper ownership", () => {
+  const patched = patchStatuslineCommittedUsage(committedUsageFixture).content;
+  assert.equal(evaluatePatchModule("statusline-committed-usage", patched), null);
+
+  const statuslineHelper = patched.match(
+    /function __calicoStatuslineMessages[\s\S]*?(?=function fK_\()/
+  )?.[0];
+  const helperBlock = patched.match(
+    /function __calicoUsageHasAccountingSignal[\s\S]*?(?=function fK_\()/
+  )?.[0];
+  assert.ok(statuslineHelper);
+  assert.ok(helperBlock);
+
+  const emptyHelper = patched.replace(
+    statuslineHelper,
+    `var __calicoStatuslineMessages=(e)=>e;/*${statuslineHelper}*/`
+  );
+  const destructuredHelpers = patched.replace(
+    helperBlock,
+    `var {__calicoUsageHasAccountingSignal,__calicoUsageIsExactAllZero,__calicoStatuslineMessages}={__calicoUsageHasAccountingSignal:()=>false,__calicoUsageIsExactAllZero:()=>false,__calicoStatuslineMessages:(e)=>e};/*${helperBlock}*/`
+  );
+  const commentOnlyHelpers = patched.replace(helperBlock, `/*${helperBlock}*/`);
+  const wrongTerminalArray = patched.replace("_r.push(Kn)", "wrongArray.push(Kn)");
+  const wrongCloneOwner = patched.replaceAll("eo.push({src:an,", "eo.push({src:wrongOwner,");
+
+  assert.notEqual(evaluatePatchModule("statusline-committed-usage", emptyHelper), null);
+  assert.notEqual(
+    evaluatePatchModule("statusline-committed-usage", destructuredHelpers),
+    null
+  );
+  assert.notEqual(
+    evaluatePatchModule("statusline-committed-usage", commentOnlyHelpers),
+    null
+  );
+  assert.notEqual(
+    evaluatePatchModule("statusline-committed-usage", wrongTerminalArray),
+    null
+  );
+  assert.notEqual(evaluatePatchModule("statusline-committed-usage", wrongCloneOwner), null);
+});
+
 test("statusline committed usage patch is atomic when a canonical variant is missing", () => {
   const variant = committedUsageFixture.replace(
     'S=aJt(o),b=sw(y,UE())',
-    'S=aJt(o),b=changed(y,UE())'
+    'S=aJt(o);b=sw(y,UE())'
   );
   const result = patchStatuslineCommittedUsage(variant);
 
@@ -303,13 +416,26 @@ test("statusline committed usage patch is atomic when a canonical variant is mis
 test("statusline committed usage patch rejects a missing raw aggregation anchor", () => {
   const variant = committedUsageFixture.replace(
     "pn=xAe(pn,ar.usage);",
-    "pn=aggregate(pn,ar.usage);"
+    "pn=xAe(previous,ar.usage);"
   );
   const result = patchStatuslineCommittedUsage(variant);
 
   assert.equal(result.patched, 0);
   assert.equal(result.content, variant);
   assert.equal(result.content.includes("__calicoUsageState.committed"), false);
+});
+
+test("statusline committed usage patch rejects a fallback second aggregation", () => {
+  const canonical = 'case"message_delta":{pn=xAe(pn,ar.usage);';
+  const variant = committedUsageFixture.replace(
+    canonical,
+    `case"message_delta":{pn=wrong(previous,other.usage);${canonical}`
+  );
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
 });
 
 test("statusline committed usage patch rejects a missing clone synchronization anchor", () => {
@@ -333,4 +459,89 @@ test("statusline committed usage patch rejects repeated canonical anchors", () =
   assert.equal(result.patched, 0);
   assert.equal(result.content, duplicate);
   assert.equal(result.content.includes("__calicoUsageState.committed"), false);
+});
+
+test("statusline committed usage patch rejects a terminal loop that does not own the wrapper array", () => {
+  const variant = committedUsageFixture.replace("_r.push(Kn)", "wrong.push(Kn)");
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
+});
+
+test("statusline committed usage patch rejects clone registrations that use the terminal array", () => {
+  const variant = committedUsageFixture.replace(
+    "eo.push({src:an.message,dst:lo.message})",
+    "_r.push({src:an.message,dst:lo.message})"
+  );
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
+});
+
+test("statusline committed usage patch rejects clone registrations with a wrong source", () => {
+  const variant = committedUsageFixture.replace(
+    "eo.push({src:an.message,dst:lo.message})",
+    "eo.push({src:wrong.message,dst:lo.message})"
+  );
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
+});
+
+test("statusline committed usage patch rejects a clone event source that disagrees with registrations", () => {
+  const variant = committedUsageFixture.replace(
+    'if(an.type==="stream_event"&&an.event.type==="message_delta")',
+    'if(wrong.type==="stream_event"&&wrong.event.type==="message_delta")'
+  );
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
+});
+
+test("statusline committed usage patch rejects terminal commit deferred into an arrow callback", () => {
+  const terminal =
+    "for(let Ou of _r)Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null;";
+  const variant = committedUsageFixture.replace(
+    terminal,
+    `queueMicrotask(()=>{${terminal}});`
+  );
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
+});
+
+test("statusline committed usage patch rejects clone sync deferred into an arrow callback", () => {
+  const cloneSync =
+    "for(let{src:_i,dst:Ii}of eo)Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details;";
+  const variant = committedUsageFixture.replace(
+    cloneSync,
+    `queueMicrotask(()=>{${cloneSync}});`
+  );
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
+});
+
+test("statusline committed usage patch rejects wrapper and terminal anchors split across functions", () => {
+  const variant = committedUsageFixture.replace(
+    "if(commit!==!1){for(let event of terminalEvents",
+    "if(commit!==!1){function splitTerminal(){for(let event of terminalEvents"
+  );
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+  assert.equal(result.content.includes("__calicoUsageState"), false);
 });

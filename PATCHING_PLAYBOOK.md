@@ -177,8 +177,9 @@ Deliberate non-targets:
 
 Atomicity and verification:
 
-- tracker construction, assistant accounting, registry progress, and completion anchors must each
-  occur exactly once or the module returns `patched: 0`
+- tracker construction, assistant accounting, registry progress, and completion anchors are matched
+  by semantic bundle shape rather than platform-varying minified function names; each must occur
+  exactly once or the module returns `patched: 0`
 - `scripts/verify-patched-binary.ts` requires both helpers, the response-ID map, terminal stream
   support, and both transcript refresh seams
 - regression tests cover provisional `0/0`, native message-start input, terminal GPT usage,
@@ -253,8 +254,9 @@ Deliberate non-targets:
 
 Atomicity and verification:
 
-- the wrapper, raw terminal-aggregation, terminal-loop, both clone registrations, clone-sync loop,
-  and status-line-selector anchors must each occur exactly once
+- the wrapper, canonical `case"message_delta"` aggregation, terminal loop, both clone
+  registrations, clone-sync loop, and status-line selector are matched by semantic bundle shape
+  rather than platform-varying minified locals; each anchor must occur exactly once
 - if any required anchor is missing or repeated, the module returns the original bundle with
   `patched: 0`
 - `scripts/verify-patched-binary.ts` checks commit-cell/helper/selector occurrence counts, confirms
