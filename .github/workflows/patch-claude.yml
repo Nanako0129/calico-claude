@@ -11,6 +11,10 @@ on:
         description: "Optional release tag override. Use {version} and/or {platform}; if {platform} is omitted, -<platform> is appended."
         required: false
         default: ""
+      release_notes:
+        description: "Optional Markdown release notes. The workflow appends platform and build metadata."
+        required: false
+        default: ""
       force:
         description: "Force patch/release even if base platform release exists (uses suffix tags like vX-linux-x64-2)."
         required: false
@@ -337,6 +341,8 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_notes || '' }}
+          TWEAKCC_VERSION: ${{ steps.tweakcc.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -344,10 +350,22 @@ jobs:
           TAG="${{ steps.check.outputs.tag }}"
           TITLE="${{ steps.check.outputs.title }}"
           PATCHED_PATH="work/${{ matrix.patched_asset_name }}"
+          NOTES_PATH="work/release-notes.md"
+
+          if [ -n "$RELEASE_NOTES_INPUT" ]; then
+            printf '%s\n' "$RELEASE_NOTES_INPUT" > "$NOTES_PATH"
+          else
+            printf 'Patched native Claude build for source version %s.\n' "$VERSION" > "$NOTES_PATH"
+          fi
+
+          printf '\n---\n\n- Platform: %s\n- Source version: %s\n- Patcher: tweakcc %s\n' \
+            "${{ matrix.platform_label }}" \
+            "$VERSION" \
+            "$TWEAKCC_VERSION" >> "$NOTES_PATH"
 
           gh release create "$TAG" \
             --title "$TITLE" \
-            --notes "Patched native Claude ${{ matrix.platform_label }} build via tweakcc API (version: ${{ steps.tweakcc.outputs.version }}), source version \`${VERSION}\`" \
+            --notes-file "$NOTES_PATH" \
             work/metadata.txt \
             work/checksums.txt \
             "$PATCHED_PATH"

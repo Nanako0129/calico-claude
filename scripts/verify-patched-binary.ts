@@ -84,6 +84,128 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "background-agent-usage",
+    kind: "custom",
+    describe: "background agent tracker accounts terminal stream usage by response id",
+    run: (content: string): string | null => {
+      const required = [
+        "function __calicoTrackAgentUsage",
+        "function __calicoRefreshAgentUsage",
+        "responseOutputTokens:new Map",
+        't.event.type==="message_delta"',
+        "__calicoTrackAgentUsage(e,t.event.usage,e.activeMessageId",
+        "__calicoRefreshAgentUsage(re,g)",
+        "__calicoRefreshAgentUsage(re,oe)",
+      ];
+      const missing = required.filter((marker) => !content.includes(marker));
+      if (missing.length > 0) {
+        return `missing marker(s): ${missing.join(", ")}`;
+      }
+      const oldAssistantOnlyTracker =
+        'if(t.type!=="assistant")return;let o=t.message.usage;e.latestInputTokens=o.input_tokens+(o.cache_creation_input_tokens??0)+(o.cache_read_input_tokens??0),e.cumulativeOutputTokens+=o.output_tokens;';
+      return content.includes(oldAssistantOnlyTracker)
+        ? "original assistant-only usage tracker is still present"
+        : null;
+    },
+  },
+  {
+    id: "statusline-committed-usage",
+    kind: "custom",
+    describe: "terminal-only usage snapshot preserved through shallow state copies",
+    run: (content: string): string | null => {
+      const terminalCommit =
+        "Se!=null&&!__calicoUsageIsExactAllZero(ar.usage)&&__calicoUsageHasAccountingSignal(pn)&&(Ou.__calicoUsageState.committed=!0,Ou.__calicoUsageState.usage=pn);";
+      const cloneSync =
+        "for(let{src:_i,dst:Ii}of eo)Ii.message.usage=_i.message.usage,Ii.message.stop_reason=_i.message.stop_reason,Ii.message.stop_details=_i.message.stop_details,Ii.__calicoUsageState=_i.__calicoUsageState;";
+      const required = [
+        "__calicoUsageState:{committed:!1,usage:null}",
+        "function __calicoUsageHasAccountingSignal",
+        "function __calicoUsageIsExactAllZero",
+        "return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)",
+        "function __calicoStatuslineMessages",
+        "r=t.__calicoUsageState",
+        "r?.committed===!0&&r.usage",
+        terminalCommit,
+        "eo.push({src:an,dst:lo})",
+        "eo.push({src:an,dst:Gi})",
+        cloneSync,
+        "S=aJt(__calicoStatuslineMessages(o)),b=sw(y,UE())",
+      ];
+      const missing = required.filter((marker) => !content.includes(marker));
+      if (missing.length > 0) {
+        return `missing marker(s): ${missing.join(", ")}`;
+      }
+
+      const expectedCounts: Array<[string, number]> = [
+        ["__calicoUsageState:{committed:!1,usage:null}", 1],
+        ["function __calicoUsageHasAccountingSignal", 1],
+        ["function __calicoUsageIsExactAllZero", 1],
+        ["return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)", 1],
+        ["function __calicoStatuslineMessages", 1],
+        ["r=t.__calicoUsageState", 1],
+        ["__calicoUsageHasAccountingSignal(", 3],
+        ["__calicoUsageIsExactAllZero(", 2],
+        ["__calicoStatuslineMessages(", 2],
+        [terminalCommit, 1],
+        ["eo.push({src:an,dst:lo})", 1],
+        ["eo.push({src:an,dst:Gi})", 1],
+        [cloneSync, 1],
+        ["S=aJt(__calicoStatuslineMessages(o)),b=sw(y,UE())", 1],
+      ];
+      for (const [marker, expected] of expectedCounts) {
+        const actual = countOccurrences(content, marker);
+        if (actual !== expected) {
+          return `expected ${expected} occurrence(s) of ${marker}, found ${actual}`;
+        }
+      }
+
+      if (content.includes("__calicoUsageCommitted")) {
+        return "obsolete wrapper-level boolean marker is still present";
+      }
+      if (
+        content.includes("eo.push({src:an.message,dst:lo.message})") ||
+        content.includes("eo.push({src:an.message,dst:Gi.message})")
+      ) {
+        return "downstream clones still synchronize message fields without wrapper ownership";
+      }
+
+      const commitIndex = content.indexOf(terminalCommit);
+      const rawAggregationIndex = content.lastIndexOf("pn=xAe(pn,ar.usage);", commitIndex);
+      const terminalLoopIndex = content.lastIndexOf("for(let Ou of _r)", commitIndex);
+      if (rawAggregationIndex === -1 || terminalLoopIndex === -1) {
+        return "usage snapshot is not attached to the canonical terminal usage aggregation loop";
+      }
+      const terminalSegment = content.slice(rawAggregationIndex, commitIndex + terminalCommit.length);
+      if (
+        !terminalSegment.includes("Ou.message.usage=pn") ||
+        !terminalSegment.includes("Ou.message.stop_reason=Se") ||
+        !terminalSegment.includes("Ou.message.stop_details=ar.delta.stop_details??null") ||
+        !terminalSegment.includes("!__calicoUsageIsExactAllZero(ar.usage)") ||
+        terminalSegment.includes('case"message_stop"') ||
+        terminalSegment.includes("onStreamingThinking")
+      ) {
+        return "usage snapshot escaped the canonical terminal message_delta mutation loop";
+      }
+
+      const cloneSyncIndex = content.indexOf(cloneSync);
+      const cloneEventIndex = content.lastIndexOf(
+        'if(an.type==="stream_event"&&an.event.type==="message_delta")',
+        cloneSyncIndex
+      );
+      if (cloneEventIndex === -1 || cloneSyncIndex - cloneEventIndex > 300) {
+        return "shared usage state is not synchronized from the downstream message_delta path";
+      }
+
+      if (/message_stop[\s\S]{0,1200}__calicoUsageState\.committed=/.test(content)) {
+        return "usage snapshot is committed from a message_stop path";
+      }
+      if (/onStreamingThinking[\s\S]{0,1200}__calicoUsageState\.committed=/.test(content)) {
+        return "usage snapshot is committed from a UI-only thinking reducer";
+      }
+      return null;
+    },
+  },
+  {
     id: "custom-context-window",
     kind: "custom",
     describe: "validated opt-in context resolver and effective status-line window",

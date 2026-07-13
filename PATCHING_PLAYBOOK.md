@@ -129,6 +129,148 @@ Likely break signs:
 - read/search tool blocks render in compact mode again
 - upstream renamed the case label or changed the props carried by that renderer
 
+### `background-agent-usage`
+
+Intent:
+
+- keep the background agent row's token count synchronized with finalized GPT usage when an
+  OpenAI-compatible gateway starts with provisional `0/0` accounting
+
+Source of truth:
+
+- Claude Code's background tracker owns `latestInputTokens` and `cumulativeOutputTokens`
+- native Claude streams commonly expose input and cache accounting at `message_start`, but GPT
+  gateways can defer authoritative usage to terminal `message_delta`
+- some outer tracker paths never receive that terminal stream frame; the canonical assistant
+  wrapper is instead mutated later with final usage and `stop_reason`
+- the transcript held by the background registry is therefore the final fallback source of truth
+  at progress and completion seams
+- response message IDs deduplicate output accounting when the same usage appears through a stream
+  event, an assistant wrapper, and a later refresh
+
+What we rewrite:
+
+- extend the native tracker state with `activeMessageId` and `responseOutputTokens: new Map`
+- replace the assistant-only accounting block with `__calicoTrackAgentUsage`, which accepts
+  `message_start`, terminal `message_delta`, and completed assistant wrappers
+- add `__calicoRefreshAgentUsage`, which scans the latest assistant segment in the registry
+  transcript after wrapper mutation
+- refresh before each registry progress update and once more after the final transcript is built
+
+Accounting rules:
+
+- latest input equals `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` from
+  the newest trustworthy response
+- cumulative output increases only by the positive delta above the highest output count already
+  recorded for that response ID
+- provisional all-zero message-start and assistant wrappers do not erase a prior trustworthy input
+- a terminal event may legitimately report zero in one field when another accounting field is
+  present
+- `message_stop` clears only the active response ID; it does not invent usage
+- direct completed assistant wrappers without stream frames remain supported
+
+Deliberate non-targets:
+
+- do not modify the gateway protocol, remora, CLIProxyAPI, or foreground token summary logic
+- do not change the native visible total formula from latest input plus cumulative output
+- do not count the same response output once from a wrapper and again from a stream delta
+
+Atomicity and verification:
+
+- tracker construction, assistant accounting, registry progress, and completion anchors must each
+  occur exactly once or the module returns `patched: 0`
+- `scripts/verify-patched-binary.ts` requires both helpers, the response-ID map, terminal stream
+  support, and both transcript refresh seams
+- regression tests cover provisional `0/0`, native message-start input, terminal GPT usage,
+  repeated frames, late wrapper mutation, direct completed wrappers, and multi-turn totals
+
+Likely break signs:
+
+- a completed background GPT agent row shows elapsed time but no token count
+- output tokens grow twice when a completed wrapper repeats the terminal stream accounting
+- a later agent turn retains the previous turn's input total instead of the latest one
+- the module reports `0` candidates or the verifier reports a missing refresh seam
+
+### `statusline-committed-usage`
+
+Intent:
+
+- expose the last trustworthy completed assistant usage to the status line without letting
+  provisional thinking/responding rows or synthetic stream cleanup overwrite it
+
+Source of truth:
+
+- the canonical query-stream assistant wrapper is created provisionally with a shared object cell:
+  `__calicoUsageState:{committed:!1,usage:null}`
+- production app state shallow-copies the wrapper before the terminal event; the shared object cell
+  survives that copy, unlike the old primitive top-level boolean which remained stale `false`
+- the normal terminal `message_delta` mutation loop is the only path that can set `committed:!0`
+  and save the exact aggregated `pn` snapshot in the cell
+- downstream tool-input and fallback transforms may clone the wrapper before that event; their
+  existing terminal synchronization loop must preserve the same cell reference together with
+  usage and stop fields
+- a snapshot is committed only when the terminal stop reason is present, the raw terminal
+  `ar.usage` is not the exact all-zero sentinel, and the canonical aggregated usage has a
+  non-zero accounting field: `input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
+  or `cache_read_input_tokens`
+- the raw sentinel requires explicit numeric `input_tokens: 0` and `output_tokens: 0`; flat
+  cache creation/read fields and nested `cache_creation.ephemeral_1h_input_tokens` /
+  `cache_creation.ephemeral_5m_input_tokens` may be missing or zero, while any non-zero cache
+  field makes it non-sentinel
+- the raw sentinel guard is separate from `xAe` aggregation because `xAe` can retain positive
+  message-start or previous-turn fields when a synthetic terminal event reports all zeros; an
+  untrusted later delta never clears or replaces an already committed snapshot
+
+What we rewrite:
+
+- add the shared commit cell to the canonical query-stream assistant wrapper
+- add the accounting-signal check and snapshot write to the terminal usage mutation loop
+- retain wrapper ownership in the two downstream clone registrations and synchronize the shared
+  cell reference when their terminal message fields are copied
+- project committed snapshots from assistant entries passed to the status-line payload selector
+  before it calls the existing `aJt` reducer; non-assistant entries keep the upstream behavior
+
+Selection rules:
+
+- a cell with `committed: true` is accepted and its saved `usage` snapshot is projected
+- a cell with `committed: false` is rejected
+- legacy assistant entries without a cell are accepted only with a non-null `stop_reason` and a
+  non-zero accounting signal
+- the exact all-zero `[DONE]` fallback cannot create or replace a snapshot, including when it
+  follows a valid terminal event for the same wrapper
+- the terminal loop checks raw `ar.usage` for an exact all-zero sentinel before trusting the
+  aggregated `pn`; input/output must both be explicit zero, flat and nested optional cache
+  fields may be absent or zero, and individual zero fields remain valid when another accounting
+  field is nonzero
+- the helper does not search for its own compact boundary; the existing `kb()` slice supplied
+  before the status-line call remains the boundary source of truth
+
+Deliberate non-targets:
+
+- do not patch global `aJt` or `LCe`
+- do not patch the three UI-only thinking reducers
+- do not commit from `message_stop`, cleanup handlers, or direct stream-error synthesized stops
+
+Atomicity and verification:
+
+- the wrapper, raw terminal-aggregation, terminal-loop, both clone registrations, clone-sync loop,
+  and status-line-selector anchors must each occur exactly once
+- if any required anchor is missing or repeated, the module returns the original bundle with
+  `patched: 0`
+- `scripts/verify-patched-binary.ts` checks commit-cell/helper/selector occurrence counts, confirms
+  downstream clones synchronize wrapper ownership, and rejects snapshot assignments that escape
+  the canonical terminal loop or appear in message-stop/UI reducer paths
+
+Likely break signs:
+
+- the first provisional response shows a non-null usage value
+- a later thinking/responding wrapper erases the previous completed snapshot
+- the canonical wrapper commits but its same-UUID app-state shallow copy remains provisional
+- a tool-input/fallback clone loses the shared commit cell after terminal usage arrives
+- an all-zero `[DONE]` response resets the status line to zero
+- a valid partial-zero response is discarded
+- the module reports `0` candidates or the verifier reports an occurrence mismatch
+
 ### `create-diff-colors`
 
 Intent:

@@ -1772,6 +1772,153 @@ function patchCustomContextWindows(content) {
   return { content: output, candidates, patched };
 }
 
+function patchBackgroundAgentUsage(content) {
+  const original = content;
+  const trackerNeedle =
+    'function fQn(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[]}}';
+  const eventNeedle =
+    'if(t.type!=="assistant")return;let o=t.message.usage;e.latestInputTokens=o.input_tokens+(o.cache_creation_input_tokens??0)+(o.cache_read_input_tokens??0),e.cumulativeOutputTokens+=o.output_tokens;';
+  const progressNeedle =
+    'hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),s);';
+  const completionNeedle =
+    'let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});if(tRu';
+  const trackerCount = content.split(trackerNeedle).length - 1;
+  const eventCount = content.split(eventNeedle).length - 1;
+  const progressCount = content.split(progressNeedle).length - 1;
+  const completionCount = content.split(completionNeedle).length - 1;
+  const candidates = trackerCount + eventCount + progressCount + completionCount;
+
+  if (
+    trackerCount !== 1 ||
+    eventCount !== 1 ||
+    progressCount !== 1 ||
+    completionCount !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  // Background-agent progress is sampled while stream frames are still
+  // arriving. Native Claude responses usually expose input usage at
+  // message_start, but OpenAI-compatible gateways can leave that provisional
+  // wrapper at 0/0 and deliver the authoritative accounting in message_delta.
+  // Track both paths by response id and apply cumulative output deltas once.
+  const trackerReplacement =
+    'function __calicoTrackAgentUsage(e,t,r,n){if(!t||typeof t!=="object")return;let o=["input_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((s)=>typeof t[s]==="number"),i=(t.input_tokens??0)+(t.cache_creation_input_tokens??0)+(t.cache_read_input_tokens??0);if(o&&(n||i>0))e.latestInputTokens=i;let s=typeof t.output_tokens==="number"&&Number.isFinite(t.output_tokens)?Math.max(0,t.output_tokens):0;if(r==null){if(s>0)e.cumulativeOutputTokens+=s;return}let a=e.responseOutputTokens.get(r)??0;if(s>a)e.cumulativeOutputTokens+=s-a;if(s>a||!e.responseOutputTokens.has(r))e.responseOutputTokens.set(r,Math.max(a,s))}' +
+    'function __calicoRefreshAgentUsage(e,t){if(!Array.isArray(t))return;let r=!1;for(let n=t.length-1;n>=0;n--){let o=t[n];if(o?.type==="assistant")r=!0,__calicoTrackAgentUsage(e,o.message?.usage,o.message?.id,o.message?.stop_reason!=null);else if(o?.type==="user"&&r)break}}' +
+    'function fQn(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[],activeMessageId:null,responseOutputTokens:new Map}}';
+  const eventReplacement =
+    'if(t.type==="stream_event"){if(t.event.type==="message_start")e.activeMessageId=t.event.message.id,__calicoTrackAgentUsage(e,t.event.message.usage,e.activeMessageId,!1);else if(t.event.type==="message_delta")__calicoTrackAgentUsage(e,t.event.usage,e.activeMessageId,t.event.delta.stop_reason!=null);else if(t.event.type==="message_stop")e.activeMessageId=null;return}if(t.type!=="assistant")return;let o=t.message.usage;__calicoTrackAgentUsage(e,o,t.message.id,t.message.stop_reason!=null);';
+
+  let output = original.replace(trackerNeedle, trackerReplacement);
+  output = output.replace(eventNeedle, eventReplacement);
+  output = output.replace(
+    progressNeedle,
+    'hQn(re,_e,ie,i.options.tools),__calicoRefreshAgentUsage(re,g),Z0u(e,a9r(re),s);'
+  );
+  output = output.replace(
+    completionNeedle,
+    'let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});__calicoRefreshAgentUsage(re,oe),Z0u(e,a9r(re),s);if(tRu'
+  );
+
+  if (
+    output.split("function __calicoTrackAgentUsage").length - 1 !== 1 ||
+    output.split("function __calicoRefreshAgentUsage").length - 1 !== 1 ||
+    output.split("responseOutputTokens:new Map").length - 1 !== 1 ||
+    output.split(eventReplacement).length - 1 !== 1 ||
+    output.split("__calicoRefreshAgentUsage(re,g)").length - 1 !== 1 ||
+    output.split("__calicoRefreshAgentUsage(re,oe)").length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  return { content: output, candidates, patched: 4 };
+}
+
+function patchStatuslineCommittedUsage(content) {
+  const original = content;
+  const wrapperNeedle =
+    'let Kn={message:{...wo,content:ZJr([Zr],n,i.agentId,{requestId:ge??void 0,messageId:wo.id})},requestId:ge??void 0,...OG(i.querySource,i.spawnedBySkill,i.activeSkill,i.activeMcpServer,i.activeMcpTool),type:"assistant",uuid:sar.randomUUID(),timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_}};';
+  const terminalNeedle =
+    'for(let Ou of _r)Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null;';
+  const aggregationNeedle = 'pn=xAe(pn,ar.usage);';
+  const cloneNeedles = [
+    'eo.push({src:an.message,dst:lo.message})',
+    'eo.push({src:an.message,dst:Gi.message})',
+  ];
+  const cloneSyncNeedle =
+    'for(let{src:_i,dst:Ii}of eo)Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details;';
+  const selectorNeedle = 'S=aJt(o),b=sw(y,UE())';
+  const wrapperCount = content.split(wrapperNeedle).length - 1;
+  const terminalCount = content.split(terminalNeedle).length - 1;
+  const aggregationCount = content.split(aggregationNeedle).length - 1;
+  const cloneCounts = cloneNeedles.map((needle) => content.split(needle).length - 1);
+  const cloneSyncCount = content.split(cloneSyncNeedle).length - 1;
+  const selectorCount = content.split(selectorNeedle).length - 1;
+  const candidates =
+    wrapperCount + terminalCount + cloneCounts.reduce((sum, count) => sum + count, 0) + cloneSyncCount + selectorCount;
+
+  if (
+    wrapperCount !== 1 ||
+    terminalCount !== 1 ||
+    aggregationCount !== 1 ||
+    cloneCounts.some((count) => count !== 1) ||
+    cloneSyncCount !== 1 ||
+    selectorCount !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const accountingHelper =
+    'function __calicoUsageHasAccountingSignal(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)}' +
+    'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}' +
+    'function __calicoStatuslineMessages(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})}';
+  const wrapperReplacement = wrapperNeedle.replace(
+    'timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_}};',
+    'timestamp:new Date().toISOString(),...!1,__calicoUsageState:{committed:!1,usage:null},..._&&{advisorModel:_}};'
+  );
+  const terminalReplacement =
+    'for(let Ou of _r)Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null,Se!=null&&!__calicoUsageIsExactAllZero(ar.usage)&&__calicoUsageHasAccountingSignal(pn)&&(Ou.__calicoUsageState.committed=!0,Ou.__calicoUsageState.usage=pn);';
+  const cloneReplacements = [
+    'eo.push({src:an,dst:lo})',
+    'eo.push({src:an,dst:Gi})',
+  ];
+  const cloneSyncReplacement =
+    'for(let{src:_i,dst:Ii}of eo)Ii.message.usage=_i.message.usage,Ii.message.stop_reason=_i.message.stop_reason,Ii.message.stop_details=_i.message.stop_details,Ii.__calicoUsageState=_i.__calicoUsageState;';
+  const selectorReplacement = 'S=aJt(__calicoStatuslineMessages(o)),b=sw(y,UE())';
+
+  let output = original.replace(wrapperNeedle, wrapperReplacement);
+  output = output.replace(terminalNeedle, terminalReplacement);
+  for (let index = 0; index < cloneNeedles.length; index += 1) {
+    output = output.replace(cloneNeedles[index], cloneReplacements[index]);
+  }
+  output = output.replace(cloneSyncNeedle, cloneSyncReplacement);
+
+  const selectorIndex = output.indexOf(selectorNeedle);
+  const functionStart = output.lastIndexOf("function ", selectorIndex);
+  if (selectorIndex === -1 || functionStart === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  output =
+    output.slice(0, functionStart) + accountingHelper + output.slice(functionStart);
+  output = output.replace(selectorNeedle, selectorReplacement);
+
+  if (
+    output.split(wrapperReplacement).length - 1 !== 1 ||
+    output.split(terminalReplacement).length - 1 !== 1 ||
+    cloneReplacements.some((replacement) => output.split(replacement).length - 1 !== 1) ||
+    output.split(cloneSyncReplacement).length - 1 !== 1 ||
+    output.split(selectorReplacement).length - 1 !== 1 ||
+    output.split("function __calicoUsageHasAccountingSignal").length - 1 !== 1 ||
+    output.split("function __calicoUsageIsExactAllZero").length - 1 !== 1 ||
+    output.split("function __calicoStatuslineMessages").length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  return { content: output, candidates, patched: 6 };
+}
+
 function patchActiveTurnPromptIdentity(content) {
   const original = content;
   let agentCandidates = 0;
@@ -1880,6 +2027,16 @@ const PATCH_MODULES = [
     id: "active-turn-prompt-id",
     description: "Expose stable prompt and per-agent turn identity to remora gateways",
     apply: patchActiveTurnPromptIdentity,
+  },
+  {
+    id: "background-agent-usage",
+    description: "Account terminal stream usage in background agent progress",
+    apply: patchBackgroundAgentUsage,
+  },
+  {
+    id: "statusline-committed-usage",
+    description: "Expose only committed terminal assistant usage to statusline payloads",
+    apply: patchStatuslineCommittedUsage,
   },
   {
     id: "custom-context-window",
@@ -2096,6 +2253,9 @@ function main() {
 
 module.exports = {
   patchActiveTurnPromptIdentity,
+  patchBackgroundAgentUsage,
+  patchStatuslineCommittedUsage,
+  patchCustomContextWindows,
 };
 
 if (require.main === module) {

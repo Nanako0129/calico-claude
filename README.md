@@ -21,6 +21,70 @@ Here is an exhaustive list of things it changes:
   `CALICO_MODEL_CONTEXT_WINDOWS` is supplied by a launcher such as remora.
 - Adds a dormant active-turn identity adapter for remora. It changes nothing
   unless the launcher sets `REMORA_ACTIVE=1`.
+- Refreshes background GPT agent accounting after terminal stream usage or late wrapper
+  mutation, so the agent row shows finalized token usage alongside elapsed time.
+- Exposes only committed terminal assistant usage to the status line, so provisional
+  thinking/responding wrappers and synthetic all-zero fallbacks cannot erase the last
+  completed snapshot.
+
+### Background-agent token usage
+
+Claude Code's native background tracker normally samples assistant usage as stream messages
+arrive. OpenAI-compatible gateways can create the assistant wrapper with provisional `0/0`
+usage, then deliver authoritative accounting in a terminal `message_delta` or mutate that same
+wrapper after the tracker sampled it. The foreground summary reads the finalized wrapper later,
+but without this patch the live background row can show elapsed time without any token count.
+
+Calico tracks usage by response ID across `message_start`, terminal `message_delta`, and completed
+assistant wrappers. It refreshes from the mutated transcript at both progress and completion seams,
+while deduplicating output tokens seen through more than one path. The displayed total preserves
+Claude Code's native semantics: the latest response input and cache tokens plus cumulative output
+across the background agent's turns. This changes only local accounting; it does not modify the
+Claude or OpenAI-compatible gateway protocol.
+
+The structural verifier requires `__calicoTrackAgentUsage`, `__calicoRefreshAgentUsage`, the
+response-output deduplication map, and both refresh seams. Regression tests cover provisional
+`0/0`, terminal accounting, late mutation, repeated deltas, direct completed wrappers, and
+multi-turn totals.
+
+### Committed status-line usage
+
+The status-line usage display is sourced from Calico's patched Claude Code message stream.
+The canonical query-stream assistant wrapper starts with a shared mutable commit cell,
+`__calicoUsageState: { committed: false, usage: null }`. The object cell is intentional:
+Claude Code shallow-copies the provisional wrapper into app state before the terminal event, so
+a primitive top-level boolean would remain stale even after the canonical wrapper commits. The
+shallow copies retain the cell reference. A trusted terminal `message_delta` stores both
+`committed: true` and the exact aggregated usage snapshot in that cell. Downstream tool-input and
+fallback transforms synchronize the same cell alongside usage and stop fields, and the status-line
+selector projects the saved snapshot instead of trusting later mutations to the provisional
+message usage.
+
+A terminal event is trusted only when its raw usage is not the exact all-zero sentinel and the
+aggregated usage contains a non-zero accounting field (`input_tokens`, `output_tokens`, cache
+creation, or cache read). The sentinel requires explicit numeric `input_tokens: 0` and
+`output_tokens: 0`; flat cache creation/read fields may be omitted or zero, and nested
+`cache_creation.ephemeral_1h_input_tokens` and
+`cache_creation.ephemeral_5m_input_tokens` may also be omitted or zero. Any non-zero flat or
+nested cache field makes it non-sentinel. A raw event with only `output_tokens: 0` is not
+classified as the fallback because its input field is missing. The raw guard is required because
+Claude's `xAe` aggregation can retain positive message-start or previous-turn values when a
+synthetic terminal event reports all zeros. The saved snapshot is monotonic: a later untrusted
+all-zero delta cannot erase it. Valid partial-zero responses such as `input_tokens > 0` and
+`output_tokens = 0` are still committed.
+
+Wrappers created at `message_start` or content-block cleanup remain provisional. UI-only
+thinking/responding virtual messages, `message_stop` cleanup, direct stream-error synthesized
+stop reasons, and the exact all-zero `[DONE]` fallback are therefore ignored by the status-line
+selector. Before the first committed response the display is unknown; while a later turn is
+still provisional it keeps the previous committed usage. The selector only projects committed
+snapshots from the already-sliced message array supplied by Claude Code, so compaction boundaries
+remain owned by the existing `kb()` slice and are never searched across by the new helper.
+
+The structural verifier checks the shared commit cell, terminal snapshot mutation, downstream
+clone synchronization, selector replacement, and absence of message-stop/UI-reducer commits. Run it
+against the exact binary you intend to use;
+a `(patched)` version label alone is not sufficient.
 
 ### Optional custom-model context windows
 
@@ -133,7 +197,7 @@ node scripts/verify-patched-binary.ts \
   --disable tool-call-verbose
 ```
 
-The verifier must report `active-turn-prompt-id` and `custom-context-window` as `ok`; a patched version label alone is insufficient.
+The verifier must report `active-turn-prompt-id`, `background-agent-usage`, `statusline-committed-usage`, and `custom-context-window` as `ok`; a patched version label alone is insufficient.
 
 ## Quick Start
 
