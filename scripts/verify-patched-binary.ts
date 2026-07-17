@@ -303,23 +303,78 @@ const CHECKS: Check[] = [
       const workerEnd = workerEndCandidate === -1 ? content.length : workerEndCandidate;
       const workerSegment = content.slice(workerStart, workerEnd);
       const workerLocalIndex = workerIndex - workerStart;
-      const respawnIndex = workerSegment.lastIndexOf(
-        "respawnFlags:",
-        workerLocalIndex
+      function findObjectEnd(source: string, openIndex: number): number {
+        if (source[openIndex] !== "{") return -1;
+        let depth = 0;
+        let quote: string | null = null;
+        let escaped = false;
+        for (let index = openIndex; index < source.length; index += 1) {
+          const character = source[index];
+          if (quote !== null) {
+            if (escaped) escaped = false;
+            else if (character === "\\") escaped = true;
+            else if (character === quote) quote = null;
+            continue;
+          }
+          if (character === '"' || character === "'" || character === "`") {
+            quote = character;
+          } else if (character === "{") {
+            depth += 1;
+          } else if (character === "}") {
+            depth -= 1;
+            if (depth === 0) return index;
+          }
+        }
+        return -1;
+      }
+      const dispatchRecordPattern = new RegExp(
+        `let (${identifier})=\\{proto:${identifier},short:${identifier},sessionId:${identifier},`,
+        "g"
       );
-      const envIndex = workerSegment.lastIndexOf("env:", workerLocalIndex);
-      const dispatchIndex = workerSegment.indexOf(
-        "uea(",
-        workerLocalIndex + worker[0].length
-      );
-      if (
-        workerStart === -1 ||
-        respawnIndex === -1 ||
-        envIndex < respawnIndex ||
-        envIndex > workerLocalIndex ||
-        dispatchIndex === -1
-      ) {
+      const dispatchRecords = [...workerSegment.matchAll(dispatchRecordPattern)]
+        .map((match) => {
+          const recordStart = match.index ?? -1;
+          const recordOpen = recordStart + match[0].indexOf("{");
+          const recordEnd = findObjectEnd(workerSegment, recordOpen);
+          const respawnIndex = workerSegment.indexOf(
+            "respawnFlags:",
+            recordStart + match[0].length
+          );
+          const envIndex = workerSegment.indexOf("env:{", respawnIndex);
+          const envEnd = findObjectEnd(workerSegment, envIndex + "env:".length);
+          return { match, recordStart, recordEnd, respawnIndex, envIndex, envEnd };
+        })
+        .filter(
+          ({ recordStart, recordEnd, respawnIndex, envIndex, envEnd }) =>
+            recordStart !== -1 &&
+            recordStart < respawnIndex &&
+            respawnIndex < envIndex &&
+            envIndex < workerLocalIndex &&
+            workerLocalIndex < envEnd &&
+            envEnd < recordEnd
+        );
+      if (workerStart === -1 || dispatchRecords.length !== 1) {
         return "shared locator is detached from the worker/respawn dispatch record";
+      }
+      const dispatchRecord = dispatchRecords[0];
+      const dispatchRecordLocal = dispatchRecord.match[1];
+      const awaitedDispatchPattern = new RegExp(
+        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${dispatchRecordLocal}\\)\\]\\)`,
+        "g"
+      );
+      const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
+      const directDispatchPattern = new RegExp(
+        `(${identifier})\\(${dispatchRecordLocal}\\)`,
+        "g"
+      );
+      const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
+      if (
+        awaitedDispatches.length !== 1 ||
+        directDispatches.length !== 1 ||
+        (awaitedDispatches[0].index ?? -1) !== dispatchRecord.recordEnd ||
+        awaitedDispatches[0][2] !== directDispatches[0][1]
+      ) {
+        return "worker record is not directly dispatched once through awaited Promise.all";
       }
 
       return null;

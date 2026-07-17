@@ -33,7 +33,7 @@ function C(e,t){logs.push({message:e,options:t})}
 function uL(e){return e}
 function tHt(e){let t=process.env.CLAUDE_CODE_EXTRA_BODY,r={};if(t)try{let n=Ol(t);if(n&&typeof n==="object"&&!Array.isArray(n))r={...n};else C(\`CLAUDE_CODE_EXTRA_BODY env var must be a JSON object, but was given \${t}\`,{level:"error"})}catch(n){C(\`Error parsing CLAUDE_CODE_EXTRA_BODY: \${n.message}\`,{level:"error"})}if(e&&e.length>0){let n=uL(e);if(r.anthropic_beta&&Array.isArray(r.anthropic_beta)){let o=r.anthropic_beta,i=n.filter((s)=>!o.includes(s));r.anthropic_beta=[...o,...i]}else r.anthropic_beta=n}return r}
 async function uea(e){return e}
-async function BF_(e,t,r,n,o,i){let I=t,ye=r,w=["--resume"],U={respawnFlags:w,env:{...I,...ye.CLAUDE_CODE_EXTRA_BODY&&{CLAUDE_CODE_EXTRA_BODY:ye.CLAUDE_CODE_EXTRA_BODY},...ye.PATH&&{PATH:ye.PATH}}};return uea(U)}
+async function BF_(e,t,r,n,o,i){let nm="proto",a="short",s="session",I=t,ye=r,w=["--resume"];let U={proto:nm,short:a,sessionId:s,respawnFlags:w,env:{...I,...ye.CLAUDE_CODE_EXTRA_BODY&&{CLAUDE_CODE_EXTRA_BODY:ye.CLAUDE_CODE_EXTRA_BODY},...ye.PATH&&{PATH:ye.PATH}},reattachEnv:o},[,Q]=await Promise.all([Promise.resolve(),uea(U)]);return Q}
 `;
 
 let nextPid = 41000;
@@ -104,6 +104,16 @@ function renameToken(source, from, to) {
     new RegExp(`(?<![A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])`, "g"),
     to
   );
+}
+
+function fixture212() {
+  return [
+    ["uea", "Jia"],
+    ["BF_", "GWy"],
+    ["nm", "bm"],
+    ["U", "J"],
+    ["Q", "ne"],
+  ].reduce((source, [from, to]) => renameToken(source, from, to), fixture);
 }
 
 test("remora interactive and thin commands toggle gateway priority without native Fast", async (t) => {
@@ -385,6 +395,54 @@ test("matches renamed identifiers", async (t) => {
   assert.equal(plain(context.qHt([])).service_tier, "priority");
 });
 
+test("accepts 2.1.211 and 2.1.212 worker dispatch symbols through record ownership", async (t) => {
+  for (const [source, functionName] of [
+    [fixture, "BF_"],
+    [fixture212(), "GWy"],
+  ]) {
+    const { context } = runtime(t, {
+      source,
+      env: { REMORA_ACTIVE: "1", CLAUDE_CODE_EXTRA_BODY: "{}" },
+    });
+    const dispatch = await context[functionName](null, { BASE: "1" }, context.process.env);
+    assert.equal(
+      dispatch.env.CALICO_GATEWAY_FAST_STATE_FILE,
+      context.process.env.CALICO_GATEWAY_FAST_STATE_FILE
+    );
+  }
+});
+
+test("rejects detached, indirect, wrong-record, and duplicate worker dispatches", () => {
+  const workerEnv =
+    "...ye.CLAUDE_CODE_EXTRA_BODY&&{CLAUDE_CODE_EXTRA_BODY:ye.CLAUDE_CODE_EXTRA_BODY},...ye.PATH&&{PATH:ye.PATH}";
+  const brokenFixtures = [
+    fixture.replace("uea(U)", "uea(J)"),
+    fixture.replace(
+      "},[,Q]=await Promise.all([Promise.resolve(),uea(U)]);return Q",
+      "};let Q=await uea(U);return Q"
+    ),
+    fixture.replace(
+      "uea(U)",
+      "Promise.resolve().then(()=>uea(U))"
+    ),
+    fixture.replace(
+      `env:{...I,${workerEnv}},reattachEnv:o`,
+      `env:{...I},detachedEnv:{${workerEnv}},reattachEnv:o`
+    ),
+    fixture.replace(
+      "return Q}",
+      "await uea(U);return Q}"
+    ),
+  ];
+
+  for (const broken of brokenFixtures) {
+    const result = patchGatewayFastMode(broken);
+    assert.notEqual(broken, fixture);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, broken);
+  }
+});
+
 test("fails atomically when a required anchor is missing or duplicated", () => {
   const brokenFixtures = [
     fixture.replace("async function Wj_", "async function_changed Wj_"),
@@ -485,13 +543,21 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
   );
   const staleThinToggle = patched.replace(".options.fastMode", ".options.fastModeBroken");
   const workerEnvPair =
-    ",...ye.CLAUDE_CODE_EXTRA_BODY&&{CLAUDE_CODE_EXTRA_BODY:ye.CLAUDE_CODE_EXTRA_BODY},...ye.CALICO_GATEWAY_FAST_STATE_FILE&&{CALICO_GATEWAY_FAST_STATE_FILE:ye.CALICO_GATEWAY_FAST_STATE_FILE}";
-  const detachedWorkerEnv = patched
-    .replace(workerEnvPair, "")
-    .replace(
-      "}};return uea(U)",
-      `},detachedEnv:{${workerEnvPair.slice(1)}}};return uea(U)`
-    );
+    ",...ye.CLAUDE_CODE_EXTRA_BODY&&{CLAUDE_CODE_EXTRA_BODY:ye.CLAUDE_CODE_EXTRA_BODY},...ye.CALICO_GATEWAY_FAST_STATE_FILE&&{CALICO_GATEWAY_FAST_STATE_FILE:ye.CALICO_GATEWAY_FAST_STATE_FILE},...ye.PATH&&{PATH:ye.PATH}";
+  const detachedWorkerEnv = patched.replace(
+    `env:{...I${workerEnvPair}},reattachEnv:o`,
+    `env:{...I},detachedEnv:{${workerEnvPair.slice(1)}},reattachEnv:o`
+  );
+  const wrongDispatchRecord = patched.replace("uea(U)", "uea(J)");
+  const dispatchOutsidePromiseAll = patched.replace(
+    "},[,Q]=await Promise.all([Promise.resolve(),uea(U)]);return Q",
+    "};let Q=await uea(U);return Q"
+  );
+  const callbackDeferredDispatch = patched.replace(
+    "uea(U)",
+    "Promise.resolve().then(()=>uea(U))"
+  );
+  const duplicateDispatch = patched.replace("return Q}", "await uea(U);return Q}");
 
   for (const [name, broken] of [
     ["comment-only helpers", commentOnlyHelpers],
@@ -503,6 +569,10 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     ["apply inside native catch", applyInsideNativeCatch],
     ["missing worker locator", withoutWorkerLocator],
     ["detached worker env", detachedWorkerEnv],
+    ["wrong dispatch record", wrongDispatchRecord],
+    ["dispatch outside Promise.all", dispatchOutsidePromiseAll],
+    ["callback-deferred dispatch", callbackDeferredDispatch],
+    ["duplicate dispatch", duplicateDispatch],
     ["native-only registration", nativeOnlyRegistration],
     ["wrong visibility owner", wrongVisibilityOwner],
     ["Anthropic helper speed injection", injectedAnthropicSpeed],
