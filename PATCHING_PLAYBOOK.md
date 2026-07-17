@@ -273,6 +273,108 @@ Likely break signs:
 - a valid partial-zero response is discarded
 - the module reports `0` candidates or the verifier reports an occurrence mismatch
 
+### `gateway-fast-mode`
+
+Intent:
+
+- extend Claude Code's built-in `/fast` command for remora/GPT gateway sessions instead of
+  registering a second command with the same name
+- when `REMORA_ACTIVE="1"`, `/fast on` publishes `service_tier:"priority"`, `/fast off` removes
+  only the top-level `service_tier`, and bare `/fast` toggles the effective gateway tier
+- keep the selection session-scoped and visible to the main process, thin/control requests, new
+  workers, already-running workers on their next request, and respawned workers
+- preserve the existing `remora --fast` startup body while the shared mode remains `inherit`
+
+Source of truth and process ownership:
+
+- `CALICO_GATEWAY_FAST_STATE_FILE` is a private locator inherited by worker processes
+- the located file is the cross-process source of truth and contains only `inherit`, `on`, or `off`;
+  it never contains the complete `CLAUDE_CODE_EXTRA_BODY`
+- only the process that creates the random temp directory owns cleanup; a child that inherits the
+  locator must not remove shared session state
+- the owner creates the directory with mode `0700` and the mode file with mode `0600`
+- `process.env.CLAUDE_CODE_EXTRA_BODY` is only the command process's local mirror; worker launch
+  snapshots remain intact but are not trusted for later cross-process Fast changes
+- every request-body builder reads the mode file again and applies it to that process's parsed body
+- once a remora locator exists, a missing, unreadable, or invalid mode file aborts body construction;
+  falling back to a stale worker environment is forbidden
+
+Atomic publish:
+
+- command handling validates and serializes the next body before changing either state surface
+- it writes the next mode to a same-directory exclusive temporary file, updates the local env mirror,
+  and atomically renames the temporary file over the mode file
+- synchronous command execution prevents a same-process request from interleaving between env update
+  and rename; other processes can observe only the complete old mode or complete new mode
+- write or rename failure restores the exact prior env presence/value and removes the temporary file;
+  the previously published mode remains authoritative
+
+Claude Code 2.1.211 semantic anchors:
+
+- the interactive handler is identified by the native availability reason, `"shortcut"` Fast action,
+  picker telemetry, JSX picker fallback, and app-state access
+- the thin/control handler is identified by the same native availability reason and action, the
+  `"bridge"` source, argument parsing, and `.options.fastMode` bare-toggle fallback
+- the `local-jsx` registration owns `thinClientDispatch:"control-request"`; the `local` registration
+  owns non-interactive support; both retain the same native model-description getter
+- the request-body builder parses `CLAUDE_CODE_EXTRA_BODY`, validates that the native result is an
+  object, merges `anthropic_beta`, and returns the resulting body
+- the worker dispatch record owns `respawnFlags`, the raw extra-body/PATH env snapshots, and the
+  `uea(...)` launch call used by initial and respawned workers
+- all six surfaces must be discovered exactly once before any replacement is applied; otherwise the
+  module returns the original bundle with `patched: 0`
+
+Command and JSON semantics:
+
+- blank extra body is `{}`; the top level must be a non-array object
+- the recursive scanner rejects duplicate decoded keys at every object level, so `"a"` conflicts
+  with a single-backslash Unicode escape for U+0061 while a literal `\\u0061` key remains distinct
+- parsed values are traversed to reject every non-finite number, including overflow such as `1e9999`
+- `on` accepts an absent tier or the legacy aliases `"fast"` and `"priority"`, then normalizes to
+  `"priority"`; another existing tier is a conflict
+- `off` removes only the outer `service_tier` regardless of its old value and preserves unrelated
+  and nested fields
+- bare `/fast` uses explicit shared `on`/`off` first; under `inherit` it derives the current state
+  from the strict-parsed body and publishes the opposite explicit mode
+- unknown arguments return usage text without changing the env mirror or shared mode
+
+Native compatibility and deliberate non-targets:
+
+- remora branches run before the native availability gate and never call the Anthropic Fast action
+- non-remora sessions retain the original provider/model/organization gates, picker telemetry,
+  app-state updates, command visibility, thin toggle, and model switching
+- the gateway path must never inject Anthropic's `speed:"fast"`; GPT priority uses only
+  `service_tier:"priority"`
+- the patch does not write Claude settings or reuse native `fastMode` app state for gateway state
+- an already in-flight request is not changed retroactively; the next request observes the new mode
+- changing the effective body/tier can cause one prompt-cache miss on the next request; that is an
+  expected cache-key transition, not a regression
+
+Atomicity and verification:
+
+- `scripts/verify-patched-binary.ts` requires one executable helper block, exact handler ordering,
+  preserved native fallbacks, registration ownership, parse-then-apply-then-beta order, and the
+  locator beside raw extra-body/PATH snapshots in the worker respawn dispatch record
+- verifier mutations cover commented/rebound helpers, missing command surfaces, parse/beta drift,
+  catch-only application, detached worker env data, registration drift, full-body persistence,
+  Anthropic speed injection, and stale thin toggles
+- fixture tests model shared request-time state, but they do not replace live proof with a real
+  existing worker process, thin client, request-capture gateway, and respawn
+
+Likely break signs and hard stops:
+
+- `/fast` opens the native picker in remora, or remora on/off calls the native Fast setter
+- main requests change tier while thin, new-worker, existing-worker, or respawn requests remain stale
+- unrelated extra-body fields disappear, nested `service_tier` is removed, or `speed:"fast"` reaches
+  the GPT gateway
+- deleting or corrupting the mode file still allows a request with stale worker env to be sent
+- non-remora `/fast` visibility, availability reason, picker, app state, or model switching changes
+- any request producer bypasses the patched body builder, or any persistent worker spawn path omits
+  the locator
+- if the same already-running worker cannot observe on/off on its next captured request, thin changes
+  only UI state, respawn falls back to an old snapshot, or a state-read failure still sends a request,
+  stop the release and redesign the IPC/shared-state seam; do not downgrade to main-process-only support
+
 ### `create-diff-colors`
 
 Intent:

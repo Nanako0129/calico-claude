@@ -53,6 +53,279 @@ function markerPresent(content: string, marker: RegExp | string): boolean {
 
 const CHECKS: Check[] = [
   {
+    id: "gateway-fast-mode",
+    kind: "custom",
+    describe: "remora gateway priority mode with shared request-time worker state",
+    run: (content: string): string | null => {
+      const identifier = "[A-Za-z_$][\\w$]*";
+      const nodeDeclaration =
+        'var __calicoGatewayFastNode={fs:process.getBuiltinModule("fs"),path:process.getBuiltinModule("path"),os:process.getBuiltinModule("os"),crypto:process.getBuiltinModule("crypto")};';
+      const stateDeclaration =
+        "var __calicoGatewayFastState={path:null,dir:null,owner:!1};";
+      const applyHelper =
+        'function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r}';
+
+      if (
+        countOccurrences(content, nodeDeclaration) !== 1 ||
+        countOccurrences(content, stateDeclaration) !== 1 ||
+        countOccurrences(content, applyHelper) !== 1
+      ) {
+        return "gateway fast state or request helper is missing, duplicated, or not exact";
+      }
+
+      const helperStart = content.indexOf(nodeDeclaration);
+      const interactiveStartMarker = content.indexOf("\nasync function ", helperStart);
+      if (helperStart === -1 || interactiveStartMarker === -1) {
+        return "gateway helper block is not adjacent to the interactive handler";
+      }
+      const helperBlock = content.slice(helperStart, interactiveStartMarker);
+      if (!helperBlock.endsWith(applyHelper)) {
+        return "gateway helper block is commented, detached, or followed by alternate code";
+      }
+
+      const expectedReferences: Array<[string, number]> = [
+        ["__calicoGatewayFastNode", 4],
+        ["__calicoGatewayFastState", 10],
+        ["__calicoGatewayFastEnsure", 4],
+        ["__calicoGatewayFastRead", 3],
+        ["__calicoGatewayFastParse", 2],
+        ["__calicoGatewayFastTier", 3],
+        ["__calicoGatewayFastRestore", 2],
+        ["__calicoGatewayFastPublish", 2],
+        ["__calicoGatewayFastCommandValue", 3],
+        ["__calicoGatewayFastInteractive", 2],
+        ["__calicoGatewayFastThin", 2],
+        ["__calicoGatewayFastApply", 2],
+      ];
+      for (const [name, expected] of expectedReferences) {
+        const actual = countOccurrences(content, name);
+        if (actual !== expected) {
+          return `expected ${expected} total references to ${name}, found ${actual}`;
+        }
+      }
+
+      for (const name of [
+        "__calicoGatewayFastEnsure",
+        "__calicoGatewayFastRead",
+        "__calicoGatewayFastParse",
+        "__calicoGatewayFastTier",
+        "__calicoGatewayFastRestore",
+        "__calicoGatewayFastPublish",
+        "__calicoGatewayFastCommandValue",
+        "__calicoGatewayFastInteractive",
+        "__calicoGatewayFastThin",
+        "__calicoGatewayFastApply",
+      ]) {
+        if (countOccurrences(content, `function ${name}`) !== 1) {
+          return `expected one function declaration for ${name}`;
+        }
+        const alternateBinding = new RegExp(
+          `(?:var|let|const)\\s+${name}\\b|(?:^|[;,])${name}=`,
+          "m"
+        );
+        if (alternateBinding.test(content)) {
+          return `${name} has an unexpected alternate binding`;
+        }
+      }
+
+      const requiredHelperMarkers = [
+        'writeFileSync(n,"inherit",{encoding:"utf8",mode:0o600,flag:"wx"})',
+        'writeFileSync(l,e,{encoding:"utf8",mode:0o600,flag:"wx"})',
+        "process.env.CLAUDE_CODE_EXTRA_BODY=t;i.fs.renameSync(l,o.path)",
+        "__calicoGatewayFastRestore(r,n)",
+        "JSON.parse(t.slice(e,r))",
+        "duplicate JSON key",
+        "Number.isFinite",
+        'Object.prototype.hasOwnProperty.call(e,"service_tier")',
+        'i.service_tier="priority"',
+        "delete i.service_tier",
+        "__calicoGatewayFastPublish(s,a,n,o)",
+      ];
+      const missingHelperMarkers = requiredHelperMarkers.filter(
+        (marker) => !helperBlock.includes(marker)
+      );
+      if (missingHelperMarkers.length > 0) {
+        return `gateway helper semantics missing marker(s): ${missingHelperMarkers.join(", ")}`;
+      }
+      if (
+        countOccurrences(helperBlock, "CALICO_GATEWAY_FAST_STATE_FILE") !== 3 ||
+        countOccurrences(helperBlock, "writeFileSync(") !== 2 ||
+        countOccurrences(helperBlock, "readFileSync(") !== 1 ||
+        countOccurrences(helperBlock, "renameSync(") !== 1
+      ) {
+        return "gateway mode-file ownership or atomic publish structure is invalid";
+      }
+      if (
+        helperBlock.includes('speed:"fast"') ||
+        helperBlock.includes("writeFileSync(l,t") ||
+        helperBlock.includes("writeFileSync(n,process.env.CLAUDE_CODE_EXTRA_BODY")
+      ) {
+        return "gateway helper injects Anthropic speed or persists the full extra body";
+      }
+
+      const interactivePattern = new RegExp(
+        `async function (${identifier})\\((${identifier}),(${identifier}),(${identifier})\\)\\{if\\(process\\.env\\.REMORA_ACTIVE==="1"\\)return __calicoGatewayFastInteractive\\(\\2,\\4\\);if\\(!(${identifier})\\(\\)\\)return \\2\\((${identifier})\\(\\)\\?\\?"Fast mode is not available"\\),null;`,
+        "g"
+      );
+      const interactiveMatches = [...content.matchAll(interactivePattern)];
+      if (
+        interactiveMatches.length !== 1 ||
+        interactiveMatches[0].index !== interactiveStartMarker + 1
+      ) {
+        return "interactive remora branch is missing, duplicated, or not before the native gate";
+      }
+      const interactive = interactiveMatches[0];
+      const interactiveEnd = content.indexOf(
+        "async function ",
+        (interactive.index ?? -1) + interactive[0].length
+      );
+      const interactiveSegment = content.slice(
+        interactive.index ?? -1,
+        interactiveEnd === -1 ? content.length : interactiveEnd
+      );
+      const interactiveAction = interactiveSegment.match(
+        /await ([A-Za-z_$][\w$]*)\([^;]*?"shortcut"/
+      )?.[1];
+      if (
+        !interactiveAction ||
+        !interactiveSegment.includes("tengu_fast_mode_picker_shown") ||
+        !interactiveSegment.includes(".getAppState") ||
+        !interactiveSegment.includes(".setAppState") ||
+        !interactiveSegment.includes(".jsx(")
+      ) {
+        return "interactive native Fast action, picker, or app-state fallback is missing";
+      }
+
+      const thinPattern = new RegExp(
+        `async function (${identifier})\\((${identifier}),(${identifier})\\)\\{if\\(process\\.env\\.REMORA_ACTIVE==="1"\\)return __calicoGatewayFastThin\\(\\2\\);if\\(!(${identifier})\\(\\)\\)return\\{type:"text",value:(${identifier})\\(\\)\\?\\?"Fast mode is not available"\\};`,
+        "g"
+      );
+      const thinMatches = [...content.matchAll(thinPattern)];
+      if (thinMatches.length !== 1) {
+        return "thin-client remora branch is missing, duplicated, or not before the native gate";
+      }
+      const thin = thinMatches[0];
+      const thinEnd = content.indexOf(
+        "async function ",
+        (thin.index ?? -1) + thin[0].length
+      );
+      const thinSegment = content.slice(
+        thin.index ?? -1,
+        thinEnd === -1 ? content.length : thinEnd
+      );
+      const thinAction = thinSegment.match(
+        /await ([A-Za-z_$][\w$]*)\([^;]*?"bridge"/
+      )?.[1];
+      if (
+        interactive[5] !== thin[4] ||
+        interactive[6] !== thin[5] ||
+        thinAction !== interactiveAction ||
+        !/\.options\.fastMode(?![A-Za-z0-9_$])/.test(thinSegment) ||
+        !thinSegment.includes("Unknown argument") ||
+        !thinSegment.includes(".getAppState") ||
+        !thinSegment.includes(".setAppState")
+      ) {
+        return "thin-client native toggle path no longer shares the native Fast fallback";
+      }
+
+      const localJsxPattern =
+        /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",get immediate\(\)\{return ([A-Za-z_$][\w$]*)\(\)\},requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+      const localPattern =
+        /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>process\.env\.REMORA_ACTIVE==="1"\|\|([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\}/g;
+      const localJsxMatches = [...content.matchAll(localJsxPattern)];
+      const localMatches = [...content.matchAll(localPattern)];
+      if (localJsxMatches.length !== 1 || localMatches.length !== 1) {
+        return "gateway-aware Fast command registrations are missing or duplicated";
+      }
+      if (
+        localJsxMatches[0][2] !== localMatches[0][2] ||
+        localJsxMatches[0][3] !== interactive[5] ||
+        localMatches[0][3] !== localMatches[0][4]
+      ) {
+        return "Fast registrations changed native description or visibility gate ownership";
+      }
+
+      const builderPattern = new RegExp(
+        `function (${identifier})\\((${identifier})\\)\\{let (${identifier})=process\\.env\\.CLAUDE_CODE_EXTRA_BODY,(${identifier})=\\{\\};`,
+        "g"
+      );
+      const builderMatches = [...content.matchAll(builderPattern)];
+      if (builderMatches.length !== 1) {
+        return `expected one request extra-body builder, found ${builderMatches.length}`;
+      }
+      const builder = builderMatches[0];
+      const builderStart = builder.index ?? -1;
+      const builderEndCandidate = content.indexOf("function ", builderStart + builder[0].length);
+      const builderEnd = builderEndCandidate === -1 ? content.length : builderEndCandidate;
+      const builderSegment = content.slice(builderStart, builderEnd);
+      const applyNeedle = `${builder[4]}=__calicoGatewayFastApply(${builder[4]});`;
+      const betaNeedle = `if(${builder[2]}&&${builder[2]}.length>0){`;
+      const parseErrorIndex = builderSegment.indexOf(
+        "Error parsing CLAUDE_CODE_EXTRA_BODY:"
+      );
+      const parseCompletionNeedle = ',{level:"error"})}';
+      const parseCompletionIndex = builderSegment.indexOf(
+        parseCompletionNeedle,
+        parseErrorIndex
+      );
+      const applyIndex = builderSegment.indexOf(applyNeedle);
+      const betaIndex = builderSegment.indexOf(betaNeedle);
+      if (
+        countOccurrences(builderSegment, applyNeedle) !== 1 ||
+        countOccurrences(builderSegment, betaNeedle) !== 1 ||
+        parseErrorIndex === -1 ||
+        parseCompletionIndex === -1 ||
+        applyIndex !== parseCompletionIndex + parseCompletionNeedle.length ||
+        applyIndex > betaIndex ||
+        builderSegment.includes('speed:"fast"') ||
+        builderSegment.includes('.speed="fast"') ||
+        !builderSegment.includes("CLAUDE_CODE_EXTRA_BODY env var must be a JSON object") ||
+        !builderSegment.includes(`return ${builder[4]}}`)
+      ) {
+        return "request-time mode application is not between native parsing and beta merge";
+      }
+
+      const workerPattern = new RegExp(
+        `\\.\\.\\.(${identifier})\\.CLAUDE_CODE_EXTRA_BODY&&\\{CLAUDE_CODE_EXTRA_BODY:\\1\\.CLAUDE_CODE_EXTRA_BODY\\},\\.\\.\\.\\1\\.CALICO_GATEWAY_FAST_STATE_FILE&&\\{CALICO_GATEWAY_FAST_STATE_FILE:\\1\\.CALICO_GATEWAY_FAST_STATE_FILE\\},\\.\\.\\.\\1\\.PATH&&\\{PATH:\\1\\.PATH\\}`,
+        "g"
+      );
+      const workerMatches = [...content.matchAll(workerPattern)];
+      if (workerMatches.length !== 1) {
+        return "worker dispatch does not propagate exactly one shared-state locator";
+      }
+      const worker = workerMatches[0];
+      const workerIndex = worker.index ?? -1;
+      const workerStart = content.lastIndexOf("async function ", workerIndex);
+      const workerEndCandidate = content.indexOf(
+        "async function ",
+        workerIndex + worker[0].length
+      );
+      const workerEnd = workerEndCandidate === -1 ? content.length : workerEndCandidate;
+      const workerSegment = content.slice(workerStart, workerEnd);
+      const workerLocalIndex = workerIndex - workerStart;
+      const respawnIndex = workerSegment.lastIndexOf(
+        "respawnFlags:",
+        workerLocalIndex
+      );
+      const envIndex = workerSegment.lastIndexOf("env:", workerLocalIndex);
+      const dispatchIndex = workerSegment.indexOf(
+        "uea(",
+        workerLocalIndex + worker[0].length
+      );
+      if (
+        workerStart === -1 ||
+        respawnIndex === -1 ||
+        envIndex < respawnIndex ||
+        envIndex > workerLocalIndex ||
+        dispatchIndex === -1
+      ) {
+        return "shared locator is detached from the worker/respawn dispatch record";
+      }
+
+      return null;
+    },
+  },
+  {
     id: "active-turn-prompt-id",
     kind: "custom",
     describe: "remora-scoped prompt identity header with per-agent frozen turn id",
