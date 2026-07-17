@@ -7,6 +7,9 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const { patchGatewayFastMode } = require("../patch-claude-display.ts");
+const {
+  evaluatePatchModule,
+} = require("../scripts/verify-patched-binary.ts");
 
 const fixture = `
 var nativeAvailable=!1,nativeReason="Fast mode is not available",nativeCalls=[],pickerCalls=0,logs=[];
@@ -401,5 +404,113 @@ test("fails atomically when a required anchor is missing or duplicated", () => {
     assert.equal(result.patched, 0);
     assert.equal(result.content, broken);
     assert.equal(result.content.includes("__calicoGatewayFastEnsure"), false);
+  }
+});
+
+test("binary verifier accepts the complete gateway fast-mode structure", () => {
+  const patched = patchGatewayFastMode(fixture).content;
+  assert.equal(evaluatePatchModule("gateway-fast-mode", patched), null);
+});
+
+test("binary verifier rejects detached helpers and broken gateway ownership", () => {
+  const patched = patchGatewayFastMode(fixture).content;
+  const helperStart = patched.indexOf("var __calicoGatewayFastNode=");
+  const interactiveStart = patched.indexOf("async function Wj_", helperStart);
+  const helperBlock = patched.slice(helperStart, interactiveStart);
+  const applyHelper = helperBlock.match(
+    /function __calicoGatewayFastApply[\s\S]*$/
+  )?.[0];
+  const builderStart = patched.indexOf("function tHt(");
+  const builderEnd = patched.indexOf("async function uea", builderStart);
+  assert.ok(applyHelper);
+  assert.notEqual(builderStart, -1);
+  assert.ok(builderEnd > builderStart);
+  const builderBlock = patched.slice(builderStart, builderEnd);
+
+  const commentOnlyHelpers =
+    patched.slice(0, helperStart) +
+    `/*${helperBlock}*/` +
+    patched.slice(interactiveStart);
+  const alternateApply = patched.replace(
+    applyHelper,
+    `var __calicoGatewayFastApply=()=>{};/*${applyHelper}*/`
+  );
+  const withoutThinBranch = patched.replace(
+    'if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(e);',
+    ""
+  );
+  const withoutNativeAction = patched.replace('"shortcut"', '"shortcut-broken"');
+  const applyAfterBetaMerge = patched.replace(
+    builderBlock,
+    builderBlock
+      .replace("r=__calicoGatewayFastApply(r);", "")
+      .replace("return r}", "r=__calicoGatewayFastApply(r);return r}")
+  );
+  const applyBeforeNativeParse = patched
+    .replace(
+      "r=__calicoGatewayFastApply(r);if(e&&e.length>0){",
+      "if(e&&e.length>0){"
+    )
+    .replace(
+      "function tHt(e){let t=process.env.CLAUDE_CODE_EXTRA_BODY,r={};",
+      "function tHt(e){let t=process.env.CLAUDE_CODE_EXTRA_BODY,r={};r=__calicoGatewayFastApply(r);"
+    );
+  const applyInsideNativeCatch = patched.replace(
+    ',{level:"error"})}r=__calicoGatewayFastApply(r);',
+    ',{level:"error"});r=__calicoGatewayFastApply(r)}'
+  );
+  const withoutWorkerLocator = patched.replace(
+    ",...ye.CALICO_GATEWAY_FAST_STATE_FILE&&{CALICO_GATEWAY_FAST_STATE_FILE:ye.CALICO_GATEWAY_FAST_STATE_FILE}",
+    ""
+  );
+  const nativeOnlyRegistration = patched.replace(
+    'process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":',
+    ""
+  );
+  const wrongVisibilityOwner = patched.replace(
+    'process.env.REMORA_ACTIVE==="1"?!1:!sl()',
+    'process.env.REMORA_ACTIVE==="1"?!1:!pn()'
+  );
+  const injectedAnthropicSpeed = patched.replace(
+    "function __calicoGatewayFastApply",
+    'var __calicoGatewayFastLeak={speed:"fast"};function __calicoGatewayFastApply'
+  );
+  const injectedBuilderSpeed = patched.replace(
+    "r=__calicoGatewayFastApply(r);if(e&&e.length>0){",
+    'r=__calicoGatewayFastApply(r);r.speed="fast";if(e&&e.length>0){'
+  );
+  const persistedExtraBody = patched.replace(
+    "writeFileSync(l,e,{encoding:",
+    "writeFileSync(l,t,{encoding:"
+  );
+  const staleThinToggle = patched.replace(".options.fastMode", ".options.fastModeBroken");
+  const workerEnvPair =
+    ",...ye.CLAUDE_CODE_EXTRA_BODY&&{CLAUDE_CODE_EXTRA_BODY:ye.CLAUDE_CODE_EXTRA_BODY},...ye.CALICO_GATEWAY_FAST_STATE_FILE&&{CALICO_GATEWAY_FAST_STATE_FILE:ye.CALICO_GATEWAY_FAST_STATE_FILE}";
+  const detachedWorkerEnv = patched
+    .replace(workerEnvPair, "")
+    .replace(
+      "}};return uea(U)",
+      `},detachedEnv:{${workerEnvPair.slice(1)}}};return uea(U)`
+    );
+
+  for (const [name, broken] of [
+    ["comment-only helpers", commentOnlyHelpers],
+    ["alternate apply binding", alternateApply],
+    ["missing thin branch", withoutThinBranch],
+    ["missing native action", withoutNativeAction],
+    ["apply after beta merge", applyAfterBetaMerge],
+    ["apply before native parse", applyBeforeNativeParse],
+    ["apply inside native catch", applyInsideNativeCatch],
+    ["missing worker locator", withoutWorkerLocator],
+    ["detached worker env", detachedWorkerEnv],
+    ["native-only registration", nativeOnlyRegistration],
+    ["wrong visibility owner", wrongVisibilityOwner],
+    ["Anthropic helper speed injection", injectedAnthropicSpeed],
+    ["Anthropic builder speed injection", injectedBuilderSpeed],
+    ["persisted extra body", persistedExtraBody],
+    ["stale thin toggle", staleThinToggle],
+  ]) {
+    assert.notEqual(broken, patched, `${name} mutation did not change the fixture`);
+    assert.notEqual(evaluatePatchModule("gateway-fast-mode", broken), null, name);
   }
 });
