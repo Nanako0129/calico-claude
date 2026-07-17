@@ -33,6 +33,18 @@ function renameToken(source, from, to) {
   );
 }
 
+function effortCommittedUsageFixture(source = committedUsageFixture) {
+  return source
+    .replace("ge=null,_=null;let Kn=", 'ge=null,_=null,Ie="high";let Kn=')
+    .replace(
+      "..._&&{advisorModel:_}};",
+      "..._&&{advisorModel:_},...Ie!==void 0&&{effort:Ie}};"
+    );
+}
+
+const modelsUsedCompletionSignal =
+  "function backgroundCompletionSignal(){let ie=BBg(s,e,g),de=Yns(ie,e,{...n,modelsUsed:_},{suppressTelemetry:re});__calicoRefreshAgentUsage(re,ie),Z0u(e,a9r(re),s);return de}";
+
 function renamedCommittedUsageFixture() {
   const renames = [
     ["ZJr", "buildContent"],
@@ -347,6 +359,65 @@ test("matches renamed wrapper, terminal, selector, and clone locals", () => {
   assert.match(result.content, /selectedUsage=usageReducer\(__calicoStatuslineMessages\(messageEntries\)\),windowSize=contextWindow\(modelContext,windowOptions\(\)\)/);
   assert.equal(completed[0].__calicoUsageState.committed, true);
   assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
+});
+
+test("preserves the 2.1.212 effort metadata wrapper", () => {
+  const source = effortCommittedUsageFixture();
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+
+  assert.match(
+    result.content,
+    /__calicoUsageState:\{committed:!1,usage:null\},\.\.\._&&\{advisorModel:_\},\.\.\.Ie!==void 0&&\{effort:Ie\}/
+  );
+  assert.equal(completed[0].effort, "high");
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(
+    evaluatePatchModule(
+      "statusline-committed-usage",
+      result.content + modelsUsedCompletionSignal
+    ),
+    null
+  );
+});
+
+test("2.1.212 wrapper ownership rejects lost, mismatched, and duplicate effort variants", () => {
+  const source = effortCommittedUsageFixture();
+  const mismatchedEffort = source.replace("{effort:Ie}", "{effort:otherEffort}");
+  const duplicateLegacy =
+    source +
+    'let Other={message:{...wo,content:ZJr([Zr],n,i.agentId,{requestId:ge??void 0,messageId:wo.id})},requestId:ge??void 0,...OG(i.querySource,i.spawnedBySkill,i.activeSkill,i.activeMcpServer,i.activeMcpTool),type:"assistant",uuid:sar.randomUUID(),timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_}};';
+
+  for (const broken of [mismatchedEffort, duplicateLegacy]) {
+    const result = patchStatuslineCommittedUsage(broken);
+    assert.notEqual(broken, source);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, broken);
+  }
+
+  const patchedEffort = patchStatuslineCommittedUsage(source).content;
+  const lostEffort = patchedEffort.replace(
+    ",...Ie!==void 0&&{effort:Ie}",
+    ""
+  );
+  assert.notEqual(lostEffort, patchedEffort);
+  assert.notEqual(
+    evaluatePatchModule(
+      "statusline-committed-usage",
+      lostEffort + modelsUsedCompletionSignal
+    ),
+    null
+  );
+
+  const patchedLegacy = patchStatuslineCommittedUsage(committedUsageFixture).content;
+  assert.equal(evaluatePatchModule("statusline-committed-usage", patchedLegacy), null);
+  assert.notEqual(
+    evaluatePatchModule(
+      "statusline-committed-usage",
+      patchedLegacy + modelsUsedCompletionSignal
+    ),
+    null
+  );
 });
 
 test("statusline selector is bound to the discovered usage reducer", () => {

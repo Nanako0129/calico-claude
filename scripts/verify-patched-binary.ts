@@ -642,17 +642,59 @@ const CHECKS: Check[] = [
         }
       }
 
-      const wrapperPattern = new RegExp(
+      const legacyWrapperPattern = new RegExp(
         `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\}\\};`,
         "g"
       );
-      const wrapperMatches = [...content.matchAll(wrapperPattern)];
+      const effortWrapperPattern = new RegExp(
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        "g"
+      );
+      const wrapperMatches = [
+        ...[...content.matchAll(legacyWrapperPattern)].map((match) => ({
+          match,
+          effortCondition: null,
+          effortProperty: null,
+        })),
+        ...[...content.matchAll(effortWrapperPattern)].map((match) => ({
+          match,
+          effortCondition: match[11],
+          effortProperty: match[12],
+        })),
+      ];
       if (wrapperMatches.length !== 1) {
         return `expected 1 canonical wrapper-owned usage cell, found ${wrapperMatches.length}`;
       }
       const wrapper = wrapperMatches[0];
-      const wrapperLocal = wrapper[1];
-      const wrapperIndex = wrapper.index ?? -1;
+      if (
+        wrapper.effortCondition !== null &&
+        wrapper.effortCondition !== wrapper.effortProperty
+      ) {
+        return "statusline effort condition and property use different locals";
+      }
+      const modelsUsedCompletionSignalPattern = new RegExp(
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        "g"
+      );
+      const modelsUsedCompletionSignals = [
+        ...content.matchAll(modelsUsedCompletionSignalPattern),
+      ].filter(
+        (match) =>
+          match[13] === match[4] &&
+          match[15] === match[11] &&
+          match[16] === match[3]
+      );
+      if (modelsUsedCompletionSignals.length > 1) {
+        return "ambiguous 2.1.212 background modelsUsed completion signal";
+      }
+      if (
+        modelsUsedCompletionSignals.length === 1 &&
+        wrapper.effortCondition === null
+      ) {
+        return "2.1.212 modelsUsed completion requires an effort-bearing statusline wrapper";
+      }
+      const wrapperLocal = wrapper.match[1];
+      const wrapperIndex = wrapper.match.index ?? -1;
       const wrapperFunctionStart = content.lastIndexOf("function ", wrapperIndex);
 
       const terminalPattern = new RegExp(

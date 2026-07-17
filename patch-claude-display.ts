@@ -1944,8 +1944,12 @@ function patchStatuslineCommittedUsage(content) {
     `function (${identifierPattern})\\((${identifierPattern})\\)\\{for\\(let (${identifierPattern})=\\2\\.length-1;\\3>=0;\\3--\\)\\{let (${identifierPattern})=\\2\\[\\3\\],(${identifierPattern})=\\4\\?(${identifierPattern})\\(\\4\\):void 0;if\\(\\5\\)return\\{input_tokens:\\5\\.input_tokens,output_tokens:\\5\\.output_tokens,cache_creation_input_tokens:\\5\\.cache_creation_input_tokens\\?\\?0,cache_read_input_tokens:\\5\\.cache_read_input_tokens\\?\\?0\\}\\}return null\\}`,
     "g"
   );
-  const wrapperPattern = new RegExp(
+  const legacyWrapperPattern = new RegExp(
     `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\}\\};`,
+    "g"
+  );
+  const effortWrapperPattern = new RegExp(
+    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
@@ -1964,10 +1968,21 @@ function patchStatuslineCommittedUsage(content) {
         "g"
       )
     : null;
-  const wrapperMatches = [...content.matchAll(wrapperPattern)];
+  const wrapperMatches = [
+    ...[...content.matchAll(legacyWrapperPattern)].map((match) => ({
+      match,
+      effortCondition: null,
+      effortProperty: null,
+    })),
+    ...[...content.matchAll(effortWrapperPattern)].map((match) => ({
+      match,
+      effortCondition: match[11],
+      effortProperty: match[12],
+    })),
+  ];
   const wrapperMatch = wrapperMatches[0];
-  const wrapperIndex = wrapperMatch?.index ?? -1;
-  const wrapperLocal = wrapperMatch?.[1];
+  const wrapperIndex = wrapperMatch?.match.index ?? -1;
+  const wrapperLocal = wrapperMatch?.match[1];
   const wrapperFunctionStart = wrapperIndex === -1 ? -1 : content.lastIndexOf("function ", wrapperIndex);
   const terminalMatches = [...content.matchAll(terminalPattern)];
   const terminalMatch = terminalMatches[0];
@@ -2081,7 +2096,7 @@ function patchStatuslineCommittedUsage(content) {
   const wrapperFunctionEnd =
     wrapperIndex === -1 || !wrapperMatch
       ? -1
-      : content.indexOf("function ", wrapperIndex + wrapperMatch[0].length);
+      : content.indexOf("function ", wrapperIndex + wrapperMatch.match[0].length);
   const wrapperFunctionSegment =
     wrapperFunctionStart === -1
       ? ""
@@ -2107,12 +2122,16 @@ function patchStatuslineCommittedUsage(content) {
   const wrapperOwnsTerminalArray =
     terminalIndex > wrapperIndex &&
     wrapperPushPattern !== null &&
-    wrapperPushPattern.test(content.slice(wrapperIndex + (wrapperMatch?.[0].length ?? 0), terminalIndex));
+    wrapperPushPattern.test(
+      content.slice(wrapperIndex + (wrapperMatch?.match[0].length ?? 0), terminalIndex)
+    );
   const cloneArrayIsDistinctFromTerminal = cloneArray !== terminalArray;
 
   if (
     reducerMatches.length !== 1 ||
     wrapperCount !== 1 ||
+    (wrapperMatch.effortCondition !== null &&
+      wrapperMatch.effortCondition !== wrapperMatch.effortProperty) ||
     terminalCount !== 1 ||
     aggregationCount !== 1 ||
     cloneMatches.length !== 2 ||
@@ -2133,14 +2152,15 @@ function patchStatuslineCommittedUsage(content) {
     'function __calicoUsageHasAccountingSignal(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)}' +
     'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}' +
     'function __calicoStatuslineMessages(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})}';
-  const wrapperTailPattern = new RegExp(
-    `,\\.\\.\\.!1,\\.\\.\\.${identifierPattern}&&\\{advisorModel:${identifierPattern}\\}\\};$`
+  const wrapperStateNeedle = ",...!1,";
+  const wrapperReplacement = wrapperMatch.match[0].replace(
+    wrapperStateNeedle,
+    ",...!1,__calicoUsageState:{committed:!1,usage:null},"
   );
-  const wrapperReplacement = wrapperMatch[0].replace(
-    wrapperTailPattern,
-    `,...!1,__calicoUsageState:{committed:!1,usage:null},...${wrapperMatch[10]}&&{advisorModel:${wrapperMatch[10]}}};`
-  );
-  if (wrapperReplacement === wrapperMatch[0]) {
+  if (
+    wrapperMatch.match[0].split(wrapperStateNeedle).length - 1 !== 1 ||
+    wrapperReplacement === wrapperMatch.match[0]
+  ) {
     return { content: original, candidates, patched: 0 };
   }
   const terminalReplacement = `for(let ${terminalItem} of ${terminalArray})${terminalItem}.message.usage=${terminalUsage},${terminalItem}.message.stop_reason=${terminalStop},${terminalItem}.message.stop_details=${terminalRawEvent}.delta.stop_details??null,${terminalStop}!=null&&!__calicoUsageIsExactAllZero(${terminalRawEvent}.usage)&&__calicoUsageHasAccountingSignal(${terminalUsage})&&(${terminalItem}.__calicoUsageState.committed=!0,${terminalItem}.__calicoUsageState.usage=${terminalUsage});`;
@@ -2153,7 +2173,7 @@ function patchStatuslineCommittedUsage(content) {
   const selectorMatch = selectorMatches[0];
   const selectorReplacement = `${selectorMatch[1]}=${reducerName}(__calicoStatuslineMessages(${selectorMatch[2]})),${selectorMatch[3]}=${selectorMatch[4]}(${selectorMatch[5]},${selectorMatch[6]}())`;
 
-  let output = original.replace(wrapperPattern, wrapperReplacement);
+  let output = original.replace(wrapperMatch.match[0], wrapperReplacement);
   output = output.replace(terminalPattern, terminalReplacement);
   let cloneIndex = 0;
   output = output.replace(cloneRegistrationPattern, () => cloneReplacements[cloneIndex++]);
