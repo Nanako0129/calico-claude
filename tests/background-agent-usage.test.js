@@ -25,6 +25,13 @@ function renameToken(source, from, to) {
   );
 }
 
+function modelsUsedFixture(source = fixture) {
+  return source.replace(
+    "let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});",
+    "let oe=RTy(s,e,g),de=fCs(oe,e,{...n,modelsUsed:_},{suppressTelemetry:ee});"
+  );
+}
+
 function renamedFixture() {
   const renames = [
     ["fQn", "uQn"],
@@ -251,6 +258,56 @@ test("matches renamed function, parameter, and seam locals", () => {
   const tracker = context.uQn();
   context.pQn(tracker, assistant("renamed", { input_tokens: 17, output_tokens: 4 }));
   assert.equal(context.dQn(tracker), 21);
+});
+
+test("accepts the 2.1.212 modelsUsed completion variant without changing metadata", () => {
+  const source = modelsUsedFixture();
+  const result = patchBackgroundAgentUsage(source);
+
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  assert.match(
+    result.content,
+    /de=fCs\(oe,e,\{\.\.\.n,modelsUsed:_\},\{suppressTelemetry:ee\}\);__calicoRefreshAgentUsage\(re,oe\),Z0u\(e,a9r\(re\),s\);/
+  );
+  assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
+  const wrongTranscriptRefresh = result.content.replace(
+    "__calicoRefreshAgentUsage(re,g)",
+    "__calicoRefreshAgentUsage(re,otherTranscript)"
+  );
+  assert.notEqual(wrongTranscriptRefresh, result.content);
+  assert.notEqual(
+    evaluatePatchModule("background-agent-usage", wrongTranscriptRefresh),
+    null
+  );
+});
+
+test("modelsUsed completion keeps one owner, status, transcript, and semantic role", () => {
+  const source = modelsUsedFixture();
+  const progress = "hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),s);";
+  const completion =
+    "let oe=RTy(s,e,g),de=fCs(oe,e,{...n,modelsUsed:_},{suppressTelemetry:ee});";
+  const splitFunctions = source.replace(
+    `function asyncLoopFixture(){${progress}${completion}if(tRu(de,s))return}`,
+    `function progressFixture(){${progress}}function completionFixture(){${completion}if(tRu(de,s))return}`
+  );
+  const brokenFixtures = [
+    source.replace("RTy(s,e,g)", "RTy(otherStatus,e,g)"),
+    source.replace("RTy(s,e,g)", "RTy(s,otherOwner,g)"),
+    source.replace(completion, `queueMicrotask(()=>{${completion}});`),
+    source.replace(
+      completion,
+      `${completion}let ox=RTy(s,e,g),dx=fCs(ox,e,n,{suppressTelemetry:ee});`
+    ),
+    splitFunctions,
+  ];
+
+  for (const broken of brokenFixtures) {
+    const result = patchBackgroundAgentUsage(broken);
+    assert.notEqual(broken, source);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, broken);
+  }
 });
 
 test("binary verifier rejects empty helpers hidden behind dead exact markers", () => {

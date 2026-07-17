@@ -1823,12 +1823,31 @@ function patchBackgroundAgentUsage(content) {
           "g"
         )
       : null;
-  const completionPattern = new RegExp(
+  const legacyCompletionPattern = new RegExp(
     `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,(${identifierPattern}),\\{suppressTelemetry:(${identifierPattern})\\}\\);`,
     "g"
   );
+  const modelsUsedCompletionPattern = new RegExp(
+    `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,\\{\\.\\.\\.(${identifierPattern}),modelsUsed:(${identifierPattern})\\},\\{suppressTelemetry:(${identifierPattern})\\}\\);`,
+    "g"
+  );
   const progressMatches = progressPattern ? [...content.matchAll(progressPattern)] : [];
-  const completionMatches = [...content.matchAll(completionPattern)];
+  const completionMatches = [
+    ...[...content.matchAll(legacyCompletionPattern)].map((match) => ({
+      match,
+      result: match[1],
+      status: match[3],
+      owner: match[4],
+      transcript: match[5],
+    })),
+    ...[...content.matchAll(modelsUsedCompletionPattern)].map((match) => ({
+      match,
+      result: match[1],
+      status: match[3],
+      owner: match[4],
+      transcript: match[5],
+    })),
+  ];
   const progressMatch = progressMatches[0];
   const completionMatch = completionMatches[0];
   const progressOwner = progressMatch?.[6];
@@ -1838,11 +1857,11 @@ function patchBackgroundAgentUsage(content) {
     progressIndex === -1 ? -1 : content.lastIndexOf("function ", progressIndex);
   const progressEnd =
     progressIndex === -1 || !progressMatch ? -1 : progressIndex + progressMatch[0].length;
-  const completionResult = completionMatch?.[1];
-  const completionStatus = completionMatch?.[3];
-  const completionOwner = completionMatch?.[4];
-  const completionTranscript = completionMatch?.[5];
-  const completionIndex = completionMatch?.index ?? -1;
+  const completionResult = completionMatch?.result;
+  const completionStatus = completionMatch?.status;
+  const completionOwner = completionMatch?.owner;
+  const completionTranscript = completionMatch?.transcript;
+  const completionIndex = completionMatch?.match.index ?? -1;
   const completionFunctionStart =
     completionIndex === -1 ? -1 : content.lastIndexOf("function ", completionIndex);
   const progressToCompletionSegment =
@@ -1898,7 +1917,10 @@ function patchBackgroundAgentUsage(content) {
   let output = original.replace(trackerPattern, trackerReplacement);
   output = output.replace(accountingPattern, eventReplacement);
   output = output.replace(progressPattern, progressReplacement);
-  output = output.replace(completionPattern, (full) => full + completionRefresh);
+  output = output.replace(
+    completionMatch.match[0],
+    completionMatch.match[0] + completionRefresh
+  );
 
   if (
     output.split("function __calicoTrackAgentUsage").length - 1 !== 1 ||

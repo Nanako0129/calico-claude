@@ -506,17 +506,48 @@ const CHECKS: Check[] = [
         return "background progress refresh calls a different event-accounting function";
       }
 
-      const completionPattern = new RegExp(
+      const legacyCompletionPattern = new RegExp(
         `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,(${identifier}),\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
-      const completionMatches = [...content.matchAll(completionPattern)];
+      const modelsUsedCompletionPattern = new RegExp(
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        "g"
+      );
+      const completionMatches = [
+        ...[...content.matchAll(legacyCompletionPattern)].map((match) => ({
+          match,
+          result: match[1],
+          status: match[3],
+          owner: match[4],
+          transcript: match[5],
+          refreshTracker: match[10],
+          refreshFunction: match[11],
+          refreshOwner: match[12],
+          summaryFunction: match[13],
+          summaryTracker: match[14],
+          refreshStatus: match[15],
+        })),
+        ...[...content.matchAll(modelsUsedCompletionPattern)].map((match) => ({
+          match,
+          result: match[1],
+          status: match[3],
+          owner: match[4],
+          transcript: match[5],
+          refreshTracker: match[11],
+          refreshFunction: match[12],
+          refreshOwner: match[13],
+          summaryFunction: match[14],
+          summaryTracker: match[15],
+          refreshStatus: match[16],
+        })),
+      ];
       if (completionMatches.length !== 1) {
         return `expected 1 semantic background completion refresh, found ${completionMatches.length}`;
       }
       const completion = completionMatches[0];
       const progressIndex = progress.index ?? -1;
-      const completionIndex = completion.index ?? -1;
+      const completionIndex = completion.match.index ?? -1;
       const progressEnd =
         progressIndex === -1 ? -1 : progressIndex + progress[0].length;
       const progressFunctionStart = content.lastIndexOf("function ", progressIndex);
@@ -531,15 +562,15 @@ const CHECKS: Check[] = [
         completionIndex < progressEnd ||
         progressToCompletionSegment.includes("=>") ||
         progressToCompletionSegment.includes("function ") ||
-        completion[10] !== progress[2] ||
-        completion[12] !== completion[4] ||
-        completion[14] !== progress[2] ||
-        completion[15] !== completion[3] ||
-        progress[6] !== completion[5] ||
-        progress[7] !== completion[11] ||
-        progress[8] !== completion[4] ||
-        progress[9] !== completion[13] ||
-        progress[10] !== completion[3]
+        completion.refreshTracker !== progress[2] ||
+        completion.refreshOwner !== completion.owner ||
+        completion.summaryTracker !== progress[2] ||
+        completion.refreshStatus !== completion.status ||
+        progress[6] !== completion.transcript ||
+        progress[7] !== completion.refreshFunction ||
+        progress[8] !== completion.owner ||
+        progress[9] !== completion.summaryFunction ||
+        progress[10] !== completion.status
       ) {
         return "background progress/completion refresh seams do not share tracker ownership";
       }
