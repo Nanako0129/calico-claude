@@ -303,23 +303,78 @@ const CHECKS: Check[] = [
       const workerEnd = workerEndCandidate === -1 ? content.length : workerEndCandidate;
       const workerSegment = content.slice(workerStart, workerEnd);
       const workerLocalIndex = workerIndex - workerStart;
-      const respawnIndex = workerSegment.lastIndexOf(
-        "respawnFlags:",
-        workerLocalIndex
+      function findObjectEnd(source: string, openIndex: number): number {
+        if (source[openIndex] !== "{") return -1;
+        let depth = 0;
+        let quote: string | null = null;
+        let escaped = false;
+        for (let index = openIndex; index < source.length; index += 1) {
+          const character = source[index];
+          if (quote !== null) {
+            if (escaped) escaped = false;
+            else if (character === "\\") escaped = true;
+            else if (character === quote) quote = null;
+            continue;
+          }
+          if (character === '"' || character === "'" || character === "`") {
+            quote = character;
+          } else if (character === "{") {
+            depth += 1;
+          } else if (character === "}") {
+            depth -= 1;
+            if (depth === 0) return index;
+          }
+        }
+        return -1;
+      }
+      const dispatchRecordPattern = new RegExp(
+        `let (${identifier})=\\{proto:${identifier},short:${identifier},sessionId:${identifier},`,
+        "g"
       );
-      const envIndex = workerSegment.lastIndexOf("env:", workerLocalIndex);
-      const dispatchIndex = workerSegment.indexOf(
-        "uea(",
-        workerLocalIndex + worker[0].length
-      );
-      if (
-        workerStart === -1 ||
-        respawnIndex === -1 ||
-        envIndex < respawnIndex ||
-        envIndex > workerLocalIndex ||
-        dispatchIndex === -1
-      ) {
+      const dispatchRecords = [...workerSegment.matchAll(dispatchRecordPattern)]
+        .map((match) => {
+          const recordStart = match.index ?? -1;
+          const recordOpen = recordStart + match[0].indexOf("{");
+          const recordEnd = findObjectEnd(workerSegment, recordOpen);
+          const respawnIndex = workerSegment.indexOf(
+            "respawnFlags:",
+            recordStart + match[0].length
+          );
+          const envIndex = workerSegment.indexOf("env:{", respawnIndex);
+          const envEnd = findObjectEnd(workerSegment, envIndex + "env:".length);
+          return { match, recordStart, recordEnd, respawnIndex, envIndex, envEnd };
+        })
+        .filter(
+          ({ recordStart, recordEnd, respawnIndex, envIndex, envEnd }) =>
+            recordStart !== -1 &&
+            recordStart < respawnIndex &&
+            respawnIndex < envIndex &&
+            envIndex < workerLocalIndex &&
+            workerLocalIndex < envEnd &&
+            envEnd < recordEnd
+        );
+      if (workerStart === -1 || dispatchRecords.length !== 1) {
         return "shared locator is detached from the worker/respawn dispatch record";
+      }
+      const dispatchRecord = dispatchRecords[0];
+      const dispatchRecordLocal = dispatchRecord.match[1];
+      const awaitedDispatchPattern = new RegExp(
+        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${dispatchRecordLocal}\\)\\]\\)`,
+        "g"
+      );
+      const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
+      const directDispatchPattern = new RegExp(
+        `(${identifier})\\(${dispatchRecordLocal}\\)`,
+        "g"
+      );
+      const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
+      if (
+        awaitedDispatches.length !== 1 ||
+        directDispatches.length !== 1 ||
+        (awaitedDispatches[0].index ?? -1) !== dispatchRecord.recordEnd ||
+        awaitedDispatches[0][2] !== directDispatches[0][1]
+      ) {
+        return "worker record is not directly dispatched once through awaited Promise.all";
       }
 
       return null;
@@ -451,17 +506,48 @@ const CHECKS: Check[] = [
         return "background progress refresh calls a different event-accounting function";
       }
 
-      const completionPattern = new RegExp(
+      const legacyCompletionPattern = new RegExp(
         `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,(${identifier}),\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
-      const completionMatches = [...content.matchAll(completionPattern)];
+      const modelsUsedCompletionPattern = new RegExp(
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        "g"
+      );
+      const completionMatches = [
+        ...[...content.matchAll(legacyCompletionPattern)].map((match) => ({
+          match,
+          result: match[1],
+          status: match[3],
+          owner: match[4],
+          transcript: match[5],
+          refreshTracker: match[10],
+          refreshFunction: match[11],
+          refreshOwner: match[12],
+          summaryFunction: match[13],
+          summaryTracker: match[14],
+          refreshStatus: match[15],
+        })),
+        ...[...content.matchAll(modelsUsedCompletionPattern)].map((match) => ({
+          match,
+          result: match[1],
+          status: match[3],
+          owner: match[4],
+          transcript: match[5],
+          refreshTracker: match[11],
+          refreshFunction: match[12],
+          refreshOwner: match[13],
+          summaryFunction: match[14],
+          summaryTracker: match[15],
+          refreshStatus: match[16],
+        })),
+      ];
       if (completionMatches.length !== 1) {
         return `expected 1 semantic background completion refresh, found ${completionMatches.length}`;
       }
       const completion = completionMatches[0];
       const progressIndex = progress.index ?? -1;
-      const completionIndex = completion.index ?? -1;
+      const completionIndex = completion.match.index ?? -1;
       const progressEnd =
         progressIndex === -1 ? -1 : progressIndex + progress[0].length;
       const progressFunctionStart = content.lastIndexOf("function ", progressIndex);
@@ -476,15 +562,15 @@ const CHECKS: Check[] = [
         completionIndex < progressEnd ||
         progressToCompletionSegment.includes("=>") ||
         progressToCompletionSegment.includes("function ") ||
-        completion[10] !== progress[2] ||
-        completion[12] !== completion[4] ||
-        completion[14] !== progress[2] ||
-        completion[15] !== completion[3] ||
-        progress[6] !== completion[5] ||
-        progress[7] !== completion[11] ||
-        progress[8] !== completion[4] ||
-        progress[9] !== completion[13] ||
-        progress[10] !== completion[3]
+        completion.refreshTracker !== progress[2] ||
+        completion.refreshOwner !== completion.owner ||
+        completion.summaryTracker !== progress[2] ||
+        completion.refreshStatus !== completion.status ||
+        progress[6] !== completion.transcript ||
+        progress[7] !== completion.refreshFunction ||
+        progress[8] !== completion.owner ||
+        progress[9] !== completion.summaryFunction ||
+        progress[10] !== completion.status
       ) {
         return "background progress/completion refresh seams do not share tracker ownership";
       }
@@ -556,17 +642,59 @@ const CHECKS: Check[] = [
         }
       }
 
-      const wrapperPattern = new RegExp(
+      const legacyWrapperPattern = new RegExp(
         `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\}\\};`,
         "g"
       );
-      const wrapperMatches = [...content.matchAll(wrapperPattern)];
+      const effortWrapperPattern = new RegExp(
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        "g"
+      );
+      const wrapperMatches = [
+        ...[...content.matchAll(legacyWrapperPattern)].map((match) => ({
+          match,
+          effortCondition: null,
+          effortProperty: null,
+        })),
+        ...[...content.matchAll(effortWrapperPattern)].map((match) => ({
+          match,
+          effortCondition: match[11],
+          effortProperty: match[12],
+        })),
+      ];
       if (wrapperMatches.length !== 1) {
         return `expected 1 canonical wrapper-owned usage cell, found ${wrapperMatches.length}`;
       }
       const wrapper = wrapperMatches[0];
-      const wrapperLocal = wrapper[1];
-      const wrapperIndex = wrapper.index ?? -1;
+      if (
+        wrapper.effortCondition !== null &&
+        wrapper.effortCondition !== wrapper.effortProperty
+      ) {
+        return "statusline effort condition and property use different locals";
+      }
+      const modelsUsedCompletionSignalPattern = new RegExp(
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        "g"
+      );
+      const modelsUsedCompletionSignals = [
+        ...content.matchAll(modelsUsedCompletionSignalPattern),
+      ].filter(
+        (match) =>
+          match[13] === match[4] &&
+          match[15] === match[11] &&
+          match[16] === match[3]
+      );
+      if (modelsUsedCompletionSignals.length > 1) {
+        return "ambiguous 2.1.212 background modelsUsed completion signal";
+      }
+      if (
+        modelsUsedCompletionSignals.length === 1 &&
+        wrapper.effortCondition === null
+      ) {
+        return "2.1.212 modelsUsed completion requires an effort-bearing statusline wrapper";
+      }
+      const wrapperLocal = wrapper.match[1];
+      const wrapperIndex = wrapper.match.index ?? -1;
       const wrapperFunctionStart = content.lastIndexOf("function ", wrapperIndex);
 
       const terminalPattern = new RegExp(

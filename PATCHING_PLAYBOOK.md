@@ -180,8 +180,15 @@ Atomicity and verification:
 - tracker construction, assistant accounting, registry progress, and completion anchors are matched
   by semantic bundle shape rather than platform-varying minified function names; each must occur
   exactly once or the module returns `patched: 0`
+- Claude Code 2.1.211 finalizes with `finalize(result, owner, options, {suppressTelemetry})`;
+  2.1.212 uses `finalize(result, owner, optionsWithModelsUsed, {suppressTelemetry})`, where the third
+  argument is exactly `{...options, modelsUsed:modelSet}`. These are two syntax variants of one
+  completion role: their result, status, owner, and transcript locals are normalized, and both variants
+  present together are rejected
+- the injected refresh is appended after the matched native completion, so `modelsUsed` and telemetry
+  metadata are not rebuilt or dropped
 - `scripts/verify-patched-binary.ts` requires both helpers, the response-ID map, terminal stream
-  support, and both transcript refresh seams
+  support, both transcript refresh seams, and exactly one owned completion variant
 - regression tests cover provisional `0/0`, native message-start input, terminal GPT usage,
   repeated frames, late wrapper mutation, direct completed wrappers, and multi-turn totals
 
@@ -203,6 +210,9 @@ Source of truth:
 
 - the canonical query-stream assistant wrapper is created provisionally with a shared object cell:
   `__calicoUsageState:{committed:!1,usage:null}`
+- Claude Code 2.1.212 appends `...effortLocal!==void 0&&{effort:effortLocal}` after the existing
+  advisor metadata; the cell is inserted immediately after the native `...!1` marker so both metadata
+  spreads remain byte-for-byte intact
 - production app state shallow-copies the wrapper before the terminal event; the shared object cell
   survives that copy, unlike the old primitive top-level boolean which remained stale `false`
 - the normal terminal `message_delta` mutation loop is the only path that can set `committed:!0`
@@ -257,11 +267,15 @@ Atomicity and verification:
 - the wrapper, canonical `case"message_delta"` aggregation, terminal loop, both clone
   registrations, clone-sync loop, and status-line selector are matched by semantic bundle shape
   rather than platform-varying minified locals; each anchor must occur exactly once
+- legacy advisor-only and 2.1.212 advisor-plus-effort tails are syntax variants of one wrapper role;
+  the effort condition and property must use the same local, and both variants present together fail
 - if any required anchor is missing or repeated, the module returns the original bundle with
   `patched: 0`
 - `scripts/verify-patched-binary.ts` checks commit-cell/helper/selector occurrence counts, confirms
   downstream clones synchronize wrapper ownership, and rejects snapshot assignments that escape
   the canonical terminal loop or appear in message-stop/UI reducer paths
+- an owned background `modelsUsed` completion is the 2.1.212 bundle signal; when present, the verifier
+  requires the effort-bearing wrapper instead of treating the effort tail as optional
 
 Likely break signs:
 
@@ -309,7 +323,7 @@ Atomic publish:
 - write or rename failure restores the exact prior env presence/value and removes the temporary file;
   the previously published mode remains authoritative
 
-Claude Code 2.1.211 semantic anchors:
+Claude Code 2.1.211–2.1.212 semantic anchors:
 
 - the interactive handler is identified by the native availability reason, `"shortcut"` Fast action,
   picker telemetry, JSX picker fallback, and app-state access
@@ -319,8 +333,10 @@ Claude Code 2.1.211 semantic anchors:
   owns non-interactive support; both retain the same native model-description getter
 - the request-body builder parses `CLAUDE_CODE_EXTRA_BODY`, validates that the native result is an
   object, merges `anthropic_beta`, and returns the resulting body
-- the worker dispatch record owns `respawnFlags`, the raw extra-body/PATH env snapshots, and the
-  `uea(...)` launch call used by initial and respawned workers
+- the worker dispatch record owns `proto`, `short`, `sessionId`, `respawnFlags`, and the raw
+  extra-body/PATH env snapshots. The same record must be passed exactly once to a direct dispatch call
+  inside awaited `Promise.all`; the dispatch function's minified symbol is not an anchor (`uea(U)` in
+  2.1.211 and `Jia(J)` in 2.1.212 are examples, not fixed names)
 - all six surfaces must be discovered exactly once before any replacement is applied; otherwise the
   module returns the original bundle with `patched: 0`
 
@@ -356,8 +372,9 @@ Atomicity and verification:
   preserved native fallbacks, registration ownership, parse-then-apply-then-beta order, and the
   locator beside raw extra-body/PATH snapshots in the worker respawn dispatch record
 - verifier mutations cover commented/rebound helpers, missing command surfaces, parse/beta drift,
-  catch-only application, detached worker env data, registration drift, full-body persistence,
-  Anthropic speed injection, and stale thin toggles
+  catch-only application, detached worker env data, wrong-record/outside-`Promise.all`/callback-deferred
+  or duplicate dispatch, registration drift, full-body persistence, Anthropic speed injection, and
+  stale thin toggles
 - fixture tests model shared request-time state, but they do not replace live proof with a real
   existing worker process, thin client, request-capture gateway, and respawn
 
@@ -726,20 +743,27 @@ node patch-claude-display.ts --file ./content.js --list-patches
 node patch-claude-display.ts --file ./content.js --dry-run
 ```
 
-## CI Caveat
+## CI and Release Caveats
 
-Current CI behavior is not a proof that patching happened.
+The patch workflow now uses `--assert-all`, runs the structural binary verifier, and checks the
+runtime `(patched)` marker on executable runners. Those per-platform checks are necessary, but five
+matrix jobs still create five GitHub Releases independently; publication is not cross-platform atomic.
 
-- the workflow uploads `work/${OUT_BASE}.patched`
-- that file path is created by copying the original binary first
-- if the patcher makes no changes, the job can still succeed
-- runtime `--version` output is printed, but the workflow does not currently assert on `(patched)`
+For a version-wide release:
 
-So when investigating release correctness, treat these as strong signals, in order:
+1. pin the approved merge commit with an immutable provenance tag and dispatch from that tag, not a
+   mutable default branch
+2. pre-create each platform base tag at the same approved commit because `gh release create` without
+   `--target` otherwise creates a missing tag from the current default branch
+3. identify the exact workflow run ID created by each dispatch and verify its `headSha`; do not infer
+   provenance from the latest run
+4. a `force=false` retry can fill a missing platform only when that platform has no GitHub Release.
+   An incomplete Release can already exist after a failed upload and will be skipped on retry; stop and
+   obtain an explicit disposition instead of deleting, force-publishing, or claiming success
+5. download every released binary and `checksums.txt`, verify the digest, then verify the provenance
+   attestation subject, source commit, signer workflow, and run ID against the accepted run
 
-1. nonzero patch counts for the expected modules
-2. runtime `--version` output including `(patched)`
-3. different checksums between original and patched binaries
+Do not report a partial set of platform Releases as a complete version release.
 
 ## Maintenance Notes
 

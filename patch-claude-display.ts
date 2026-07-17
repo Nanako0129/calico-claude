@@ -1823,12 +1823,31 @@ function patchBackgroundAgentUsage(content) {
           "g"
         )
       : null;
-  const completionPattern = new RegExp(
+  const legacyCompletionPattern = new RegExp(
     `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,(${identifierPattern}),\\{suppressTelemetry:(${identifierPattern})\\}\\);`,
     "g"
   );
+  const modelsUsedCompletionPattern = new RegExp(
+    `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,\\{\\.\\.\\.(${identifierPattern}),modelsUsed:(${identifierPattern})\\},\\{suppressTelemetry:(${identifierPattern})\\}\\);`,
+    "g"
+  );
   const progressMatches = progressPattern ? [...content.matchAll(progressPattern)] : [];
-  const completionMatches = [...content.matchAll(completionPattern)];
+  const completionMatches = [
+    ...[...content.matchAll(legacyCompletionPattern)].map((match) => ({
+      match,
+      result: match[1],
+      status: match[3],
+      owner: match[4],
+      transcript: match[5],
+    })),
+    ...[...content.matchAll(modelsUsedCompletionPattern)].map((match) => ({
+      match,
+      result: match[1],
+      status: match[3],
+      owner: match[4],
+      transcript: match[5],
+    })),
+  ];
   const progressMatch = progressMatches[0];
   const completionMatch = completionMatches[0];
   const progressOwner = progressMatch?.[6];
@@ -1838,11 +1857,11 @@ function patchBackgroundAgentUsage(content) {
     progressIndex === -1 ? -1 : content.lastIndexOf("function ", progressIndex);
   const progressEnd =
     progressIndex === -1 || !progressMatch ? -1 : progressIndex + progressMatch[0].length;
-  const completionResult = completionMatch?.[1];
-  const completionStatus = completionMatch?.[3];
-  const completionOwner = completionMatch?.[4];
-  const completionTranscript = completionMatch?.[5];
-  const completionIndex = completionMatch?.index ?? -1;
+  const completionResult = completionMatch?.result;
+  const completionStatus = completionMatch?.status;
+  const completionOwner = completionMatch?.owner;
+  const completionTranscript = completionMatch?.transcript;
+  const completionIndex = completionMatch?.match.index ?? -1;
   const completionFunctionStart =
     completionIndex === -1 ? -1 : content.lastIndexOf("function ", completionIndex);
   const progressToCompletionSegment =
@@ -1898,7 +1917,10 @@ function patchBackgroundAgentUsage(content) {
   let output = original.replace(trackerPattern, trackerReplacement);
   output = output.replace(accountingPattern, eventReplacement);
   output = output.replace(progressPattern, progressReplacement);
-  output = output.replace(completionPattern, (full) => full + completionRefresh);
+  output = output.replace(
+    completionMatch.match[0],
+    completionMatch.match[0] + completionRefresh
+  );
 
   if (
     output.split("function __calicoTrackAgentUsage").length - 1 !== 1 ||
@@ -1922,8 +1944,12 @@ function patchStatuslineCommittedUsage(content) {
     `function (${identifierPattern})\\((${identifierPattern})\\)\\{for\\(let (${identifierPattern})=\\2\\.length-1;\\3>=0;\\3--\\)\\{let (${identifierPattern})=\\2\\[\\3\\],(${identifierPattern})=\\4\\?(${identifierPattern})\\(\\4\\):void 0;if\\(\\5\\)return\\{input_tokens:\\5\\.input_tokens,output_tokens:\\5\\.output_tokens,cache_creation_input_tokens:\\5\\.cache_creation_input_tokens\\?\\?0,cache_read_input_tokens:\\5\\.cache_read_input_tokens\\?\\?0\\}\\}return null\\}`,
     "g"
   );
-  const wrapperPattern = new RegExp(
+  const legacyWrapperPattern = new RegExp(
     `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\}\\};`,
+    "g"
+  );
+  const effortWrapperPattern = new RegExp(
+    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
@@ -1942,10 +1968,21 @@ function patchStatuslineCommittedUsage(content) {
         "g"
       )
     : null;
-  const wrapperMatches = [...content.matchAll(wrapperPattern)];
+  const wrapperMatches = [
+    ...[...content.matchAll(legacyWrapperPattern)].map((match) => ({
+      match,
+      effortCondition: null,
+      effortProperty: null,
+    })),
+    ...[...content.matchAll(effortWrapperPattern)].map((match) => ({
+      match,
+      effortCondition: match[11],
+      effortProperty: match[12],
+    })),
+  ];
   const wrapperMatch = wrapperMatches[0];
-  const wrapperIndex = wrapperMatch?.index ?? -1;
-  const wrapperLocal = wrapperMatch?.[1];
+  const wrapperIndex = wrapperMatch?.match.index ?? -1;
+  const wrapperLocal = wrapperMatch?.match[1];
   const wrapperFunctionStart = wrapperIndex === -1 ? -1 : content.lastIndexOf("function ", wrapperIndex);
   const terminalMatches = [...content.matchAll(terminalPattern)];
   const terminalMatch = terminalMatches[0];
@@ -2059,7 +2096,7 @@ function patchStatuslineCommittedUsage(content) {
   const wrapperFunctionEnd =
     wrapperIndex === -1 || !wrapperMatch
       ? -1
-      : content.indexOf("function ", wrapperIndex + wrapperMatch[0].length);
+      : content.indexOf("function ", wrapperIndex + wrapperMatch.match[0].length);
   const wrapperFunctionSegment =
     wrapperFunctionStart === -1
       ? ""
@@ -2085,12 +2122,16 @@ function patchStatuslineCommittedUsage(content) {
   const wrapperOwnsTerminalArray =
     terminalIndex > wrapperIndex &&
     wrapperPushPattern !== null &&
-    wrapperPushPattern.test(content.slice(wrapperIndex + (wrapperMatch?.[0].length ?? 0), terminalIndex));
+    wrapperPushPattern.test(
+      content.slice(wrapperIndex + (wrapperMatch?.match[0].length ?? 0), terminalIndex)
+    );
   const cloneArrayIsDistinctFromTerminal = cloneArray !== terminalArray;
 
   if (
     reducerMatches.length !== 1 ||
     wrapperCount !== 1 ||
+    (wrapperMatch.effortCondition !== null &&
+      wrapperMatch.effortCondition !== wrapperMatch.effortProperty) ||
     terminalCount !== 1 ||
     aggregationCount !== 1 ||
     cloneMatches.length !== 2 ||
@@ -2111,14 +2152,15 @@ function patchStatuslineCommittedUsage(content) {
     'function __calicoUsageHasAccountingSignal(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)}' +
     'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}' +
     'function __calicoStatuslineMessages(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})}';
-  const wrapperTailPattern = new RegExp(
-    `,\\.\\.\\.!1,\\.\\.\\.${identifierPattern}&&\\{advisorModel:${identifierPattern}\\}\\};$`
+  const wrapperStateNeedle = ",...!1,";
+  const wrapperReplacement = wrapperMatch.match[0].replace(
+    wrapperStateNeedle,
+    ",...!1,__calicoUsageState:{committed:!1,usage:null},"
   );
-  const wrapperReplacement = wrapperMatch[0].replace(
-    wrapperTailPattern,
-    `,...!1,__calicoUsageState:{committed:!1,usage:null},...${wrapperMatch[10]}&&{advisorModel:${wrapperMatch[10]}}};`
-  );
-  if (wrapperReplacement === wrapperMatch[0]) {
+  if (
+    wrapperMatch.match[0].split(wrapperStateNeedle).length - 1 !== 1 ||
+    wrapperReplacement === wrapperMatch.match[0]
+  ) {
     return { content: original, candidates, patched: 0 };
   }
   const terminalReplacement = `for(let ${terminalItem} of ${terminalArray})${terminalItem}.message.usage=${terminalUsage},${terminalItem}.message.stop_reason=${terminalStop},${terminalItem}.message.stop_details=${terminalRawEvent}.delta.stop_details??null,${terminalStop}!=null&&!__calicoUsageIsExactAllZero(${terminalRawEvent}.usage)&&__calicoUsageHasAccountingSignal(${terminalUsage})&&(${terminalItem}.__calicoUsageState.committed=!0,${terminalItem}.__calicoUsageState.usage=${terminalUsage});`;
@@ -2131,7 +2173,7 @@ function patchStatuslineCommittedUsage(content) {
   const selectorMatch = selectorMatches[0];
   const selectorReplacement = `${selectorMatch[1]}=${reducerName}(__calicoStatuslineMessages(${selectorMatch[2]})),${selectorMatch[3]}=${selectorMatch[4]}(${selectorMatch[5]},${selectorMatch[6]}())`;
 
-  let output = original.replace(wrapperPattern, wrapperReplacement);
+  let output = original.replace(wrapperMatch.match[0], wrapperReplacement);
   output = output.replace(terminalPattern, terminalReplacement);
   let cloneIndex = 0;
   output = output.replace(cloneRegistrationPattern, () => cloneReplacements[cloneIndex++]);
@@ -2320,10 +2362,88 @@ function patchGatewayFastMode(content) {
   const workerEndCandidate = content.indexOf("async function ", workerIndex + worker[0].length);
   const workerEnd = workerEndCandidate === -1 ? content.length : workerEndCandidate;
   const workerSegment = content.slice(workerStart, workerEnd);
+  const workerLocalIndex = workerIndex - workerStart;
+  function findObjectEnd(source, openIndex) {
+    if (source[openIndex] !== "{") return -1;
+    let depth = 0;
+    let quote = null;
+    let escaped = false;
+    for (let index = openIndex; index < source.length; index += 1) {
+      const character = source[index];
+      if (quote !== null) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === quote) quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'" || character === "`") {
+        quote = character;
+      } else if (character === "{") {
+        depth += 1;
+      } else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) return index;
+      }
+    }
+    return -1;
+  }
+  const dispatchRecordPattern = new RegExp(
+    "let (" +
+      identifier +
+      ")=\\{proto:" +
+      identifier +
+      ",short:" +
+      identifier +
+      ",sessionId:" +
+      identifier +
+      ",",
+    "g"
+  );
+  const dispatchRecords = [...workerSegment.matchAll(dispatchRecordPattern)]
+    .map((match) => {
+      const recordStart = match.index ?? -1;
+      const recordOpen = recordStart + match[0].indexOf("{");
+      const recordEnd = findObjectEnd(workerSegment, recordOpen);
+      const respawnIndex = workerSegment.indexOf("respawnFlags:", recordStart + match[0].length);
+      const envIndex = workerSegment.indexOf("env:{", respawnIndex);
+      const envEnd = findObjectEnd(workerSegment, envIndex + "env:".length);
+      return { match, recordStart, recordEnd, respawnIndex, envIndex, envEnd };
+    })
+    .filter(
+      ({ recordStart, recordEnd, respawnIndex, envIndex, envEnd }) =>
+        recordStart !== -1 &&
+        recordStart < respawnIndex &&
+        respawnIndex < envIndex &&
+        envIndex < workerLocalIndex &&
+        workerLocalIndex < envEnd &&
+        envEnd < recordEnd
+    );
+  if (dispatchRecords.length !== 1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  const dispatchRecord = dispatchRecords[0];
+  const dispatchRecordLocal = dispatchRecord.match[1];
+  const awaitedDispatchPattern = new RegExp(
+    "\\},\\[,(" +
+      identifier +
+      ")\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(" +
+      identifier +
+      ")\\(" +
+      dispatchRecordLocal +
+      "\\)\\]\\)",
+    "g"
+  );
+  const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
+  const directDispatchPattern = new RegExp(
+    "(" + identifier + ")\\(" + dispatchRecordLocal + "\\)",
+    "g"
+  );
+  const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
   if (
-    !workerSegment.includes("env:") ||
-    !workerSegment.includes("respawnFlags:") ||
-    !workerSegment.includes("uea(")
+    awaitedDispatches.length !== 1 ||
+    directDispatches.length !== 1 ||
+    (awaitedDispatches[0].index ?? -1) !== dispatchRecord.recordEnd ||
+    awaitedDispatches[0][2] !== directDispatches[0][1]
   ) {
     return { content: original, candidates, patched: 0 };
   }
