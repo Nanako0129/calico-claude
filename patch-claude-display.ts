@@ -2164,6 +2164,267 @@ function patchStatuslineCommittedUsage(content) {
   return { content: output, candidates, patched: 6 };
 }
 
+function patchGatewayFastMode(content) {
+  const original = content;
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const interactivePattern = new RegExp(
+    "async function (" +
+      identifier +
+      ")\\((" +
+      identifier +
+      "),(" +
+      identifier +
+      "),(" +
+      identifier +
+      ")\\)\\{if\\(!(" +
+      identifier +
+      ")\\(\\)\\)return \\2\\((" +
+      identifier +
+      ")\\(\\)\\?\\?\"Fast mode is not available\"\\),null;",
+    "g"
+  );
+  const thinPattern = new RegExp(
+    "async function (" +
+      identifier +
+      ")\\((" +
+      identifier +
+      "),(" +
+      identifier +
+      ")\\)\\{if\\(!(" +
+      identifier +
+      ")\\(\\)\\)return\\{type:\"text\",value:(" +
+      identifier +
+      ")\\(\\)\\?\\?\"Fast mode is not available\"\\};",
+    "g"
+  );
+  const localJsxPattern =
+    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",get immediate\(\)\{return ([A-Za-z_$][\w$]*)\(\)\},requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+  const localPattern =
+    /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\}/g;
+  const builderPattern = new RegExp(
+    "function (" +
+      identifier +
+      ")\\((" +
+      identifier +
+      ")\\)\\{let (" +
+      identifier +
+      ")=process\\.env\\.CLAUDE_CODE_EXTRA_BODY,(" +
+      identifier +
+      ")=\\{\\};",
+    "g"
+  );
+  const workerPattern = new RegExp(
+    "\\.\\.\\.(" +
+      identifier +
+      ")\\.CLAUDE_CODE_EXTRA_BODY&&\\{CLAUDE_CODE_EXTRA_BODY:\\1\\.CLAUDE_CODE_EXTRA_BODY\\}",
+    "g"
+  );
+
+  const interactiveMatches = [...content.matchAll(interactivePattern)];
+  const thinMatches = [...content.matchAll(thinPattern)];
+  const localJsxMatches = [...content.matchAll(localJsxPattern)];
+  const localMatches = [...content.matchAll(localPattern)];
+  const builderMatches = [...content.matchAll(builderPattern)];
+  const workerMatches = [...content.matchAll(workerPattern)];
+  const candidates =
+    interactiveMatches.length +
+    thinMatches.length +
+    localJsxMatches.length +
+    localMatches.length +
+    builderMatches.length +
+    workerMatches.length;
+
+  if (
+    interactiveMatches.length !== 1 ||
+    thinMatches.length !== 1 ||
+    localJsxMatches.length !== 1 ||
+    localMatches.length !== 1 ||
+    builderMatches.length !== 1 ||
+    workerMatches.length !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const interactive = interactiveMatches[0];
+  const thin = thinMatches[0];
+  const localJsx = localJsxMatches[0];
+  const local = localMatches[0];
+  const builder = builderMatches[0];
+  const worker = workerMatches[0];
+
+  if (
+    interactive[5] !== thin[4] ||
+    interactive[6] !== thin[5] ||
+    local[3] !== local[4]
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const interactiveStart = interactive.index ?? -1;
+  const interactiveEndCandidate = content.indexOf(
+    "async function ",
+    interactiveStart + interactive[0].length
+  );
+  const interactiveEnd = interactiveEndCandidate === -1 ? content.length : interactiveEndCandidate;
+  const interactiveSegment = content.slice(interactiveStart, interactiveEnd);
+  const interactiveAction = interactiveSegment.match(
+    /await ([A-Za-z_$][\w$]*)\([^;]*?"shortcut"/
+  )?.[1];
+  if (
+    interactiveStart === -1 ||
+    !interactiveAction ||
+    !interactiveSegment.includes("tengu_fast_mode_picker_shown") ||
+    !interactiveSegment.includes(".getAppState") ||
+    !interactiveSegment.includes(".setAppState") ||
+    !interactiveSegment.includes(".jsx(")
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const thinStart = thin.index ?? -1;
+  const thinEndCandidate = content.indexOf("async function ", thinStart + thin[0].length);
+  const thinEnd = thinEndCandidate === -1 ? content.length : thinEndCandidate;
+  const thinSegment = content.slice(thinStart, thinEnd);
+  const thinAction = thinSegment.match(/await ([A-Za-z_$][\w$]*)\([^;]*?"bridge"/)?.[1];
+  if (
+    thinStart === -1 ||
+    !thinAction ||
+    thinAction !== interactiveAction ||
+    !thinSegment.includes(".options.fastMode") ||
+    !thinSegment.includes("Unknown argument") ||
+    !thinSegment.includes(".getAppState") ||
+    !thinSegment.includes(".setAppState")
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const builderStart = builder.index ?? -1;
+  const builderEndCandidate = content.indexOf("function ", builderStart + builder[0].length);
+  const builderEnd = builderEndCandidate === -1 ? content.length : builderEndCandidate;
+  const builderSegment = content.slice(builderStart, builderEnd);
+  const betaMergeNeedle = `if(${builder[2]}&&${builder[2]}.length>0){`;
+  const builderReturnNeedle = `return ${builder[4]}}`;
+  if (
+    builderStart === -1 ||
+    builderSegment.split(betaMergeNeedle).length - 1 !== 1 ||
+    builderSegment.split(builderReturnNeedle).length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const workerIndex = worker.index ?? -1;
+  const workerStart = content.lastIndexOf("async function ", workerIndex);
+  if (workerIndex === -1 || workerStart === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  const workerEndCandidate = content.indexOf("async function ", workerIndex + worker[0].length);
+  const workerEnd = workerEndCandidate === -1 ? content.length : workerEndCandidate;
+  const workerSegment = content.slice(workerStart, workerEnd);
+  if (
+    !workerSegment.includes("env:") ||
+    !workerSegment.includes("respawnFlags:") ||
+    !workerSegment.includes("uea(")
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const helperBlock = String.raw`var __calicoGatewayFastNode={fs:process.getBuiltinModule("fs"),path:process.getBuiltinModule("path"),os:process.getBuiltinModule("os"),crypto:process.getBuiltinModule("crypto")};
+var __calicoGatewayFastState={path:null,dir:null,owner:!1};
+function __calicoGatewayFastEnsure(){if(process.env.REMORA_ACTIVE!=="1")return __calicoGatewayFastState;let e=process.env.CALICO_GATEWAY_FAST_STATE_FILE;if(e){if(__calicoGatewayFastState.path!==e)__calicoGatewayFastState={path:e,dir:null,owner:!1};return __calicoGatewayFastState}if(__calicoGatewayFastState.path){process.env.CALICO_GATEWAY_FAST_STATE_FILE=__calicoGatewayFastState.path;return __calicoGatewayFastState}let t=__calicoGatewayFastNode,r=t.fs.mkdtempSync(t.path.join(t.os.tmpdir(),"calico-gateway-fast-"));try{t.fs.chmodSync(r,0o700);let n=t.path.join(r,"mode");t.fs.writeFileSync(n,"inherit",{encoding:"utf8",mode:0o600,flag:"wx"});t.fs.chmodSync(n,0o600);process.env.CALICO_GATEWAY_FAST_STATE_FILE=n;__calicoGatewayFastState={path:n,dir:r,owner:!0};typeof process.once==="function"&&process.once("exit",()=>{try{t.fs.rmSync(r,{recursive:!0,force:!0})}catch{}});return __calicoGatewayFastState}catch(n){try{t.fs.rmSync(r,{recursive:!0,force:!0})}catch{}throw n}}
+__calicoGatewayFastEnsure();
+function __calicoGatewayFastRead(){let e=__calicoGatewayFastEnsure();if(!e.path)throw Error("gateway fast state is unavailable");let t=__calicoGatewayFastNode.fs.readFileSync(e.path,"utf8");if(t!=="inherit"&&t!=="on"&&t!=="off")throw Error("gateway fast state is invalid");return t}
+function __calicoGatewayFastParse(e){let t=String(e??"");t=t.trim()===""?"{}":t;let r=0;function n(){while(r<t.length&&/\s/.test(t[r]))r++}function o(e=r){if(t[r++]!=='"')throw Error("expected JSON string");while(r<t.length){let n=t[r++];if(n==='"')return JSON.parse(t.slice(e,r));if(n==='\\'){if(r>=t.length)throw Error("invalid JSON escape");let e=t[r++];if(!'"\\/bfnrtu'.includes(e))throw Error("invalid JSON escape");if(e==='u'){if(r+4>t.length||!/^[0-9a-fA-F]{4}$/.test(t.slice(r,r+4)))throw Error("invalid JSON unicode escape");r+=4}}else if(n.charCodeAt(0)<32)throw Error("invalid JSON string character")}throw Error("unterminated JSON string")}
+function i(){n();if(t[r++]!=='{')throw Error("expected JSON object");let e=new Set;n();if(t[r]==='}'){r++;return}for(;;){n();let s=r,a=o(s);if(e.has(a))throw Error('duplicate JSON key "'+a+'"');e.add(a);n();if(t[r++]!==':')throw Error("expected JSON colon");l();n();if(t[r]==='}'){r++;return}if(t[r++]!==',')throw Error("expected JSON comma")}}
+function s(){n();if(t[r++]!=='[')throw Error("expected JSON array");n();if(t[r]===']'){r++;return}for(;;){l();n();if(t[r]===']'){r++;return}if(t[r++]!==',')throw Error("expected JSON comma")}}
+function a(){let e=r;while(r<t.length&&!/[\s,\]}]/.test(t[r]))r++;if(r===e)throw Error("expected JSON value")}
+function l(){n();if(t[r]==='{')return i();if(t[r]==='[')return s();if(t[r]==='"'){o(r);return}a()}
+l();n();if(r!==t.length)throw Error("unexpected JSON content");let c=JSON.parse(t);if(c===null||typeof c!=="object"||Array.isArray(c))throw Error("CLAUDE_CODE_EXTRA_BODY must be a JSON object");(function e(t){if(typeof t==="number"&&!Number.isFinite(t))throw Error("CLAUDE_CODE_EXTRA_BODY contains a non-finite number");if(Array.isArray(t))for(let r of t)e(r);else if(t&&typeof t==="object")for(let r of Object.values(t))e(r)})(c);return c}
+function __calicoGatewayFastTier(e){if(!Object.prototype.hasOwnProperty.call(e,"service_tier"))return!1;let t=e.service_tier;if(t==="fast"||t==="priority")return!0;throw Error('CLAUDE_CODE_EXTRA_BODY service_tier must be "fast" or "priority"')}
+function __calicoGatewayFastRestore(e,t){if(e)process.env.CLAUDE_CODE_EXTRA_BODY=t;else delete process.env.CLAUDE_CODE_EXTRA_BODY}
+function __calicoGatewayFastPublish(e,t,r,n){let o=__calicoGatewayFastEnsure();if(!o.path)throw Error("gateway fast state is unavailable");let i=__calicoGatewayFastNode,s=i.path.dirname(o.path),a=i.path.basename(o.path)+"."+process.pid+"."+i.crypto.randomBytes(8).toString("hex")+".tmp",l=i.path.join(s,a),c=!1;try{i.fs.writeFileSync(l,e,{encoding:"utf8",mode:0o600,flag:"wx"});c=!0;i.fs.chmodSync(l,0o600);process.env.CLAUDE_CODE_EXTRA_BODY=t;i.fs.renameSync(l,o.path)}catch(u){__calicoGatewayFastRestore(r,n);if(c)try{i.fs.unlinkSync(l)}catch{}throw u}}
+function __calicoGatewayFastCommandValue(e){let t=typeof e==="string"?e.trim().toLowerCase():"";if(t!==""&&t!=="on"&&t!=="off")return'Unknown argument "'+t+'". Use: /fast [on|off]';try{let r=__calicoGatewayFastRead(),n=Object.prototype.hasOwnProperty.call(process.env,"CLAUDE_CODE_EXTRA_BODY"),o=process.env.CLAUDE_CODE_EXTRA_BODY,i=__calicoGatewayFastParse(o),s;if(t==="on")s="on";else if(t==="off")s="off";else if(r==="on")s="off";else if(r==="off")s="on";else s=__calicoGatewayFastTier(i)?"off":"on";if(s==="on"){__calicoGatewayFastTier(i);i.service_tier="priority"}else delete i.service_tier;let a=JSON.stringify(i);__calicoGatewayFastPublish(s,a,n,o);return s==="on"?"Gateway priority mode ON (this session only)":"Gateway priority mode OFF (this session only)"}catch(r){return"Gateway priority mode error: "+(r&&r.message?r.message:String(r))}}
+function __calicoGatewayFastInteractive(e,t){e(__calicoGatewayFastCommandValue(t));return null}
+function __calicoGatewayFastThin(e){return{type:"text",value:__calicoGatewayFastCommandValue(e)}}
+function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r}
+`;
+
+  const interactiveReplacement = interactive[0].replace(
+    `if(!${interactive[5]}())return ${interactive[2]}(${interactive[6]}()??"Fast mode is not available"),null;`,
+    `if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastInteractive(${interactive[2]},${interactive[4]});if(!${interactive[5]}())return ${interactive[2]}(${interactive[6]}()??"Fast mode is not available"),null;`
+  );
+  const thinReplacement = thin[0].replace(
+    `if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`,
+    `if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(${thin[2]});if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`
+  );
+
+  const jsxDescription =
+    'get description(){return`Toggle fast mode (${'+localJsx[2]+'()})`}';
+  const jsxGatewayDescription =
+    'get description(){return process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":`Toggle fast mode (${'+localJsx[2]+'()})`}';
+  let localJsxReplacement = localJsx[0].replace(jsxDescription, jsxGatewayDescription);
+  localJsxReplacement = localJsxReplacement.replace(
+    `get isHidden(){return!${localJsx[3]}()}`,
+    `get isHidden(){return process.env.REMORA_ACTIVE==="1"?!1:!${localJsx[3]}()}`
+  );
+
+  const localDescription =
+    'get description(){return`Toggle fast mode (${'+local[2]+'()})`}';
+  const localGatewayDescription =
+    'get description(){return process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":`Toggle fast mode (${'+local[2]+'()})`}';
+  let localReplacement = local[0].replace(localDescription, localGatewayDescription);
+  localReplacement = localReplacement.replace(
+    `isEnabled:()=>${local[3]}(),get isHidden(){return!${local[4]}()}`,
+    `isEnabled:()=>process.env.REMORA_ACTIVE==="1"||${local[3]}(),get isHidden(){return process.env.REMORA_ACTIVE==="1"?!1:!${local[4]}()}`
+  );
+
+  const builderReplacement = builderSegment.replace(
+    betaMergeNeedle,
+    `${builder[4]}=__calicoGatewayFastApply(${builder[4]});${betaMergeNeedle}`
+  );
+  const workerReplacement =
+    worker[0] +
+    `,...${worker[1]}.CALICO_GATEWAY_FAST_STATE_FILE&&{CALICO_GATEWAY_FAST_STATE_FILE:${worker[1]}.CALICO_GATEWAY_FAST_STATE_FILE}`;
+
+  if (
+    interactiveReplacement === interactive[0] ||
+    thinReplacement === thin[0] ||
+    localJsxReplacement === localJsx[0] ||
+    localReplacement === local[0] ||
+    builderReplacement === builderSegment ||
+    helperBlock.includes('speed:"fast"')
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  let output = original;
+  output = output.replace(interactive[0], interactiveReplacement);
+  output = output.replace(thin[0], thinReplacement);
+  output = output.replace(localJsx[0], localJsxReplacement);
+  output = output.replace(local[0], localReplacement);
+  output = output.replace(builderSegment, builderReplacement);
+  output = output.replace(worker[0], workerReplacement);
+
+  const helperIndex = output.indexOf(interactiveReplacement);
+  if (helperIndex === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  output = output.slice(0, helperIndex) + helperBlock + output.slice(helperIndex);
+
+  if (
+    output.split("function __calicoGatewayFastEnsure").length - 1 !== 1 ||
+    output.split("function __calicoGatewayFastParse").length - 1 !== 1 ||
+    output.split("function __calicoGatewayFastCommandValue").length - 1 !== 1 ||
+    output.split("function __calicoGatewayFastApply").length - 1 !== 1 ||
+    output.split('if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastInteractive').length - 1 !== 1 ||
+    output.split('if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin').length - 1 !== 1 ||
+    output.split(`CALICO_GATEWAY_FAST_STATE_FILE:${worker[1]}.CALICO_GATEWAY_FAST_STATE_FILE`).length - 1 !== 1 ||
+    output.split(`${builder[4]}=__calicoGatewayFastApply(${builder[4]});`).length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  return { content: output, candidates, patched: 6 };
+}
 function patchActiveTurnPromptIdentity(content) {
   const original = content;
   let agentCandidates = 0;
@@ -2268,6 +2529,11 @@ function patchActiveTurnPromptIdentity(content) {
 }
 
 const PATCH_MODULES = [
+  {
+    id: "gateway-fast-mode",
+    description: "Expose remora gateway fast-mode controls",
+    apply: patchGatewayFastMode,
+  },
   {
     id: "active-turn-prompt-id",
     description: "Expose stable prompt and per-agent turn identity to remora gateways",
@@ -2497,6 +2763,7 @@ function main() {
 }
 
 module.exports = {
+  patchGatewayFastMode,
   patchActiveTurnPromptIdentity,
   patchBackgroundAgentUsage,
   patchStatuslineCommittedUsage,
