@@ -2648,6 +2648,181 @@ function patchActiveTurnPromptIdentity(content) {
   return { content: output, candidates, patched: agentPatched + clientPatched };
 }
 
+// Mark Claude Code compact requests for remora gateways. Independent of
+// active-turn identity: only fires when the query source is the literal
+// string "compact" and REMORA_ACTIVE=1. Does not rewrite body effort/model.
+// Strips any case-variant of x-calico-request-source from custom headers
+// before Calico owns the lowercase value (ANTHROPIC_CUSTOM_HEADERS may set it).
+function patchCompactRequestSource(content) {
+  const original = content;
+  if (content.includes("function __calicoOmitHeader")) {
+    // Allow re-entry only when the compact gate is already present (idempotent).
+    if (content.includes('"x-calico-request-source":"compact"')) {
+      return { content: original, candidates: 0, patched: 0 };
+    }
+  }
+  let candidates = 0;
+  let patched = 0;
+  let output = content;
+
+  const omitHelper = String.raw`function __calicoOmitHeader(e,t){if(!e||typeof e!=="object"||Array.isArray(e))return e;let r={},n=String(t).toLowerCase();for(let o of Object.keys(e))if(String(o).toLowerCase()!==n)r[o]=e[o];return r}
+`;
+
+  // Same Zie-shaped client factory active-turn targets: owns source + agentContext.
+  const clientStartPattern =
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+  let clientStartMatch;
+  while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
+    const start = clientStartMatch.index;
+    const nextAsyncFunction = output.indexOf(
+      "async function ",
+      start + clientStartMatch[0].length
+    );
+    const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
+    const segment = output.slice(start, end);
+    if (
+      !segment.includes('"X-Claude-Code-Session-Id"') ||
+      segment.includes('"x-calico-request-source"')
+    ) {
+      continue;
+    }
+
+    candidates += 1;
+    // On every remora request, strip any case-variant of the Calico-owned
+    // request-source header from custom headers so ANTHROPIC_CUSTOM_HEADERS
+    // cannot spoof compact. Re-add the lowercase value only for true compact.
+    // Single let-binding only — reassignment would be a SyntaxError in `let`.
+    let nextSegment = segment.replace(
+      /,u=([A-Za-z_$][\w$]*)\(\),p=\{/,
+      ',u=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)($1()),p={'
+    );
+    // Inject after Session-Id + custom-header spread (...u,). Works with or
+    // without a subsequent active-turn __calicoPromptId spread.
+    nextSegment = nextSegment.replace(
+      /("X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,)/,
+      '$1...process.env.REMORA_ACTIVE==="1"&&o==="compact"&&{"x-calico-request-source":"compact"},'
+    );
+    if (nextSegment === segment) {
+      continue;
+    }
+
+    patched += 1;
+    output = output.slice(0, start) + nextSegment + output.slice(end);
+    clientStartPattern.lastIndex = start + nextSegment.length;
+  }
+
+  if (candidates !== 1 || patched !== 1) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const wrapNeedle =
+    '((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)';
+  const wrapIndex = output.indexOf(wrapNeedle);
+  if (wrapIndex === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  const fnStart = output.lastIndexOf("async function ", wrapIndex);
+  if (fnStart === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  if (!output.includes("function __calicoOmitHeader")) {
+    output = output.slice(0, fnStart) + omitHelper + output.slice(fnStart);
+  }
+
+  if (
+    output.split("function __calicoOmitHeader").length - 1 !== 1 ||
+    output.split('"x-calico-request-source":"compact"').length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  return { content: output, candidates, patched };
+}
+
+// Remora compact product policy: when source==="compact" and REMORA_ACTIVE=1,
+// wrap the Anthropic client fetchOverride so the full request JSON body is
+// rewritten (effort/optional thinking disable/optional model) before leave.
+// Config via env: CALICO_COMPACT_EFFORT (default medium), CALICO_COMPACT_MODEL
+// (optional, empty keeps session model), CALICO_COMPACT_DISABLE_THINKING
+// (default off; set "1" to force thinking disabled).
+function patchCompactBodyPolicy(content) {
+  const original = content;
+  if (content.includes("function __calicoCompactWrapFetch")) {
+    return { content: original, candidates: 0, patched: 0 };
+  }
+
+  const helperBlock = String.raw`function __calicoCompactPolicy(){let e=process.env.CALICO_COMPACT_EFFORT,t=process.env.CALICO_COMPACT_MODEL,r=process.env.CALICO_COMPACT_DISABLE_THINKING;return{effort:e&&String(e).trim()!==""?String(e).trim():"medium",model:t&&String(t).trim()!==""?String(t).trim():"",disableThinking:r==="1"}}
+function __calicoCompactRewriteBodyString(e){if(typeof e!=="string"||!e)return e;let t;try{t=JSON.parse(e)}catch{return e}if(!t||typeof t!=="object"||Array.isArray(t))return e;let r=__calicoCompactPolicy();if(r.model)t.model=r.model;if(r.effort){if(t.output_config&&typeof t.output_config==="object")t.output_config={...t.output_config,effort:r.effort};else t.output_config={effort:r.effort};if(Object.prototype.hasOwnProperty.call(t,"effort"))t.effort=r.effort}if(r.disableThinking&&t.thinking!=null)t.thinking={type:"disabled"};return JSON.stringify(t)}
+function __calicoCompactWrapFetch(e){let t=typeof e==="function"?e:typeof globalThis.fetch==="function"?globalThis.fetch.bind(globalThis):null;if(typeof t!=="function")return e;return function(r,n){if(n&&typeof n.body==="string"){let o=__calicoCompactRewriteBodyString(n.body);if(o!==n.body){n={...n,body:o};n.headers=__calicoCompactStripContentLength(n.headers)}}return t(r,n)}}
+function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Headers==="function"&&e instanceof Headers){let t=new Headers(e);t.delete("content-length");return t}if(Array.isArray(e))return e.filter((t)=>!(Array.isArray(t)&&t.length>0&&String(t[0]).toLowerCase()==="content-length"));if(typeof e==="object"){if(typeof e.delete==="function"){try{e.delete("content-length");e.delete("Content-Length");return e}catch{}}let t={...e};for(let r of Object.keys(t))if(String(r).toLowerCase()==="content-length")delete t[r];return t}return e}
+`;
+
+  let candidates = 0;
+  let patched = 0;
+  let output = content;
+
+  // Same Zie-shaped client factory: wrap fetchOverride when this client is for compact.
+  const clientStartPattern =
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+  let clientStartMatch;
+  while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
+    const start = clientStartMatch.index;
+    const openEnd = start + clientStartMatch[0].length;
+    const nextAsyncFunction = output.indexOf("async function ", openEnd);
+    const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
+    const segment = output.slice(start, end);
+    if (
+      !segment.includes('"X-Claude-Code-Session-Id"') ||
+      segment.includes("__calicoCompactWrapFetch(n)")
+    ) {
+      continue;
+    }
+
+    candidates += 1;
+    const inject =
+      'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+    const nextSegment =
+      clientStartMatch[0] + inject + segment.slice(clientStartMatch[0].length);
+    if (nextSegment === segment) {
+      continue;
+    }
+
+    patched += 1;
+    output = output.slice(0, start) + nextSegment + output.slice(end);
+    clientStartPattern.lastIndex = start + nextSegment.length;
+  }
+
+  if (candidates !== 1 || patched !== 1) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  // Inject helpers once immediately before the patched Zie factory.
+  const wrapNeedle =
+    'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+  const wrapIndex = output.indexOf(wrapNeedle);
+  if (wrapIndex === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  // Find the start of the async function that contains the wrap.
+  const fnStart = output.lastIndexOf("async function ", wrapIndex);
+  if (fnStart === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  output = output.slice(0, fnStart) + helperBlock + output.slice(fnStart);
+
+  if (
+    output.split("function __calicoCompactPolicy").length - 1 !== 1 ||
+    output.split("function __calicoCompactRewriteBodyString").length - 1 !== 1 ||
+    output.split("function __calicoCompactWrapFetch").length - 1 !== 1 ||
+    output.split("function __calicoCompactStripContentLength").length - 1 !== 1 ||
+    output.split(wrapNeedle).length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  return { content: output, candidates, patched };
+}
+
 const PATCH_MODULES = [
   {
     id: "gateway-fast-mode",
@@ -2658,6 +2833,17 @@ const PATCH_MODULES = [
     id: "active-turn-prompt-id",
     description: "Expose stable prompt and per-agent turn identity to remora gateways",
     apply: patchActiveTurnPromptIdentity,
+  },
+  {
+    id: "compact-request-source",
+    description: "Mark Claude compact queries with x-calico-request-source for remora gateways",
+    apply: patchCompactRequestSource,
+  },
+  {
+    id: "compact-body-policy",
+    description:
+      "Rewrite compact request body effort/thinking/model via fetchOverride wrap under remora",
+    apply: patchCompactBodyPolicy,
   },
   {
     id: "background-agent-usage",
@@ -2885,6 +3071,8 @@ function main() {
 module.exports = {
   patchGatewayFastMode,
   patchActiveTurnPromptIdentity,
+  patchCompactRequestSource,
+  patchCompactBodyPolicy,
   patchBackgroundAgentUsage,
   patchStatuslineCommittedUsage,
   patchCustomContextWindows,

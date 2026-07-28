@@ -358,7 +358,7 @@ jobs:
             printf 'Patched native Claude build for source version %s.\n' "$VERSION" > "$NOTES_PATH"
           fi
 
-          printf '\n---\n\n- Platform: %s\n- Source version: %s\n- Patcher: tweakcc %s\n' \
+          printf '\n---\n\n- Platform: %s\n- Source version: %s\n- Patcher: Calico patch suite + tweakcc %s\n' \
             "${{ matrix.platform_label }}" \
             "$VERSION" \
             "$TWEAKCC_VERSION" >> "$NOTES_PATH"

@@ -404,11 +404,107 @@ const CHECKS: Check[] = [
       if (!sourceGate.test(content)) {
         return "missing main/subagent query-source gate";
       }
+      // Compact request-source may inject between custom headers and active-turn
+      // Calico-owned headers when both modules apply (default module order).
       const protectedHeaderOrder =
-        /"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.__calicoPromptId&&\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\}/;
+        /"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,(?:\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\},)?\.\.\.__calicoPromptId&&\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\}/;
       return protectedHeaderOrder.test(content)
         ? null
         : "Calico-owned headers are missing or can be overridden by custom headers";
+    },
+  },
+  {
+    id: "compact-request-source",
+    kind: "custom",
+    describe: "remora-scoped compact request source header for gateway guards",
+    run: (content: string): string | null => {
+      const omitHelper =
+        'function __calicoOmitHeader(e,t){if(!e||typeof e!=="object"||Array.isArray(e))return e;let r={},n=String(t).toLowerCase();for(let o of Object.keys(e))if(String(o).toLowerCase()!==n)r[o]=e[o];return r}';
+      if (countOccurrences(content, "function __calicoOmitHeader") !== 1) {
+        return "expected exactly one __calicoOmitHeader declaration";
+      }
+      const omitIndex = content.indexOf(omitHelper);
+      if (omitIndex === -1) {
+        return "missing exact __calicoOmitHeader helper body";
+      }
+      const omitPrefix = content.slice(Math.max(0, omitIndex - 2), omitIndex);
+      if (omitPrefix === "/*" || omitPrefix.endsWith("//")) {
+        return "__calicoOmitHeader helper appears commented out";
+      }
+      // Omit helper must sit immediately before the Zie factory, or before the
+      // compact body-policy helper block that itself sits before that factory.
+      // Injected helpers include a trailing newline after the function body.
+      const afterOmit = content
+        .slice(omitIndex + omitHelper.length)
+        .replace(/^\n/, "");
+      if (
+        !afterOmit.startsWith("async function ") &&
+        !afterOmit.startsWith("function __calicoCompactPolicy")
+      ) {
+        return "__calicoOmitHeader is not adjacent to Zie factory or compact helpers";
+      }
+      // Sanitize + compact header must be live code inside the Zie factory, not
+      // merely present as string/comment text elsewhere in the bundle.
+      const ownedFactory =
+        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{(?:if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\})?let [\s\S]*?u=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\),p=\{[\s\S]*?"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
+      if (!ownedFactory.test(content)) {
+        return "compact request-source sanitize/header inject is not owned by Zie factory";
+      }
+      return null;
+    },
+  },
+  {
+    id: "compact-body-policy",
+    kind: "custom",
+    describe: "remora compact body effort/thinking/model rewrite via fetchOverride wrap",
+    run: (content: string): string | null => {
+      const policyHelper =
+        'function __calicoCompactPolicy(){let e=process.env.CALICO_COMPACT_EFFORT,t=process.env.CALICO_COMPACT_MODEL,r=process.env.CALICO_COMPACT_DISABLE_THINKING;return{effort:e&&String(e).trim()!==""?String(e).trim():"medium",model:t&&String(t).trim()!==""?String(t).trim():"",disableThinking:r==="1"}}';
+      const rewriteHelper =
+        'function __calicoCompactRewriteBodyString(e){if(typeof e!=="string"||!e)return e;let t;try{t=JSON.parse(e)}catch{return e}if(!t||typeof t!=="object"||Array.isArray(t))return e;let r=__calicoCompactPolicy();if(r.model)t.model=r.model;if(r.effort){if(t.output_config&&typeof t.output_config==="object")t.output_config={...t.output_config,effort:r.effort};else t.output_config={effort:r.effort};if(Object.prototype.hasOwnProperty.call(t,"effort"))t.effort=r.effort}if(r.disableThinking&&t.thinking!=null)t.thinking={type:"disabled"};return JSON.stringify(t)}';
+      const wrapHelper =
+        'function __calicoCompactWrapFetch(e){let t=typeof e==="function"?e:typeof globalThis.fetch==="function"?globalThis.fetch.bind(globalThis):null;if(typeof t!=="function")return e;return function(r,n){if(n&&typeof n.body==="string"){let o=__calicoCompactRewriteBodyString(n.body);if(o!==n.body){n={...n,body:o};n.headers=__calicoCompactStripContentLength(n.headers)}}return t(r,n)}}';
+      const stripHelper =
+        'function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Headers==="function"&&e instanceof Headers){let t=new Headers(e);t.delete("content-length");return t}if(Array.isArray(e))return e.filter((t)=>!(Array.isArray(t)&&t.length>0&&String(t[0]).toLowerCase()==="content-length"));if(typeof e==="object"){if(typeof e.delete==="function"){try{e.delete("content-length");e.delete("Content-Length");return e}catch{}}let t={...e};for(let r of Object.keys(t))if(String(r).toLowerCase()==="content-length")delete t[r];return t}return e}';
+      const helperEntries = [
+        ["__calicoCompactPolicy", policyHelper],
+        ["__calicoCompactRewriteBodyString", rewriteHelper],
+        ["__calicoCompactWrapFetch", wrapHelper],
+        ["__calicoCompactStripContentLength", stripHelper],
+      ] as const;
+      for (const [name, body] of helperEntries) {
+        if (countOccurrences(content, `function ${name}`) !== 1) {
+          return `expected exactly one ${name} declaration`;
+        }
+      }
+      // Require the four helpers as one executable contiguous block immediately
+      // before the Zie factory that owns the wrap inject (rejects comment-only
+      // or string-only copies of the helper text). Patch injects helpers with a
+      // single newline separator and a trailing newline before the factory.
+      const helperBlock =
+        [policyHelper, rewriteHelper, wrapHelper, stripHelper].join("\n") + "\n";
+      const wrapInject =
+        'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+      const ownedFactory =
+        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/;
+      const factoryMatch = ownedFactory.exec(content);
+      if (!factoryMatch || factoryMatch.index === undefined) {
+        return "compact fetch wrap is not owned by the Zie client factory";
+      }
+      if (countOccurrences(content, wrapInject) !== 1) {
+        return "expected exactly one compact fetch wrap inject at Zie factory";
+      }
+      const factoryIndex = factoryMatch.index;
+      const blockIndex = content.lastIndexOf(helperBlock, factoryIndex);
+      if (blockIndex === -1 || blockIndex + helperBlock.length !== factoryIndex) {
+        return "compact helper block is not executable and adjacent to its Zie factory";
+      }
+      // Reject a block-comment enclosure immediately before the helper block.
+      const prefix = content.slice(Math.max(0, blockIndex - 2), blockIndex);
+      if (prefix === "/*" || prefix.endsWith("//")) {
+        return "compact helper block appears commented out";
+      }
+      return null;
     },
   },
   {
