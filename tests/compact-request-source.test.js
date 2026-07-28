@@ -36,6 +36,7 @@ test("emits x-calico-request-source only for compact under remora", async () => 
   const result = patchCompactRequestSource(fixture);
   assert.equal(result.candidates, 1);
   assert.equal(result.patched, 1);
+  assert.match(result.content, /function __calicoOmitHeader/);
 
   const context = runPatched(result.content);
 
@@ -52,6 +53,22 @@ test("emits x-calico-request-source only for compact under remora", async () => 
     });
     assert.equal(headers["x-calico-request-source"], undefined, source);
   }
+});
+
+test("strips case-variant custom request-source before owning compact value", async () => {
+  const result = patchCompactRequestSource(fixture);
+  const context = runPatched(result.content);
+  context.customHeaders = {
+    "X-Calico-Request-Source": "other",
+    "x-keep": "1",
+  };
+  const compactHeaders = await context.Zie({
+    source: "compact",
+    agentContext: { agentType: "main" },
+  });
+  assert.equal(compactHeaders["x-calico-request-source"], "compact");
+  assert.equal(compactHeaders["X-Calico-Request-Source"], undefined);
+  assert.equal(compactHeaders["x-keep"], "1");
 });
 
 test("does not emit compact header when REMORA_ACTIVE is off", async () => {

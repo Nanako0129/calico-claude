@@ -2651,11 +2651,22 @@ function patchActiveTurnPromptIdentity(content) {
 // Mark Claude Code compact requests for remora gateways. Independent of
 // active-turn identity: only fires when the query source is the literal
 // string "compact" and REMORA_ACTIVE=1. Does not rewrite body effort/model.
+// Strips any case-variant of x-calico-request-source from custom headers
+// before Calico owns the lowercase value (ANTHROPIC_CUSTOM_HEADERS may set it).
 function patchCompactRequestSource(content) {
   const original = content;
+  if (content.includes("function __calicoOmitHeader")) {
+    // Allow re-entry only when the compact gate is already present (idempotent).
+    if (content.includes('"x-calico-request-source":"compact"')) {
+      return { content: original, candidates: 0, patched: 0 };
+    }
+  }
   let candidates = 0;
   let patched = 0;
   let output = content;
+
+  const omitHelper = String.raw`function __calicoOmitHeader(e,t){if(!e||typeof e!=="object"||Array.isArray(e))return e;let r={},n=String(t).toLowerCase();for(let o of Object.keys(e))if(String(o).toLowerCase()!==n)r[o]=e[o];return r}
+`;
 
   // Same Zie-shaped client factory active-turn targets: owns source + agentContext.
   const clientStartPattern =
@@ -2677,9 +2688,16 @@ function patchCompactRequestSource(content) {
     }
 
     candidates += 1;
+    // Sanitize custom-header object `u` before the headers literal so a casing
+    // variant from ANTHROPIC_CUSTOM_HEADERS cannot coexist with Calico's value.
+    // Single let-binding only — reassignment would be a SyntaxError in `let`.
+    let nextSegment = segment.replace(
+      /,u=([A-Za-z_$][\w$]*)\(\),p=\{/,
+      ',u=((u)=>process.env.REMORA_ACTIVE==="1"&&o==="compact"?__calicoOmitHeader(u,"x-calico-request-source"):u)($1()),p={'
+    );
     // Inject after Session-Id + custom-header spread (...u,). Works with or
     // without a subsequent active-turn __calicoPromptId spread.
-    const nextSegment = segment.replace(
+    nextSegment = nextSegment.replace(
       /("X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,)/,
       '$1...process.env.REMORA_ACTIVE==="1"&&o==="compact"&&{"x-calico-request-source":"compact"},'
     );
@@ -2695,6 +2713,28 @@ function patchCompactRequestSource(content) {
   if (candidates !== 1 || patched !== 1) {
     return { content: original, candidates, patched: 0 };
   }
+
+  const wrapNeedle =
+    '((u)=>process.env.REMORA_ACTIVE==="1"&&o==="compact"?__calicoOmitHeader(u,"x-calico-request-source"):u)';
+  const wrapIndex = output.indexOf(wrapNeedle);
+  if (wrapIndex === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  const fnStart = output.lastIndexOf("async function ", wrapIndex);
+  if (fnStart === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+  if (!output.includes("function __calicoOmitHeader")) {
+    output = output.slice(0, fnStart) + omitHelper + output.slice(fnStart);
+  }
+
+  if (
+    output.split("function __calicoOmitHeader").length - 1 !== 1 ||
+    output.split('"x-calico-request-source":"compact"').length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
   return { content: output, candidates, patched };
 }
 

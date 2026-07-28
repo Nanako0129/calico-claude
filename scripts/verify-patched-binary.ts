@@ -418,8 +418,21 @@ const CHECKS: Check[] = [
     kind: "custom",
     describe: "remora-scoped compact request source header for gateway guards",
     run: (content: string): string | null => {
+      const omitHelper =
+        'function __calicoOmitHeader(e,t){if(!e||typeof e!=="object"||Array.isArray(e))return e;let r={},n=String(t).toLowerCase();for(let o of Object.keys(e))if(String(o).toLowerCase()!==n)r[o]=e[o];return r}';
+      if (!content.includes(omitHelper)) {
+        return "missing exact __calicoOmitHeader helper body";
+      }
+      if (countOccurrences(content, "function __calicoOmitHeader") !== 1) {
+        return "expected exactly one __calicoOmitHeader declaration";
+      }
       if (!content.includes('"x-calico-request-source":"compact"')) {
         return 'missing marker: "x-calico-request-source":"compact"';
+      }
+      const sanitizeCustom =
+        /u=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\)/;
+      if (!sanitizeCustom.test(content)) {
+        return "missing case-insensitive custom-header strip for x-calico-request-source";
       }
       const compactGate =
         /process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
@@ -438,28 +451,38 @@ const CHECKS: Check[] = [
     kind: "custom",
     describe: "remora compact body effort/thinking/model rewrite via fetchOverride wrap",
     run: (content: string): string | null => {
-      const required = [
-        "function __calicoCompactPolicy",
-        "function __calicoCompactRewriteBodyString",
-        "function __calicoCompactWrapFetch",
-        "function __calicoCompactStripContentLength",
-        'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}',
-      ];
-      for (const marker of required) {
-        if (!content.includes(marker)) {
-          return `missing marker: ${marker}`;
+      const policyHelper =
+        'function __calicoCompactPolicy(){let e=process.env.CALICO_COMPACT_EFFORT,t=process.env.CALICO_COMPACT_MODEL,r=process.env.CALICO_COMPACT_DISABLE_THINKING;return{effort:e&&String(e).trim()!==""?String(e).trim():"medium",model:t&&String(t).trim()!==""?String(t).trim():"",disableThinking:r==="1"}}';
+      const rewriteHelper =
+        'function __calicoCompactRewriteBodyString(e){if(typeof e!=="string"||!e)return e;let t;try{t=JSON.parse(e)}catch{return e}if(!t||typeof t!=="object"||Array.isArray(t))return e;let r=__calicoCompactPolicy();if(r.model)t.model=r.model;if(r.effort){if(t.output_config&&typeof t.output_config==="object")t.output_config={...t.output_config,effort:r.effort};else t.output_config={effort:r.effort};if(Object.prototype.hasOwnProperty.call(t,"effort"))t.effort=r.effort}if(r.disableThinking&&t.thinking!=null)t.thinking={type:"disabled"};return JSON.stringify(t)}';
+      const wrapHelper =
+        'function __calicoCompactWrapFetch(e){let t=typeof e==="function"?e:typeof globalThis.fetch==="function"?globalThis.fetch.bind(globalThis):null;if(typeof t!=="function")return e;return function(r,n){if(n&&typeof n.body==="string"){let o=__calicoCompactRewriteBodyString(n.body);if(o!==n.body){n={...n,body:o};n.headers=__calicoCompactStripContentLength(n.headers)}}return t(r,n)}}';
+      const stripHelper =
+        'function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Headers==="function"&&e instanceof Headers){let t=new Headers(e);t.delete("content-length");return t}if(Array.isArray(e))return e.filter((t)=>!(Array.isArray(t)&&t.length>0&&String(t[0]).toLowerCase()==="content-length"));if(typeof e==="object"){if(typeof e.delete==="function"){try{e.delete("content-length");e.delete("Content-Length");return e}catch{}}let t={...e};for(let r of Object.keys(t))if(String(r).toLowerCase()==="content-length")delete t[r];return t}return e}';
+      const helperEntries = [
+        ["__calicoCompactPolicy", policyHelper],
+        ["__calicoCompactRewriteBodyString", rewriteHelper],
+        ["__calicoCompactWrapFetch", wrapHelper],
+        ["__calicoCompactStripContentLength", stripHelper],
+      ] as const;
+      for (const [name, body] of helperEntries) {
+        if (!content.includes(body)) {
+          return `missing exact ${name} helper body`;
+        }
+        if (countOccurrences(content, `function ${name}`) !== 1) {
+          return `expected exactly one ${name} declaration`;
         }
       }
-      if (countOccurrences(content, "function __calicoCompactWrapFetch") !== 1) {
-        return "expected exactly one __calicoCompactWrapFetch declaration";
-      }
-      if (
-        countOccurrences(
-          content,
-          'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}'
-        ) !== 1
-      ) {
+      const wrapInject =
+        'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+      if (countOccurrences(content, wrapInject) !== 1) {
         return "expected exactly one compact fetch wrap inject at Zie factory";
+      }
+      // Ownership: wrap inject must sit inside the same Zie factory that owns Session-Id.
+      const zieFactory =
+        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/;
+      if (!zieFactory.test(content)) {
+        return "compact fetch wrap is not owned by the Zie client factory";
       }
       return null;
     },
