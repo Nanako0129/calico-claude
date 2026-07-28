@@ -73,7 +73,11 @@ test("wraps fetch and rewrites compact body effort/thinking under remora", async
   });
   await wrapped.fetch("https://example.test/v1/messages", {
     method: "POST",
-    headers: { "Content-Length": String(bodyStr.length), "Content-Type": "application/json" },
+    headers: [
+      ["Authorization", "Bearer t"],
+      ["Content-Length", String(bodyStr.length)],
+      ["Content-Type", "application/json"],
+    ],
     body: bodyStr,
   });
   assert.equal(calls.length, 1);
@@ -82,13 +86,17 @@ test("wraps fetch and rewrites compact body effort/thinking under remora", async
   assert.equal(rewritten.thinking.type, "disabled");
   assert.equal(rewritten.model, "gpt-5.6-sol");
   assert.equal(rewritten.stream, true);
-  // Stale Content-Length must not survive a size-changing rewrite.
+  // Tuple headers must keep auth/content-type while dropping Content-Length.
   const headers = calls[0].init.headers;
-  if (headers && typeof headers === "object") {
-    for (const key of Object.keys(headers)) {
-      assert.notEqual(key.toLowerCase(), "content-length", "stale Content-Length forwarded");
-    }
-  }
+  assert.ok(Array.isArray(headers));
+  assert.deepEqual(
+    headers.filter((pair) => String(pair[0]).toLowerCase() === "content-length"),
+    []
+  );
+  assert.equal(
+    headers.find((pair) => pair[0] === "Authorization")?.[1],
+    "Bearer t"
+  );
 });
 
 test("optional model override and custom effort from env", async () => {

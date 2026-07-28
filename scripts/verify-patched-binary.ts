@@ -442,6 +442,7 @@ const CHECKS: Check[] = [
         "function __calicoCompactPolicy",
         "function __calicoCompactRewriteBodyString",
         "function __calicoCompactWrapFetch",
+        "function __calicoCompactStripContentLength",
         'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}',
       ];
       for (const marker of required) {
