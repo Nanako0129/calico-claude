@@ -2700,16 +2700,17 @@ function patchCompactRequestSource(content) {
 
 // Remora compact product policy: when source==="compact" and REMORA_ACTIVE=1,
 // wrap the Anthropic client fetchOverride so the full request JSON body is
-// rewritten (effort/thinking/optional model) before it leaves the process.
-// Config via env: CALICO_COMPACT_EFFORT (default low), CALICO_COMPACT_MODEL
-// (optional), CALICO_COMPACT_DISABLE_THINKING (default on unless "0").
+// rewritten (effort/optional thinking disable/optional model) before leave.
+// Config via env: CALICO_COMPACT_EFFORT (default medium), CALICO_COMPACT_MODEL
+// (optional, empty keeps session model), CALICO_COMPACT_DISABLE_THINKING
+// (default off; set "1" to force thinking disabled).
 function patchCompactBodyPolicy(content) {
   const original = content;
   if (content.includes("function __calicoCompactWrapFetch")) {
     return { content: original, candidates: 0, patched: 0 };
   }
 
-  const helperBlock = String.raw`function __calicoCompactPolicy(){let e=process.env.CALICO_COMPACT_EFFORT,t=process.env.CALICO_COMPACT_MODEL,r=process.env.CALICO_COMPACT_DISABLE_THINKING;return{effort:e&&String(e).trim()!==""?String(e).trim():"low",model:t&&String(t).trim()!==""?String(t).trim():"",disableThinking:r!=="0"}}
+  const helperBlock = String.raw`function __calicoCompactPolicy(){let e=process.env.CALICO_COMPACT_EFFORT,t=process.env.CALICO_COMPACT_MODEL,r=process.env.CALICO_COMPACT_DISABLE_THINKING;return{effort:e&&String(e).trim()!==""?String(e).trim():"medium",model:t&&String(t).trim()!==""?String(t).trim():"",disableThinking:r==="1"}}
 function __calicoCompactRewriteBodyString(e){if(typeof e!=="string"||!e)return e;let t;try{t=JSON.parse(e)}catch{return e}if(!t||typeof t!=="object"||Array.isArray(t))return e;let r=__calicoCompactPolicy();if(r.model)t.model=r.model;if(r.effort){if(t.output_config&&typeof t.output_config==="object")t.output_config={...t.output_config,effort:r.effort};else t.output_config={effort:r.effort};if(Object.prototype.hasOwnProperty.call(t,"effort"))t.effort=r.effort}if(r.disableThinking&&t.thinking!=null)t.thinking={type:"disabled"};return JSON.stringify(t)}
 function __calicoCompactWrapFetch(e){let t=typeof e==="function"?e:typeof globalThis.fetch==="function"?globalThis.fetch.bind(globalThis):null;if(typeof t!=="function")return e;return function(r,n){if(n&&typeof n.body==="string"){let o=__calicoCompactRewriteBodyString(n.body);if(o!==n.body){n={...n,body:o};n.headers=__calicoCompactStripContentLength(n.headers)}}return t(r,n)}}
 function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Headers==="function"&&e instanceof Headers){let t=new Headers(e);t.delete("content-length");return t}if(Array.isArray(e))return e.filter((t)=>!(Array.isArray(t)&&t.length>0&&String(t[0]).toLowerCase()==="content-length"));if(typeof e==="object"){if(typeof e.delete==="function"){try{e.delete("content-length");e.delete("Content-Length");return e}catch{}}let t={...e};for(let r of Object.keys(t))if(String(r).toLowerCase()==="content-length")delete t[r];return t}return e}

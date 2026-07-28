@@ -47,7 +47,7 @@ async function callWrappedFetch(context, source, body, envExtra = {}) {
   return { calls, headers: result.headers };
 }
 
-test("wraps fetch and rewrites compact body effort/thinking under remora", async () => {
+test("wraps fetch and rewrites compact body effort under remora (thinking kept)", async () => {
   const result = patchCompactBodyPolicy(fixture);
   assert.equal(result.candidates, 1);
   assert.equal(result.patched, 1);
@@ -82,8 +82,11 @@ test("wraps fetch and rewrites compact body effort/thinking under remora", async
   });
   assert.equal(calls.length, 1);
   const rewritten = JSON.parse(calls[0].init.body);
-  assert.equal(rewritten.output_config.effort, "low");
-  assert.equal(rewritten.thinking.type, "disabled");
+  assert.equal(rewritten.output_config.effort, "medium");
+  assert.deepEqual(rewritten.thinking, {
+    type: "adaptive",
+    display: "summarized",
+  });
   assert.equal(rewritten.model, "gpt-5.6-sol");
   assert.equal(rewritten.stream, true);
   // Tuple headers must keep auth/content-type while dropping Content-Length.
@@ -99,12 +102,13 @@ test("wraps fetch and rewrites compact body effort/thinking under remora", async
   );
 });
 
-test("optional model override and custom effort from env", async () => {
+test("optional model override, custom effort, and opt-in thinking disable", async () => {
   const result = patchCompactBodyPolicy(fixture);
   const context = runPatched(result.content, {
     REMORA_ACTIVE: "1",
-    CALICO_COMPACT_EFFORT: "medium",
+    CALICO_COMPACT_EFFORT: "low",
     CALICO_COMPACT_MODEL: "gpt-5.6-terra",
+    CALICO_COMPACT_DISABLE_THINKING: "1",
   });
   const { calls } = await callWrappedFetch(context, "compact", {
     model: "gpt-5.6-sol",
@@ -114,8 +118,8 @@ test("optional model override and custom effort from env", async () => {
   });
   const rewritten = JSON.parse(calls[0].init.body);
   assert.equal(rewritten.model, "gpt-5.6-terra");
-  assert.equal(rewritten.output_config.effort, "medium");
-  assert.equal(rewritten.effort, "medium");
+  assert.equal(rewritten.output_config.effort, "low");
+  assert.equal(rewritten.effort, "low");
   assert.equal(rewritten.thinking.type, "disabled");
 });
 
@@ -158,7 +162,9 @@ test("composes with compact-request-source header module", async () => {
     thinking: { type: "adaptive" },
   });
   assert.equal(headers["x-calico-request-source"], "compact");
-  assert.equal(JSON.parse(calls[0].init.body).output_config.effort, "low");
+  const rewritten = JSON.parse(calls[0].init.body);
+  assert.equal(rewritten.output_config.effort, "medium");
+  assert.deepEqual(rewritten.thinking, { type: "adaptive" });
 });
 
 test("fails atomically when Zie anchor is missing", () => {

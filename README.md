@@ -147,9 +147,9 @@ gateway):
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `CALICO_COMPACT_EFFORT` | `low` | Sets `output_config.effort` and top-level `effort` when present |
-| `CALICO_COMPACT_MODEL` | empty | When non-empty, overrides top-level `model` |
-| `CALICO_COMPACT_DISABLE_THINKING` | on (`≠0`) | When thinking is present, sets `thinking: { "type": "disabled" }` |
+| `CALICO_COMPACT_EFFORT` | `medium` | Sets `output_config.effort` and top-level `effort` when present |
+| `CALICO_COMPACT_MODEL` | empty | When non-empty, overrides top-level `model`; empty keeps session model |
+| `CALICO_COMPACT_DISABLE_THINKING` | off | Set `1` to force `thinking: { "type": "disabled" }` when present; unset leaves session thinking |
 
 Main / subagent / quota / side-query traffic is not rewritten. Plain Calico
 launches without `REMORA_ACTIVE=1` keep stock compact behavior.
