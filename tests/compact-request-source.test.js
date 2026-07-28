@@ -71,6 +71,22 @@ test("strips case-variant custom request-source before owning compact value", as
   assert.equal(compactHeaders["x-keep"], "1");
 });
 
+test("strips spoofed compact source on non-compact remora traffic", async () => {
+  const result = patchCompactRequestSource(fixture);
+  const context = runPatched(result.content);
+  context.customHeaders = {
+    "X-Calico-Request-Source": "compact",
+    "x-keep": "1",
+  };
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main" },
+  });
+  assert.equal(mainHeaders["x-calico-request-source"], undefined);
+  assert.equal(mainHeaders["X-Calico-Request-Source"], undefined);
+  assert.equal(mainHeaders["x-keep"], "1");
+});
+
 test("does not emit compact header when REMORA_ACTIVE is off", async () => {
   const result = patchCompactRequestSource(fixture);
   const context = runPatched(result.content, { REMORA_ACTIVE: "0" });

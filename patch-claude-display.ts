@@ -2688,12 +2688,13 @@ function patchCompactRequestSource(content) {
     }
 
     candidates += 1;
-    // Sanitize custom-header object `u` before the headers literal so a casing
-    // variant from ANTHROPIC_CUSTOM_HEADERS cannot coexist with Calico's value.
+    // On every remora request, strip any case-variant of the Calico-owned
+    // request-source header from custom headers so ANTHROPIC_CUSTOM_HEADERS
+    // cannot spoof compact. Re-add the lowercase value only for true compact.
     // Single let-binding only — reassignment would be a SyntaxError in `let`.
     let nextSegment = segment.replace(
       /,u=([A-Za-z_$][\w$]*)\(\),p=\{/,
-      ',u=((u)=>process.env.REMORA_ACTIVE==="1"&&o==="compact"?__calicoOmitHeader(u,"x-calico-request-source"):u)($1()),p={'
+      ',u=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)($1()),p={'
     );
     // Inject after Session-Id + custom-header spread (...u,). Works with or
     // without a subsequent active-turn __calicoPromptId spread.
@@ -2715,7 +2716,7 @@ function patchCompactRequestSource(content) {
   }
 
   const wrapNeedle =
-    '((u)=>process.env.REMORA_ACTIVE==="1"&&o==="compact"?__calicoOmitHeader(u,"x-calico-request-source"):u)';
+    '((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)';
   const wrapIndex = output.indexOf(wrapNeedle);
   if (wrapIndex === -1) {
     return { content: original, candidates, patched: 0 };

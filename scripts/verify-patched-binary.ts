@@ -430,9 +430,9 @@ const CHECKS: Check[] = [
         return 'missing marker: "x-calico-request-source":"compact"';
       }
       const sanitizeCustom =
-        /u=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\)/;
+        /u=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\)/;
       if (!sanitizeCustom.test(content)) {
-        return "missing case-insensitive custom-header strip for x-calico-request-source";
+        return "missing remora-wide case-insensitive strip for x-calico-request-source";
       }
       const compactGate =
         /process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
@@ -466,23 +466,36 @@ const CHECKS: Check[] = [
         ["__calicoCompactStripContentLength", stripHelper],
       ] as const;
       for (const [name, body] of helperEntries) {
-        if (!content.includes(body)) {
-          return `missing exact ${name} helper body`;
-        }
         if (countOccurrences(content, `function ${name}`) !== 1) {
           return `expected exactly one ${name} declaration`;
         }
       }
+      // Require the four helpers as one executable contiguous block immediately
+      // before the Zie factory that owns the wrap inject (rejects comment-only
+      // or string-only copies of the helper text). Patch injects helpers with a
+      // single newline separator and a trailing newline before the factory.
+      const helperBlock =
+        [policyHelper, rewriteHelper, wrapHelper, stripHelper].join("\n") + "\n";
       const wrapInject =
         'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+      const ownedFactory =
+        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/;
+      const factoryMatch = ownedFactory.exec(content);
+      if (!factoryMatch || factoryMatch.index === undefined) {
+        return "compact fetch wrap is not owned by the Zie client factory";
+      }
       if (countOccurrences(content, wrapInject) !== 1) {
         return "expected exactly one compact fetch wrap inject at Zie factory";
       }
-      // Ownership: wrap inject must sit inside the same Zie factory that owns Session-Id.
-      const zieFactory =
-        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/;
-      if (!zieFactory.test(content)) {
-        return "compact fetch wrap is not owned by the Zie client factory";
+      const factoryIndex = factoryMatch.index;
+      const blockIndex = content.lastIndexOf(helperBlock, factoryIndex);
+      if (blockIndex === -1 || blockIndex + helperBlock.length !== factoryIndex) {
+        return "compact helper block is not executable and adjacent to its Zie factory";
+      }
+      // Reject a block-comment enclosure immediately before the helper block.
+      const prefix = content.slice(Math.max(0, blockIndex - 2), blockIndex);
+      if (prefix === "/*" || prefix.endsWith("//")) {
+        return "compact helper block appears commented out";
       }
       return null;
     },
