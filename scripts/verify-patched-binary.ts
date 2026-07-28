@@ -420,30 +420,37 @@ const CHECKS: Check[] = [
     run: (content: string): string | null => {
       const omitHelper =
         'function __calicoOmitHeader(e,t){if(!e||typeof e!=="object"||Array.isArray(e))return e;let r={},n=String(t).toLowerCase();for(let o of Object.keys(e))if(String(o).toLowerCase()!==n)r[o]=e[o];return r}';
-      if (!content.includes(omitHelper)) {
-        return "missing exact __calicoOmitHeader helper body";
-      }
       if (countOccurrences(content, "function __calicoOmitHeader") !== 1) {
         return "expected exactly one __calicoOmitHeader declaration";
       }
-      if (!content.includes('"x-calico-request-source":"compact"')) {
-        return 'missing marker: "x-calico-request-source":"compact"';
+      const omitIndex = content.indexOf(omitHelper);
+      if (omitIndex === -1) {
+        return "missing exact __calicoOmitHeader helper body";
       }
-      const sanitizeCustom =
-        /u=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\)/;
-      if (!sanitizeCustom.test(content)) {
-        return "missing remora-wide case-insensitive strip for x-calico-request-source";
+      const omitPrefix = content.slice(Math.max(0, omitIndex - 2), omitIndex);
+      if (omitPrefix === "/*" || omitPrefix.endsWith("//")) {
+        return "__calicoOmitHeader helper appears commented out";
       }
-      const compactGate =
-        /process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
-      if (!compactGate.test(content)) {
-        return "missing REMORA_ACTIVE + source===compact gate for request-source header";
+      // Omit helper must sit immediately before the Zie factory, or before the
+      // compact body-policy helper block that itself sits before that factory.
+      // Injected helpers include a trailing newline after the function body.
+      const afterOmit = content
+        .slice(omitIndex + omitHelper.length)
+        .replace(/^\n/, "");
+      if (
+        !afterOmit.startsWith("async function ") &&
+        !afterOmit.startsWith("function __calicoCompactPolicy")
+      ) {
+        return "__calicoOmitHeader is not adjacent to Zie factory or compact helpers";
       }
-      const afterSessionAndCustom =
-        /"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
-      return afterSessionAndCustom.test(content)
-        ? null
-        : "compact request-source header is missing or ordered before Session-Id/custom headers";
+      // Sanitize + compact header must be live code inside the Zie factory, not
+      // merely present as string/comment text elsewhere in the bundle.
+      const ownedFactory =
+        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{(?:if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\})?let [\s\S]*?u=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\),p=\{[\s\S]*?"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
+      if (!ownedFactory.test(content)) {
+        return "compact request-source sanitize/header inject is not owned by Zie factory";
+      }
+      return null;
     },
   },
   {
