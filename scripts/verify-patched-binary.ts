@@ -404,8 +404,10 @@ const CHECKS: Check[] = [
       if (!sourceGate.test(content)) {
         return "missing main/subagent query-source gate";
       }
+      // Compact request-source may inject between custom headers and active-turn
+      // Calico-owned headers when both modules apply (default module order).
       const protectedHeaderOrder =
-        /"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.__calicoPromptId&&\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\}/;
+        /"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,(?:\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\},)?\.\.\.__calicoPromptId&&\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\}/;
       return protectedHeaderOrder.test(content)
         ? null
         : "Calico-owned headers are missing or can be overridden by custom headers";

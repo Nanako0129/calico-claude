@@ -60,13 +60,35 @@ test("wraps fetch and rewrites compact body effort/thinking under remora", async
     thinking: { type: "adaptive", display: "summarized" },
     stream: true,
   };
-  const { calls } = await callWrappedFetch(context, "compact", body);
+  const bodyStr = JSON.stringify(body);
+  const calls = [];
+  const upstream = async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true };
+  };
+  const wrapped = await context.Zie({
+    source: "compact",
+    fetchOverride: upstream,
+    agentContext: { agentType: "main" },
+  });
+  await wrapped.fetch("https://example.test/v1/messages", {
+    method: "POST",
+    headers: { "Content-Length": String(bodyStr.length), "Content-Type": "application/json" },
+    body: bodyStr,
+  });
   assert.equal(calls.length, 1);
   const rewritten = JSON.parse(calls[0].init.body);
   assert.equal(rewritten.output_config.effort, "low");
   assert.equal(rewritten.thinking.type, "disabled");
   assert.equal(rewritten.model, "gpt-5.6-sol");
   assert.equal(rewritten.stream, true);
+  // Stale Content-Length must not survive a size-changing rewrite.
+  const headers = calls[0].init.headers;
+  if (headers && typeof headers === "object") {
+    for (const key of Object.keys(headers)) {
+      assert.notEqual(key.toLowerCase(), "content-length", "stale Content-Length forwarded");
+    }
+  }
 });
 
 test("optional model override and custom effort from env", async () => {
