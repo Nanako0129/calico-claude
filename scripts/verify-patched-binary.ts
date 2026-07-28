@@ -412,6 +412,56 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "compact-request-source",
+    kind: "custom",
+    describe: "remora-scoped compact request source header for gateway guards",
+    run: (content: string): string | null => {
+      if (!content.includes('"x-calico-request-source":"compact"')) {
+        return 'missing marker: "x-calico-request-source":"compact"';
+      }
+      const compactGate =
+        /process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
+      if (!compactGate.test(content)) {
+        return "missing REMORA_ACTIVE + source===compact gate for request-source header";
+      }
+      const afterSessionAndCustom =
+        /"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
+      return afterSessionAndCustom.test(content)
+        ? null
+        : "compact request-source header is missing or ordered before Session-Id/custom headers";
+    },
+  },
+  {
+    id: "compact-body-policy",
+    kind: "custom",
+    describe: "remora compact body effort/thinking/model rewrite via fetchOverride wrap",
+    run: (content: string): string | null => {
+      const required = [
+        "function __calicoCompactPolicy",
+        "function __calicoCompactRewriteBodyString",
+        "function __calicoCompactWrapFetch",
+        'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}',
+      ];
+      for (const marker of required) {
+        if (!content.includes(marker)) {
+          return `missing marker: ${marker}`;
+        }
+      }
+      if (countOccurrences(content, "function __calicoCompactWrapFetch") !== 1) {
+        return "expected exactly one __calicoCompactWrapFetch declaration";
+      }
+      if (
+        countOccurrences(
+          content,
+          'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}'
+        ) !== 1
+      ) {
+        return "expected exactly one compact fetch wrap inject at Zie factory";
+      }
+      return null;
+    },
+  },
+  {
     id: "background-agent-usage",
     kind: "custom",
     describe: "background agent tracker accounts terminal stream usage by response id",

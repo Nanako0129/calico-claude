@@ -132,6 +132,28 @@ must still capture and replay the server-issued `x-codex-turn-state`; the Calico
 header only provides the Claude-side turn boundary. Plain Calico launches do
 not emit either header.
 
+### Optional remora compact policy
+
+When `REMORA_ACTIVE=1` and Claude's query source is `compact`, Calico:
+
+1. Sends `x-calico-request-source: compact` so a compatible gateway can apply
+   class-level stream guards (absolute duration / no retry) without rewriting
+   product fields.
+2. Wraps the Anthropic client `fetchOverride` so the **full** outbound JSON body
+   is rewritten before the request leaves the process.
+
+Body policy is controlled by the remora child process environment (not by the
+gateway):
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `CALICO_COMPACT_EFFORT` | `low` | Sets `output_config.effort` and top-level `effort` when present |
+| `CALICO_COMPACT_MODEL` | empty | When non-empty, overrides top-level `model` |
+| `CALICO_COMPACT_DISABLE_THINKING` | on (`≠0`) | When thinking is present, sets `thinking: { "type": "disabled" }` |
+
+Main / subagent / quota / side-query traffic is not rewritten. Plain Calico
+launches without `REMORA_ACTIVE=1` keep stock compact behavior.
+
 ## Trust and security
 
 Calico replaces the native Claude Code executable, so installing it is a supply-chain decision rather than a normal remora configuration change. Releases are built in GitHub Actions from Anthropic's native installer, use pinned patch dependencies, fail when a selected patch no longer matches the upstream bundle, and publish SHA-256 checksums plus GitHub provenance attestations.
