@@ -1041,9 +1041,21 @@ const CHECKS: Check[] = [
   },
   {
     id: "thinking-streaming",
-    kind: "presence",
-    marker: "__cc_streamingThinking",
-    describe: "injected __cc_streamingThinking live-streaming plumbing",
+    kind: "custom",
+    describe: "live-streaming plumbing and main-session brief-filter preservation",
+    run: (content) => {
+      if (!content.includes("__cc_streamingThinking")) {
+        return "expected __cc_streamingThinking live-streaming plumbing";
+      }
+      if (
+        !/if\(([A-Za-z_$][\w$]*)\?\.type==="thinking"\|\|\1\?\.type==="redacted_thinking"\)return!0;if\(\1\?\.type==="tool_use"/.test(
+          content
+        )
+      ) {
+        return "expected main-session brief filter to preserve thinking entries";
+      }
+      return null;
+    },
   },
   {
     id: "subagent-prompt",
