@@ -808,6 +808,27 @@ function patchThinkingStreaming(content) {
     patched += inlineThinkingPatched;
   }
 
+  // Main-session brief mode filters the normalized transcript after the live
+  // thinking extras are appended. Keep thinking entries there; subagents skip
+  // this filter, which otherwise makes the bug appear main-session-only.
+  let briefThinkingCandidates = 0;
+  let briefThinkingPatched = 0;
+  const briefThinkingFilterPattern =
+    /if\(([A-Za-z_$][\w$]*)\.type==="assistant"\)\{if\(\1\.isApiErrorMessage\)return!0;(if\(([A-Za-z_$][\w$]*)\?\.type==="tool_use"[\s\S]{0,600}?if\(([A-Za-z_$][\w$]*)\?\.type==="text"[\s\S]{0,300}?return!0;return!1\})/g;
+  output = output.replace(
+    briefThinkingFilterPattern,
+    (full, entryVar, remainingFilter, contentVar, textContentVar) => {
+      if (contentVar !== textContentVar) {
+        return full;
+      }
+      briefThinkingCandidates += 1;
+      briefThinkingPatched += 1;
+      return `if(${entryVar}.type==="assistant"){if(${entryVar}.isApiErrorMessage)return!0;if(${contentVar}?.type==="thinking"||${contentVar}?.type==="redacted_thinking")return!0;${remainingFilter}`;
+    }
+  );
+  candidates += briefThinkingCandidates;
+  patched += briefThinkingPatched;
+
   // The dedicated live thinking row sits outside the message flow, so when the
   // inline transcript extras are active it becomes a duplicate copy pinned at
   // the bottom. Suppress that extra row and keep streamed thinking inline.

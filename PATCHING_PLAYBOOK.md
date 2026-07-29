@@ -524,6 +524,7 @@ Sub-fixes currently bundled here:
 - memo removal: disable one memo wrapper around the message-row renderer when its comparator shape references screen/columns/lastThinkingBlockId/streamingToolUseIDs and suppresses updates
 - linger fix: replace the "remain visible for 30 seconds after stream end" path with `isStreaming` only
 - inline extras fix: materialize `streamingThinking.messages` in the transcript extras list, ordered alongside streaming tool-use blocks by content-block index
+- brief-filter fix: preserve thinking and redacted-thinking entries when the main session applies its brief transcript filter
 - bottom-row suppressor: remove the separate live-thinking row that sits outside the main message flow so streaming thinking only renders inline once
 - reducer/event fix: update the stream event handler so `stream_request_start`, `thinking`, `thinking_delta`, `text`, `message_delta`, and `message_stop` keep per-block streaming thinking state in sync without relying on footer-row rendering
 - duplicate-index fix: keep only one virtual streaming-thinking message per content-block index so repeated block-start handling cannot create two live blocks that receive the same later deltas
@@ -543,6 +544,7 @@ Old bundle shapes we match:
 - 2.1.168-style UI reducers can run `displayTransform?.finalize()` inside the `message_stop` branch before switching to `"tool-use"`, and can use a block-form `case"message_delta":{...}`. The reducer patch must preserve those existing side effects while adding streaming-thinking cleanup before the stream transitions to normal response state.
 - 2.1.183-style UI reducers can keep `onStreamingThinking:<setter>` on the outer event dispatcher while moving the stream-event switch into a separate inner handler that destructures `onSetStreamMode`, `onStreamingToolUses`, `onStreamingText`, and `displayTransform`, but not `onStreamingThinking`. In that shape, inject `onStreamingThinking` into the inner handler destructuring, then patch `stream_request_start`, thinking/redacted-thinking block start, `thinking_delta`, text/message transitions, and `message_stop` there.
 - 2.1.199-style live thinking can still use the same `onStreamingThinking` state but may surface duplicate virtual entries if a thinking content-block start is handled more than once for the same index. Treat `streamingThinking.messages` as keyed by content-block index, not append-only.
+- 2.1.216-style main sessions can filter normalized transcript entries in brief mode, retaining text and selected tool-use blocks while dropping thinking. Preserve thinking and redacted-thinking in that filter; subagents do not take this `isBriefOnly` path, so they can appear healthy while the main session stays blank until another block lands.
 - the duplicate live-thinking suppressor should match the semantic row shape around `param:{type:"thinking",thinking:<var>.thinking}` and the surrounding `marginTop:1` wrapper, not a specific wrapper component identifier
 
 Why this exists:
