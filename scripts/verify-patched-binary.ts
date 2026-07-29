@@ -1058,11 +1058,13 @@ const CHECKS: Check[] = [
         /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/
       );
       const version = versionMatch?.slice(1).map(Number);
+      if (version === undefined) {
+        return "expected parseable Claude Code VERSION metadata";
+      }
       const requiresBriefFilter =
-        version !== undefined &&
-        (version[0] > 2 ||
-          (version[0] === 2 &&
-            (version[1] > 1 || (version[1] === 1 && version[2] >= 216))));
+        version[0] > 2 ||
+        (version[0] === 2 &&
+          (version[1] > 1 || (version[1] === 1 && version[2] >= 216)));
       if (
         requiresBriefFilter &&
         !/if\(([A-Za-z_$][\w$]*)\?\.type==="thinking"\|\|\1\?\.type==="redacted_thinking"\)return!0;if\(\1\?\.type==="tool_use"/.test(

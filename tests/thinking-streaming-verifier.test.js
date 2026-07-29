@@ -29,6 +29,13 @@ test("thinking verifier requires the brief filter from Claude 2.1.216", () => {
   );
 });
 
+test("thinking verifier rejects unparseable Claude version metadata", () => {
+  assert.match(
+    evaluatePatchModule("thinking-streaming", plumbing),
+    /VERSION metadata/
+  );
+});
+
 test("disabled thinking verifier rejects installed streaming plumbing", () => {
   assert.match(
     evaluateDisabledPatchModule("thinking-streaming", plumbing),
