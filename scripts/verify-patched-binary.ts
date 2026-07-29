@@ -29,6 +29,8 @@ type Check = {
   kind: "presence" | "absence" | "custom";
   // For presence/absence: a RegExp or a literal string to search for.
   marker?: RegExp | string;
+  // For custom checks: a marker that must be absent when the module is disabled.
+  disabledMarker?: RegExp | string;
   // For custom checks: return null on success, or a failure detail string.
   run?: (content: string) => string | null;
   describe: string;
@@ -49,6 +51,10 @@ function markerPresent(content: string, marker: RegExp | string): boolean {
     return content.includes(marker);
   }
   return marker.test(content);
+}
+
+function disabledMarkerForCheck(check: Check): RegExp | string | undefined {
+  return check.disabledMarker ?? (check.kind === "presence" ? check.marker : undefined);
 }
 
 const CHECKS: Check[] = [
@@ -1042,12 +1048,23 @@ const CHECKS: Check[] = [
   {
     id: "thinking-streaming",
     kind: "custom",
+    disabledMarker: "__cc_streamingThinking",
     describe: "live-streaming plumbing and main-session brief-filter preservation",
     run: (content) => {
       if (!content.includes("__cc_streamingThinking")) {
         return "expected __cc_streamingThinking live-streaming plumbing";
       }
+      const versionMatch = content.match(
+        /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/
+      );
+      const version = versionMatch?.slice(1).map(Number);
+      const requiresBriefFilter =
+        version !== undefined &&
+        (version[0] > 2 ||
+          (version[0] === 2 &&
+            (version[1] > 1 || (version[1] === 1 && version[2] >= 216))));
       if (
+        requiresBriefFilter &&
         !/if\(([A-Za-z_$][\w$]*)\?\.type==="thinking"\|\|\1\?\.type==="redacted_thinking"\)return!0;if\(\1\?\.type==="tool_use"/.test(
           content
         )
@@ -1235,11 +1252,12 @@ async function main(): Promise<void> {
   for (const check of CHECKS) {
     if (disableSet.has(check.id)) {
       // This module was intentionally not applied. Skip its normal check, and
-      // for presence-type modules reverse-assert the marker is ABSENT so the
+      // when a disabled marker exists, reverse-assert it is ABSENT so the
       // disable is proven (the patch really isn't in the bundle), not merely
       // ignored.
-      if (check.kind === "presence" && check.marker !== undefined) {
-        if (markerPresent(content, check.marker)) {
+      const disabledMarker = disabledMarkerForCheck(check);
+      if (disabledMarker !== undefined) {
+        if (markerPresent(content, disabledMarker)) {
           console.log(`  FAIL ${check.id}`);
           failures.push({
             id: check.id,
@@ -1290,7 +1308,18 @@ function evaluatePatchModule(id: string, content: string): string | null {
   return check ? evaluateCheck(check, content) : `unknown patch module: ${id}`;
 }
 
-module.exports = { evaluatePatchModule };
+function evaluateDisabledPatchModule(id: string, content: string): string | null {
+  const check = CHECKS.find((candidate) => candidate.id === id);
+  if (!check) {
+    return `unknown patch module: ${id}`;
+  }
+  const disabledMarker = disabledMarkerForCheck(check);
+  return disabledMarker !== undefined && markerPresent(content, disabledMarker)
+    ? `disabled module marker unexpectedly present (${check.describe})`
+    : null;
+}
+
+module.exports = { evaluateDisabledPatchModule, evaluatePatchModule };
 
 if (require.main === module) {
   void main();
