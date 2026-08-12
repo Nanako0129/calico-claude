@@ -677,6 +677,42 @@ function patchThinkingStreaming(content) {
       return full;
     }
   );
+  const thinkingDisplayCachedFlagPattern = new RegExp(
+    `(${identifierPattern})=(${identifierPattern})\\(process\\.env\\.CLAUDE_CODE_DISABLE_THINKING\\),` +
+      `(${identifierPattern})=(${identifierPattern})\\.type!=="disabled"&&!\\1,` +
+      `(${identifierPattern})=\\3((?:&&${identifierPattern}\\(\\)&&${identifierPattern}\\(${identifierPattern}\\))?)\\?\\4\\.display(?:\\?\\?void 0)?:void 0,` +
+      `(${identifierPattern})=void 0;`,
+    "g"
+  );
+  output = output.replace(
+    thinkingDisplayCachedFlagPattern,
+    (
+      full,
+      disableThinkingVar,
+      envFlagHelper,
+      enabledVar,
+      thinkingConfigVar,
+      displayVar,
+      displayGuards,
+      requestVar
+    ) => {
+      displayCandidates += 1;
+      if (full.includes('display??"summarized"')) {
+        return full;
+      }
+
+      const replacement =
+        `${disableThinkingVar}=${envFlagHelper}(process.env.CLAUDE_CODE_DISABLE_THINKING),` +
+        `${enabledVar}=${thinkingConfigVar}.type!=="disabled"&&!${disableThinkingVar},` +
+        `${displayVar}=${enabledVar}${displayGuards}?${thinkingConfigVar}.display??"summarized":void 0,` +
+        `${requestVar}=void 0;`;
+      if (replacement !== full) {
+        displayPatched += 1;
+        return replacement;
+      }
+      return full;
+    }
+  );
   candidates += displayCandidates;
   patched += displayPatched;
 
@@ -1016,12 +1052,13 @@ function patchThinkingStreaming(content) {
   // Re-introduce the option there, then patch the same semantic stream cases.
   if (createVirtualMessageHelper !== null) {
     const missingStreamingThinkingHandlerPattern =
-      /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*)?\)\{let\{([^}]*)\}=\2;/g;
+      /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*)?\)\{let\{([^}]*)\}=\2([;,])/g;
     let missingStreamingThinkingMatch;
     while ((missingStreamingThinkingMatch = missingStreamingThinkingHandlerPattern.exec(output)) !== null) {
       const eventParam = missingStreamingThinkingMatch[1];
       const optionsParam = missingStreamingThinkingMatch[2];
       const props = missingStreamingThinkingMatch[3];
+      const declarationSeparator = missingStreamingThinkingMatch[4];
       if (props.includes("onStreamingThinking:")) {
         continue;
       }
@@ -1066,8 +1103,8 @@ function patchThinkingStreaming(content) {
 
       const replacements = [
         [
-          `let{${props}}=${optionsParam};`,
-          `let{${props},onStreamingThinking:${setStreamingThinkingParam}}=${optionsParam};`,
+          `let{${props}}=${optionsParam}${declarationSeparator}`,
+          `let{${props},onStreamingThinking:${setStreamingThinkingParam}}=${optionsParam}${declarationSeparator}`,
         ],
         [
           `if(${eventParam}.type==="stream_request_start"){${setModeParam}("requesting");return}`,
@@ -1154,6 +1191,30 @@ function patchThinkingStreaming(content) {
         nextHandlerSegment = result.segment;
         if (nextHandlerSegment.includes(after)) {
           patched += 1;
+        }
+      }
+
+      if (displayTransformParam !== null) {
+        const messageStopAuthoringProgressPattern = new RegExp(
+          `if\\(${eventParam}\\.event\\.type==="message_stop"\\)\\{if\\(` +
+            `${displayTransformParam}\\?\\.finalize\\(\\),` +
+            `${setModeParam}\\?\\.\\("tool-use"\\),` +
+            `${setStreamingToolsParam}\\?\\.\\(\\(\\)=>\\[\\]\\),` +
+            `(${identifierPattern})\\)(${identifierPattern})\\.loaded\\(\\)\\?\\.resetAuthoringProgress\\(\\);return\\}`
+        );
+        const nextMessageStopSegment = nextHandlerSegment.replace(
+          messageStopAuthoringProgressPattern,
+          (_full, authoringProgressVar, authoringProgressModule) =>
+            `if(${eventParam}.event.type==="message_stop"){if(` +
+            `${displayTransformParam}?.finalize(),` +
+            `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),` +
+            `${setModeParam}?.("tool-use"),${setStreamingToolsParam}?.(()=>[]),` +
+            `${authoringProgressVar})${authoringProgressModule}.loaded()?.resetAuthoringProgress();return}`
+        );
+        if (nextMessageStopSegment !== nextHandlerSegment) {
+          candidates += 1;
+          patched += 1;
+          nextHandlerSegment = nextMessageStopSegment;
         }
       }
 
