@@ -575,6 +575,8 @@ function patchThinkingStreaming(content) {
       /createElement\(([A-Za-z_$][\w$]*),\{([\s\S]{0,2000}?placeholderElement:[\s\S]{0,2000}?agentDefinitions:[^}]*?onOpenRateLimitOptions:[^}]*?isLoading:)([^,}]+)(,streamingText:[^}]*?(?:showThinkingHint:[^}]*?)?isBriefOnly:[^}]*?)\}\)/g;
     const jsxMainRendererPropsPattern =
       /(screen:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
+    const jsxMainRendererWithoutShowAllPropsPattern =
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
     const jsxTranscriptRendererPropsPattern =
       /(screen:[^,}]+,agentDefinitions:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
 
@@ -639,6 +641,10 @@ function patchThinkingStreaming(content) {
     };
 
     output = output.replace(jsxMainRendererPropsPattern, injectStreamingThinking);
+    output = output.replace(
+      jsxMainRendererWithoutShowAllPropsPattern,
+      injectStreamingThinking
+    );
     output = output.replace(jsxTranscriptRendererPropsPattern, injectStreamingThinking);
   }
 

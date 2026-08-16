@@ -1,4 +1,5 @@
 const fs = require("node:fs") as typeof import("node:fs");
+const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
 
 type Range = {
   offset: number;
@@ -65,6 +66,7 @@ function sliceRange(buffer: Buffer, range: Range): Buffer {
 
 function isClaudeModuleName(name: string): boolean {
   return (
+    name.endsWith("/root/cli") ||
     name === "claude" ||
     name.endsWith("/claude") ||
     name === "claude.exe" ||
@@ -293,7 +295,7 @@ function findClaudeModuleContent(storage: BunStorage): Buffer {
     return sliceRange(storage.bunData, moduleRecord.contents);
   }
 
-  throw new Error("Could not find Claude JavaScript module in ELF binary");
+  throw new Error("Could not find Claude JavaScript module in native binary");
 }
 
 function rebuildBunData(
@@ -506,22 +508,6 @@ function parseElfBinary(binaryPath: string): {
     LIEF,
     binary: binary as import("node-lief").ELF.Binary,
   };
-}
-
-function canVendoredElfHandle(binaryPath: string): boolean {
-  try {
-    const { binary } = parseElfBinary(binaryPath);
-    parseElfBunStorage(binary);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function readVendoredElfContent(binaryPath: string): string {
-  const { binary } = parseElfBinary(binaryPath);
-  const storage = parseElfBunStorage(binary);
-  return findClaudeModuleContent(storage).toString("utf8");
 }
 
 function readElf64Layout(
@@ -896,7 +882,7 @@ function writeSectionBackedElfContent(
   writeBufferPreservingMode(binaryPath, nextBytes);
 }
 
-function writeVendoredElfContent(binaryPath: string, content: string): void {
+function writeElfBunContent(binaryPath: string, content: string): void {
   const { binary } = parseElfBinary(binaryPath);
   const storage = parseElfBunStorage(binary);
   const rebuiltBunData = rebuildBunData(
@@ -923,8 +909,145 @@ function writeVendoredElfContent(binaryPath: string, content: string): void {
   writeBinaryPreservingMode(binary, binaryPath);
 }
 
+function parseNativeBinary(binaryPath: string): {
+  LIEF: LIEFModule;
+  binary:
+    | import("node-lief").ELF.Binary
+    | import("node-lief").MachO.Binary
+    | import("node-lief").PE.Binary;
+} {
+  const LIEF = loadLief();
+  LIEF.logging.disable();
+
+  return {
+    LIEF,
+    binary: LIEF.parse(binaryPath),
+  };
+}
+
+function parseNativeBunStorage(
+  binary:
+    | import("node-lief").ELF.Binary
+    | import("node-lief").MachO.Binary
+    | import("node-lief").PE.Binary
+): BunStorage {
+  if (binary.format === "ELF") {
+    return parseElfBunStorage(binary);
+  }
+
+  if (binary.format === "MachO") {
+    const segment = binary.getSegment("__BUN");
+    const section = segment?.getSection("__bun");
+    if (!section) {
+      throw new Error("__BUN.__bun section not found in Mach-O binary");
+    }
+    return {
+      storage: "section",
+      ...parseSectionWrappedBunData(section.content),
+    };
+  }
+
+  const section = binary.getSection(".bun");
+  if (!section) {
+    throw new Error(".bun section not found in PE binary");
+  }
+  return {
+    storage: "section",
+    ...parseSectionWrappedBunData(section.content),
+  };
+}
+
+function canNativeBunHandle(binaryPath: string): boolean {
+  try {
+    const { binary } = parseNativeBinary(binaryPath);
+    const storage = parseNativeBunStorage(binary);
+    findClaudeModuleContent(storage);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readNativeBunContent(binaryPath: string): string {
+  const { binary } = parseNativeBinary(binaryPath);
+  const storage = parseNativeBunStorage(binary);
+  return findClaudeModuleContent(storage).toString("utf8");
+}
+
+function writeMachOBunContent(
+  LIEF: LIEFModule,
+  binary: import("node-lief").MachO.Binary,
+  binaryPath: string,
+  wrappedSectionData: Buffer
+): void {
+  if (binary.hasCodeSignature) {
+    binary.removeSignature();
+  }
+
+  const segment = binary.getSegment("__BUN");
+  const section = segment?.getSection("__bun");
+  if (!segment || !section) {
+    throw new Error(`__BUN.__bun section not found in Mach-O binary: ${binaryPath}`);
+  }
+
+  const growthBytes = wrappedSectionData.length - Number(section.size);
+  if (growthBytes > 0) {
+    const pageSize =
+      binary.header.cpuType === LIEF.MachO.Header.CPU_TYPE.ARM64 ? 16 * 1024 : 4 * 1024;
+    const alignedGrowth = Math.ceil(growthBytes / pageSize) * pageSize;
+    if (!binary.extendSegment(segment, alignedGrowth)) {
+      throw new Error(`Could not extend __BUN segment in Mach-O binary: ${binaryPath}`);
+    }
+  }
+
+  section.content = wrappedSectionData;
+  section.size = BigInt(wrappedSectionData.length);
+  writeBinaryPreservingMode(binary, binaryPath);
+  execFileSync("codesign", ["-s", "-", "-f", binaryPath], { stdio: "ignore" });
+}
+
+function writePeBunContent(
+  binary: import("node-lief").PE.Binary,
+  binaryPath: string,
+  wrappedSectionData: Buffer
+): void {
+  const section = binary.getSection(".bun");
+  if (!section) {
+    throw new Error(`.bun section not found in PE binary: ${binaryPath}`);
+  }
+
+  section.content = wrappedSectionData;
+  section.virtualSize = BigInt(wrappedSectionData.length);
+  section.size = BigInt(wrappedSectionData.length);
+  writeBinaryPreservingMode(binary, binaryPath);
+}
+
+function writeNativeBunContent(binaryPath: string, content: string): void {
+  const { LIEF, binary } = parseNativeBinary(binaryPath);
+  const storage = parseNativeBunStorage(binary);
+  const rebuiltBunData = rebuildBunData(
+    storage.bunData,
+    storage.bunOffsets,
+    Buffer.from(content, "utf8"),
+    storage.moduleStructSize
+  );
+
+  if (binary.format === "ELF") {
+    writeElfBunContent(binaryPath, content);
+    return;
+  }
+
+  const wrappedSectionData = wrapSectionBunData(rebuiltBunData, storage.sectionHeaderSize);
+  if (binary.format === "MachO") {
+    writeMachOBunContent(LIEF, binary, binaryPath, wrappedSectionData);
+    return;
+  }
+
+  writePeBunContent(binary, binaryPath, wrappedSectionData);
+}
+
 module.exports = {
-  canVendoredElfHandle,
-  readVendoredElfContent,
-  writeVendoredElfContent,
+  canNativeBunHandle,
+  readNativeBunContent,
+  writeNativeBunContent,
 };

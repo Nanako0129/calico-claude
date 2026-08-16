@@ -18,10 +18,10 @@ The current flow is:
 
 1. Download or locate a native Claude binary.
    Use `bash scripts/download-native-from-installer.sh` when you want the exact upstream native download path used by CI.
-2. Use `tweakcc.readContent()` to extract the embedded JS bundle.
+2. Use `scripts/native-bun.ts` to extract the embedded JS bundle.
 3. Write that bundle to a temporary `content.js` file.
 4. Run `patch-claude-display.ts` against that extracted JS.
-5. Use `tweakcc.writeContent()` to write the patched JS back into the binary.
+5. Use `scripts/native-bun.ts` to write the patched JS back into the binary.
 6. Re-sign on macOS.
 7. Publish the patched binary.
 
@@ -31,7 +31,8 @@ The important consequence: almost all real behavior lives in `patch-claude-displ
 
 - `patch-claude-display.ts`: ordered patch pipeline for extracted bundle text
 - `scripts/download-native-from-installer.sh`: exact upstream binary download flow via Anthropic's installer bucket
-- `scripts/patch-native-with-tweakcc.ts`: native binary read/write flow via `tweakcc`
+- `scripts/patch-native.ts`: native patch orchestration
+- `scripts/native-bun.ts`: Bun module extraction and native binary rewriting via `node-lief`
 - `.github/workflows/patch-claude.yml`: CI download, patch, sign, release path
 - `install-patched-claude.sh`: installer that resolves release tags and downloads patched assets
 - `install-patched-claude.ps1`: Windows installer that resolves release tags and downloads patched assets
@@ -60,37 +61,34 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 
 ## Native Patching Flow
 
-`scripts/patch-native-with-tweakcc.ts` currently works like this:
+`scripts/patch-native.ts` currently works like this:
 
 - resolves `--input` and `--output`
 - copies the input binary to the output path when patching out-of-place
-- loads `tweakcc`
-- extracts embedded JS with `readContent()`
-- if `tweakcc` fails on an ELF binary, falls back to `scripts/vendored-elf-native.ts`
+- loads `scripts/native-bun.ts`
+- extracts the embedded Bun module from Mach-O, ELF, or PE binaries
 - writes that JS to a temp `content.js`
 - invokes `node patch-claude-display.ts --file <temp-content.js>`
 - reads the patched temp file back
-- writes it into the output binary with `writeContent()`
-- if `tweakcc` fails to repack an ELF binary, falls back to `scripts/vendored-elf-native.ts`
+- writes it into the output binary with the format-specific `node-lief` path
 
 Important behavior:
 
-- if `patch-claude-display.ts` prints nonzero patch counts, the binary written by `writeContent()` is patched
+- if `patch-claude-display.ts` prints nonzero patch counts, the rewritten binary is patched
 - if `patch-claude-display.ts` makes no changes, the script still succeeds and the output binary can remain equivalent to upstream
+- 2.1.233 names the entry module `/$bunfs/root/cli` on macOS/Linux and `B:/~BUN/root/cli` on Windows, so entry detection recognizes the stable `/root/cli` suffix in addition to older Claude entry names
 
 Linux note:
 
 - Claude native Linux builds changed format around 2.1.83 from the older Bun-at-EOF overlay layout to an ELF `.bun` section layout.
-- `tweakcc` 4.0.11 only handles the older ELF overlay path.
-- `scripts/vendored-elf-native.ts` exists specifically to keep latest Linux binaries patchable without waiting on upstream `tweakcc`.
+- `scripts/native-bun.ts` supports both older Bun-at-EOF overlays and newer `.bun` sections.
 - For section-backed ELF binaries, `.bun` sits right before the ELF section-header table. Growing `.bun` content must move `e_shoff` forward and grow the containing `LOAD` segment; updating the section bytes alone overwrites section headers, detaches `.bun` from the segment table, and can produce runtime crashes on Linux x64.
-- Some Linux builds also keep non-allocated metadata sections such as `.comment`, `.note.stapsdt`, `.symtab`, `.strtab`, and `.shstrtab` after `.bun`. The vendored ELF writer may shift those payloads and update their section-header offsets when `.bun` grows. It should still refuse to shift later allocated sections, because that can change runtime mapping semantics.
+- Some Linux builds also keep non-allocated metadata sections such as `.comment`, `.note.stapsdt`, `.symtab`, `.strtab`, and `.shstrtab` after `.bun`. The ELF writer may shift those payloads and update their section-header offsets when `.bun` grows. It should still refuse to shift later allocated sections, because that can change runtime mapping semantics.
 
 Windows note:
 
 - Windows native builds are PE binaries with a `.bun` section.
-- `tweakcc` currently has a PE read/write path, so Windows support should go through the same `scripts/patch-native-with-tweakcc.ts` flow first.
-- There is no vendored PE fallback yet. If Windows patching starts failing after an upstream format change, add a PE-specific fallback instead of changing the JS patcher.
+- Windows support uses the `.bun` PE section through `scripts/native-bun.ts`.
 - CI can execute Windows x64 builds on `windows-latest` and Windows arm64 builds on `windows-11-arm`.
 
 ## Current Patch Inventory
@@ -281,6 +279,7 @@ Old bundle shapes we match:
 - 2.1.183-style UI reducers can keep `onStreamingThinking:<setter>` on the outer event dispatcher while moving the stream-event switch into a separate inner handler that destructures `onSetStreamMode`, `onStreamingToolUses`, `onStreamingText`, and `displayTransform`, but not `onStreamingThinking`. In that shape, inject `onStreamingThinking` into the inner handler destructuring, then patch `stream_request_start`, thinking/redacted-thinking block start, `thinking_delta`, text/message transitions, and `message_stop` there.
 - 2.1.199-style live thinking can still use the same `onStreamingThinking` state but may surface duplicate virtual entries if a thinking content-block start is handled more than once for the same index. Treat `streamingThinking.messages` as keyed by content-block index, not append-only.
 - 2.1.227-style UI reducers can continue the options-destructuring `let` statement with an `authoringProgressSurface` local instead of ending it with a semicolon. Their `message_stop` branch also conditionally resets authoring progress after finalizing display state, so preserve that side effect while injecting streaming-thinking cleanup.
+- 2.1.233-style main renderer calls can omit `showAllInTranscript:` between `streamingToolUses:` and `agentDefinitions:`. Prop threading must still inject `streamingThinking:` into that call; reducer matches alone can remain nonzero while live thinking stays invisible.
 - the duplicate live-thinking suppressor should match the semantic row shape around `param:{type:"thinking",thinking:<var>.thinking}` and the surrounding `marginTop:1` wrapper, not a specific wrapper component identifier
 
 Why this exists:
@@ -469,7 +468,7 @@ Minimum validation for patch work:
 Useful commands:
 
 ```bash
-node scripts/patch-native-with-tweakcc.ts --input ./claude --output ./claude.patched
+node scripts/patch-native.ts --input ./claude --output ./claude.patched
 ./claude.patched --version
 codesign --verify --verbose=2 ./claude.patched
 ```
@@ -481,16 +480,11 @@ node patch-claude-display.ts --file ./content.js --list-patches
 node patch-claude-display.ts --file ./content.js --dry-run
 ```
 
-## CI Caveat
+## CI Validation
 
-Current CI behavior is not a proof that patching happened.
+The workflow asserts the `(patched)` version marker by running native-architecture builds and re-extracting cross-architecture builds. That proves the rewritten bundle was packed into the release binary, but it does not prove every UI patch still behaves correctly.
 
-- the workflow uploads `work/${OUT_BASE}.patched`
-- that file path is created by copying the original binary first
-- if the patcher makes no changes, the job can still succeed
-- runtime `--version` output is printed, but the workflow does not currently assert on `(patched)`
-
-So when investigating release correctness, treat these as strong signals, in order:
+When investigating release correctness, treat these as strong signals, in order:
 
 1. nonzero patch counts for the expected modules
 2. runtime `--version` output including `(patched)`
