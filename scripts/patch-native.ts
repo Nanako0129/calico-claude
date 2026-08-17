@@ -13,11 +13,16 @@ type PatchOptions = {
   assertAll: boolean;
 };
 
-type NativeBunModule = {
-  canNativeBunHandle(binaryPath: string): boolean;
-  readNativeBunContent(binaryPath: string): string;
-  writeNativeBunContent(binaryPath: string, content: string): void;
+type NativeContentHandle = {
+  content: string;
+  write(patchedContent: string): Promise<void>;
 };
+
+type NativeContentModule = {
+  readNativeContent(binaryPath: string): Promise<NativeContentHandle>;
+};
+
+const nativeContent = require("./native-content.ts") as NativeContentModule;
 
 function printHelp(): void {
   console.log("Patch native Claude binaries");
@@ -117,10 +122,6 @@ function parseArgs(argv: string[]): PatchOptions {
   return opts;
 }
 
-function loadNativeBunModule(): NativeBunModule {
-  return require("./native-bun.ts") as NativeBunModule;
-}
-
 async function patchNativeBinary(opts: PatchOptions): Promise<void> {
   const inputPath = path.resolve(opts.input);
   const outputPath = path.resolve(opts.output);
@@ -134,11 +135,8 @@ async function patchNativeBinary(opts: PatchOptions): Promise<void> {
     fs.chmodSync(outputPath, 0o755);
   }
 
-  const nativeBun = loadNativeBunModule();
-  if (!nativeBun.canNativeBunHandle(outputPath)) {
-    throw new Error(`Unsupported native Claude binary: ${outputPath}`);
-  }
-  const originalContent = nativeBun.readNativeBunContent(outputPath);
+  const handle = await nativeContent.readNativeContent(outputPath);
+  const originalContent = handle.content;
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-native-patch-"));
   const tempContentPath = path.join(tempDir, "content.js");
@@ -160,7 +158,7 @@ async function patchNativeBinary(opts: PatchOptions): Promise<void> {
   try {
     execFileSync(process.execPath, patchArgs, { stdio: "inherit" });
     const patchedContent = fs.readFileSync(tempContentPath, "utf8");
-    nativeBun.writeNativeBunContent(outputPath, patchedContent);
+    await handle.write(patchedContent);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
