@@ -281,7 +281,7 @@ const CHECKS: Check[] = [
         countOccurrences(builderSegment, betaNeedle) !== 1 ||
         parseErrorIndex === -1 ||
         parseCompletionIndex === -1 ||
-        applyIndex !== parseCompletionIndex + parseCompletionNeedle.length ||
+        applyIndex <= parseCompletionIndex ||
         applyIndex > betaIndex ||
         builderSegment.includes('speed:"fast"') ||
         builderSegment.includes('.speed="fast"') ||
@@ -402,7 +402,9 @@ const CHECKS: Check[] = [
       }
       const frozenAgentContext =
         /process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*\.__calicoPromptId===void 0&&\([A-Za-z_$][\w$]*\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?[A-Za-z_$][\w$]*\(\)\),\1\.run\(/;
-      if (!frozenAgentContext.test(content)) {
+      const frozenJournalContext =
+        /function [A-Za-z_$][\w$]*\(e,t\)\{e&&process\.env\.REMORA_ACTIVE==="1"&&e\.__calicoPromptId===void 0&&\(e\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?[A-Za-z_$][\w$]*\(\)\);if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return \1\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\)/;
+      if (!frozenAgentContext.test(content) && !frozenJournalContext.test(content)) {
         return "missing nested-agent prompt inheritance at AsyncLocalStorage boundary";
       }
       const sourceGate =

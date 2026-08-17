@@ -16,6 +16,12 @@ type VendoredElfModule = {
   writeVendoredElfContent(binaryPath: string, content: string): void;
 };
 
+type NativeBunModule = {
+  canNativeBunHandle(binaryPath: string): boolean;
+  readNativeBunContent(binaryPath: string): string;
+  writeNativeBunContent(binaryPath: string, content: string): void;
+};
+
 type NativeContentHandle = {
   content: string;
   write(patchedContent: string): Promise<void>;
@@ -39,13 +45,31 @@ function loadVendoredElfModule(): VendoredElfModule {
   return require("./vendored-elf-native.ts") as VendoredElfModule;
 }
 
+function loadNativeBunModule(): NativeBunModule {
+  return require("./native-bun.ts") as NativeBunModule;
+}
+
 // Extract the bundled JavaScript content from a native Claude binary. Uses the
-// tweakcc API first and falls back to the vendored ELF handler when tweakcc
-// cannot parse the binary. Returns the content plus a bound writer that uses
-// whichever mechanism succeeded for reading (with the same write-time fallback
-// as the original patch-native flow).
+// native Bun container reader first, then keeps the tweakcc/vendored fallbacks
+// for older formats. Returns the content plus a bound writer that uses whichever
+// mechanism succeeded for reading.
 async function readNativeContent(binaryPath: string): Promise<NativeContentHandle> {
   const resolvedPath = path.resolve(binaryPath);
+
+  try {
+    const nativeBun = loadNativeBunModule();
+    if (nativeBun.canNativeBunHandle(resolvedPath)) {
+      return {
+        content: nativeBun.readNativeBunContent(resolvedPath),
+        write: async (patchedContent: string): Promise<void> => {
+          nativeBun.writeNativeBunContent(resolvedPath, patchedContent);
+        },
+      };
+    }
+  } catch {
+    // Keep the existing tweakcc and vendored ELF fallbacks for older binaries.
+  }
+
   const tweakcc = await loadTweakcc();
   const installation: NativeInstallation = { path: resolvedPath, kind: "native" };
 

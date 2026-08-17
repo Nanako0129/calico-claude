@@ -581,6 +581,8 @@ function patchThinkingStreaming(content) {
       /createElement\(([A-Za-z_$][\w$]*),\{([\s\S]{0,2000}?placeholderElement:[\s\S]{0,2000}?agentDefinitions:[^}]*?onOpenRateLimitOptions:[^}]*?isLoading:)([^,}]+)(,streamingText:[^}]*?(?:showThinkingHint:[^}]*?)?isBriefOnly:[^}]*?)\}\)/g;
     const jsxMainRendererPropsPattern =
       /(screen:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
+    const jsxMainRendererWithoutShowAllPropsPattern =
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
     const jsxTranscriptRendererPropsPattern =
       /(screen:[^,}]+,agentDefinitions:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
 
@@ -645,6 +647,10 @@ function patchThinkingStreaming(content) {
     };
 
     output = output.replace(jsxMainRendererPropsPattern, injectStreamingThinking);
+    output = output.replace(
+      jsxMainRendererWithoutShowAllPropsPattern,
+      injectStreamingThinking
+    );
     output = output.replace(jsxTranscriptRendererPropsPattern, injectStreamingThinking);
   }
 
@@ -2638,13 +2644,18 @@ function patchActiveTurnPromptIdentity(content) {
   // Claude already owns a prompt-scoped UUID that remains stable from one
   // user prompt through its tool-result continuations. Discover the minified
   // getter semantically instead of depending on its current symbol name.
-  const promptGetterMatch = output.match(
+  const legacyPromptGetterMatch = output.match(
     /function ([A-Za-z_$][\w$]*)\(\)\{return ([A-Za-z_$][\w$]*)\.promptId\}function [A-Za-z_$][\w$]*\(e\)\{\2\.promptId=e\}/
   );
-  if (!promptGetterMatch) {
-    return { content: output, candidates, patched };
+  const journalPromptGetterMatch = output.match(
+    /function ([A-Za-z_$][\w$]*)\(\)\{return ((?:[A-Za-z_$][\w$]*\.)+)promptId\(\)\}function [A-Za-z_$][\w$]*\(e\)\{\2replacePromptId\(e\)\}/
+  );
+  if (!legacyPromptGetterMatch && !journalPromptGetterMatch) {
+    return { content: original, candidates: 0, patched: 0 };
   }
-  const promptGetter = promptGetterMatch[1];
+  const promptGetter = legacyPromptGetterMatch
+    ? legacyPromptGetterMatch[1]
+    : journalPromptGetterMatch[1];
 
   // Reuse Claude's own query-source classifier so quota checks, token counts,
   // compaction, side queries, and other auxiliary traffic cannot enter the
@@ -2668,6 +2679,16 @@ function patchActiveTurnPromptIdentity(content) {
       agentCandidates += 1;
       agentPatched += 1;
       return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetter}()),${storage}.run(e,t)${suffix}`;
+    }
+  );
+  const attributedAgentContextPattern =
+    /(function [A-Za-z_$][\w$]*\(e,t\)\{)(if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return )([A-Za-z_$][\w$]*)(\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\))(\}function [A-Za-z_$][\w$]*\(\)\{return\{agentType:"main",agentId:)/g;
+  output = output.replace(
+    attributedAgentContextPattern,
+    (full, prefix, attribution, storage, run, suffix) => {
+      agentCandidates += 1;
+      agentPatched += 1;
+      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetter}());${attribution}${storage}${run}${suffix}`;
     }
   );
 
