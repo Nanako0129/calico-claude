@@ -5,6 +5,9 @@ const vm = require("node:vm");
 const {
   patchActiveTurnPromptIdentity,
 } = require("../patch-claude-display.ts");
+const {
+  evaluatePatchModule,
+} = require("../scripts/verify-patched-binary.ts");
 
 const fixture = `
 var Pt={promptId:"turn-a"},lastContext;
@@ -28,6 +31,7 @@ test("freezes an agent prompt id and emits it only for remora", async () => {
   const result = patchActiveTurnPromptIdentity(fixture);
   assert.equal(result.candidates, 2);
   assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
 
   const context = {
     process: { env: { REMORA_ACTIVE: "1" } },
@@ -115,4 +119,39 @@ test("fails atomically when either required anchor is missing", () => {
   assert.equal(result.patched, 0);
   assert.equal(result.content, withoutAgentBoundary);
   assert.equal(result.content.includes("x-calico-prompt-id"), false);
+});
+
+test("supports the request-journal prompt identity shape", async () => {
+  const journalFixture = fixture
+    .replace(
+      'var Pt={promptId:"turn-a"},lastContext;',
+      'var promptValue="turn-a";var pr={requestJournal:{promptId:()=>promptValue,replacePromptId:(e)=>{promptValue=e}}},lastContext;'
+    )
+    .replace(
+      "function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}",
+      "function xht(){return pr.requestJournal.promptId()}function $$t(e){pr.requestJournal.replacePromptId(e)}"
+    )
+    .replace(
+      "function iK(e,t){return Pkr.run(e,t)}",
+      'function turnKey(){return"turn-key"}function runTurn(e,t){return t()}function iK(e,t){if(!("turnAttributionKey"in e))e.turnAttributionKey=turnKey();return Pkr.run(e,()=>runTurn(e.turnAttributionKey,t))}'
+    );
+  const result = patchActiveTurnPromptIdentity(journalFixture);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
+
+  const context = { process: { env: { REMORA_ACTIVE: "1" } } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+
+  const agent = { agentType: "subagent", agentId: "agent-a" };
+  context.iK(agent, () => undefined);
+  assert.equal(agent.__calicoPromptId, "turn-a");
+
+  context.pr.requestJournal.replacePromptId("turn-b");
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-b");
 });

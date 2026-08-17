@@ -581,6 +581,8 @@ function patchThinkingStreaming(content) {
       /createElement\(([A-Za-z_$][\w$]*),\{([\s\S]{0,2000}?placeholderElement:[\s\S]{0,2000}?agentDefinitions:[^}]*?onOpenRateLimitOptions:[^}]*?isLoading:)([^,}]+)(,streamingText:[^}]*?(?:showThinkingHint:[^}]*?)?isBriefOnly:[^}]*?)\}\)/g;
     const jsxMainRendererPropsPattern =
       /(screen:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
+    const jsxMainRendererWithoutShowAllPropsPattern =
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
     const jsxTranscriptRendererPropsPattern =
       /(screen:[^,}]+,agentDefinitions:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
 
@@ -645,6 +647,10 @@ function patchThinkingStreaming(content) {
     };
 
     output = output.replace(jsxMainRendererPropsPattern, injectStreamingThinking);
+    output = output.replace(
+      jsxMainRendererWithoutShowAllPropsPattern,
+      injectStreamingThinking
+    );
     output = output.replace(jsxTranscriptRendererPropsPattern, injectStreamingThinking);
   }
 
@@ -670,6 +676,42 @@ function patchThinkingStreaming(content) {
       const replacement =
         `${enabledVar}=${thinkingConfigVar}.type!=="disabled"&&!${envFlagHelper}(process.env.CLAUDE_CODE_DISABLE_THINKING),` +
         `${displayVar}=${enabledVar}?${thinkingConfigVar}.display??"summarized":void 0,${requestVar}=void 0;`;
+      if (replacement !== full) {
+        displayPatched += 1;
+        return replacement;
+      }
+      return full;
+    }
+  );
+  const thinkingDisplayCachedFlagPattern = new RegExp(
+    `(${identifierPattern})=(${identifierPattern})\\(process\\.env\\.CLAUDE_CODE_DISABLE_THINKING\\),` +
+      `(${identifierPattern})=(${identifierPattern})\\.type!=="disabled"&&!\\1,` +
+      `(${identifierPattern})=\\3((?:&&${identifierPattern}\\(\\)&&${identifierPattern}\\(${identifierPattern}\\))?)\\?\\4\\.display(?:\\?\\?void 0)?:void 0,` +
+      `(${identifierPattern})=void 0;`,
+    "g"
+  );
+  output = output.replace(
+    thinkingDisplayCachedFlagPattern,
+    (
+      full,
+      disableThinkingVar,
+      envFlagHelper,
+      enabledVar,
+      thinkingConfigVar,
+      displayVar,
+      displayGuards,
+      requestVar
+    ) => {
+      displayCandidates += 1;
+      if (full.includes('display??"summarized"')) {
+        return full;
+      }
+
+      const replacement =
+        `${disableThinkingVar}=${envFlagHelper}(process.env.CLAUDE_CODE_DISABLE_THINKING),` +
+        `${enabledVar}=${thinkingConfigVar}.type!=="disabled"&&!${disableThinkingVar},` +
+        `${displayVar}=${enabledVar}${displayGuards}?${thinkingConfigVar}.display??"summarized":void 0,` +
+        `${requestVar}=void 0;`;
       if (replacement !== full) {
         displayPatched += 1;
         return replacement;
@@ -1016,12 +1058,13 @@ function patchThinkingStreaming(content) {
   // Re-introduce the option there, then patch the same semantic stream cases.
   if (createVirtualMessageHelper !== null) {
     const missingStreamingThinkingHandlerPattern =
-      /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*)?\)\{let\{([^}]*)\}=\2;/g;
+      /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*)?\)\{let\{([^}]*)\}=\2([;,])/g;
     let missingStreamingThinkingMatch;
     while ((missingStreamingThinkingMatch = missingStreamingThinkingHandlerPattern.exec(output)) !== null) {
       const eventParam = missingStreamingThinkingMatch[1];
       const optionsParam = missingStreamingThinkingMatch[2];
       const props = missingStreamingThinkingMatch[3];
+      const declarationSeparator = missingStreamingThinkingMatch[4];
       if (props.includes("onStreamingThinking:")) {
         continue;
       }
@@ -1066,8 +1109,8 @@ function patchThinkingStreaming(content) {
 
       const replacements = [
         [
-          `let{${props}}=${optionsParam};`,
-          `let{${props},onStreamingThinking:${setStreamingThinkingParam}}=${optionsParam};`,
+          `let{${props}}=${optionsParam}${declarationSeparator}`,
+          `let{${props},onStreamingThinking:${setStreamingThinkingParam}}=${optionsParam}${declarationSeparator}`,
         ],
         [
           `if(${eventParam}.type==="stream_request_start"){${setModeParam}("requesting");return}`,
@@ -1154,6 +1197,30 @@ function patchThinkingStreaming(content) {
         nextHandlerSegment = result.segment;
         if (nextHandlerSegment.includes(after)) {
           patched += 1;
+        }
+      }
+
+      if (displayTransformParam !== null) {
+        const messageStopAuthoringProgressPattern = new RegExp(
+          `if\\(${eventParam}\\.event\\.type==="message_stop"\\)\\{if\\(` +
+            `${displayTransformParam}\\?\\.finalize\\(\\),` +
+            `${setModeParam}\\?\\.\\("tool-use"\\),` +
+            `${setStreamingToolsParam}\\?\\.\\(\\(\\)=>\\[\\]\\),` +
+            `(${identifierPattern})\\)(${identifierPattern})\\.loaded\\(\\)\\?\\.resetAuthoringProgress\\(\\);return\\}`
+        );
+        const nextMessageStopSegment = nextHandlerSegment.replace(
+          messageStopAuthoringProgressPattern,
+          (_full, authoringProgressVar, authoringProgressModule) =>
+            `if(${eventParam}.event.type==="message_stop"){if(` +
+            `${displayTransformParam}?.finalize(),` +
+            `${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),` +
+            `${setModeParam}?.("tool-use"),${setStreamingToolsParam}?.(()=>[]),` +
+            `${authoringProgressVar})${authoringProgressModule}.loaded()?.resetAuthoringProgress();return}`
+        );
+        if (nextMessageStopSegment !== nextHandlerSegment) {
+          candidates += 1;
+          patched += 1;
+          nextHandlerSegment = nextMessageStopSegment;
         }
       }
 
@@ -2577,13 +2644,18 @@ function patchActiveTurnPromptIdentity(content) {
   // Claude already owns a prompt-scoped UUID that remains stable from one
   // user prompt through its tool-result continuations. Discover the minified
   // getter semantically instead of depending on its current symbol name.
-  const promptGetterMatch = output.match(
+  const legacyPromptGetterMatch = output.match(
     /function ([A-Za-z_$][\w$]*)\(\)\{return ([A-Za-z_$][\w$]*)\.promptId\}function [A-Za-z_$][\w$]*\(e\)\{\2\.promptId=e\}/
   );
-  if (!promptGetterMatch) {
-    return { content: output, candidates, patched };
+  const journalPromptGetterMatch = output.match(
+    /function ([A-Za-z_$][\w$]*)\(\)\{return ((?:[A-Za-z_$][\w$]*\.)+)promptId\(\)\}function [A-Za-z_$][\w$]*\(e\)\{\2replacePromptId\(e\)\}/
+  );
+  if (!legacyPromptGetterMatch && !journalPromptGetterMatch) {
+    return { content: original, candidates: 0, patched: 0 };
   }
-  const promptGetter = promptGetterMatch[1];
+  const promptGetter = legacyPromptGetterMatch
+    ? legacyPromptGetterMatch[1]
+    : journalPromptGetterMatch[1];
 
   // Reuse Claude's own query-source classifier so quota checks, token counts,
   // compaction, side queries, and other auxiliary traffic cannot enter the
@@ -2607,6 +2679,16 @@ function patchActiveTurnPromptIdentity(content) {
       agentCandidates += 1;
       agentPatched += 1;
       return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetter}()),${storage}.run(e,t)${suffix}`;
+    }
+  );
+  const attributedAgentContextPattern =
+    /(function [A-Za-z_$][\w$]*\(e,t\)\{)(if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return )([A-Za-z_$][\w$]*)(\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\))(\}function [A-Za-z_$][\w$]*\(\)\{return\{agentType:"main",agentId:)/g;
+  output = output.replace(
+    attributedAgentContextPattern,
+    (full, prefix, attribution, storage, run, suffix) => {
+      agentCandidates += 1;
+      agentPatched += 1;
+      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetter}());${attribution}${storage}${run}${suffix}`;
     }
   );
 

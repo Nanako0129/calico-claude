@@ -84,12 +84,12 @@ jobs:
           node-version: "24"
 
       - name: Install dependencies
-        id: tweakcc
+        id: dependencies
         run: |
           set -euo pipefail
           npm ci
           npm test
-          VERSION="$(node -e "console.log(require('./node_modules/tweakcc/package.json').version)")"
+          VERSION="$(node -e "console.log(require('./node_modules/node-lief/package.json').version)")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download native binary
@@ -164,7 +164,7 @@ jobs:
             echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Apply display patches to native binaries (tweakcc)
+      - name: Apply display patches to native binaries
         if: steps.check.outputs.skip != 'true'
         run: |
           set -euo pipefail
@@ -173,7 +173,7 @@ jobs:
           NEEDS_CODESIGN="${{ matrix.needs_codesign }}"
           CAN_EXECUTE="${{ matrix.can_execute }}"
 
-          node scripts/patch-native-with-tweakcc.ts \
+          node scripts/patch-native.ts \
             --input work/claude.native.original \
             --output "$PATCHED_PATH" \
             --disable "$DISABLED_MODULES" \
@@ -189,6 +189,7 @@ jobs:
             grep -F "(patched)" work/version.txt
           else
             echo "Skipping runtime check for non-native runner architecture."
+            node -e "const native = require('./scripts/native-bun.ts'); const content = native.readNativeBunContent(process.argv[1]); if (!content.includes('}.VERSION} (Claude Code)\\\\n(patched)')) { console.error('Patched version marker not found in extracted bundle'); process.exit(1); }" "$PATCHED_PATH"
           fi
 
       - name: Verify patched bundle
@@ -332,7 +333,7 @@ jobs:
             echo "native_install_script=https://claude.ai/install.sh"
             echo "native_version=${{ steps.native.outputs.version }}"
             echo "native_binary_path=${{ steps.native.outputs.path }}"
-            echo "tweakcc_version=${{ steps.tweakcc.outputs.version }}"
+            echo "node_lief_version=${{ steps.dependencies.outputs.version }}"
             echo "run_id=${{ github.run_id }}"
             echo "run_attempt=${{ github.run_attempt }}"
           } > work/metadata.txt
@@ -342,7 +343,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_NOTES_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_notes || '' }}
-          TWEAKCC_VERSION: ${{ steps.tweakcc.outputs.version }}
+          NODE_LIEF_VERSION: ${{ steps.dependencies.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -358,10 +359,10 @@ jobs:
             printf 'Patched native Claude build for source version %s.\n' "$VERSION" > "$NOTES_PATH"
           fi
 
-          printf '\n---\n\n- Platform: %s\n- Source version: %s\n- Patcher: Calico patch suite + tweakcc %s\n' \
+          printf '\n---\n\n- Platform: %s\n- Source version: %s\n- Patcher: Calico patch suite + node-lief %s\n' \
             "${{ matrix.platform_label }}" \
             "$VERSION" \
-            "$TWEAKCC_VERSION" >> "$NOTES_PATH"
+            "$NODE_LIEF_VERSION" >> "$NOTES_PATH"
 
           gh release create "$TAG" \
             --title "$TITLE" \

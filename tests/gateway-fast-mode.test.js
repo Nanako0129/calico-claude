@@ -468,6 +468,16 @@ test("fails atomically when a required anchor is missing or duplicated", () => {
 test("binary verifier accepts the complete gateway fast-mode structure", () => {
   const patched = patchGatewayFastMode(fixture).content;
   assert.equal(evaluatePatchModule("gateway-fast-mode", patched), null);
+
+  const withNativeMetadataNormalization = patched.replace(
+    "r=__calicoGatewayFastApply(r);if(e&&e.length>0){",
+    'let n=r.metadata;if(n&&typeof n.user_id==="string")r.metadata={...n,user_id:n.user_id};r=__calicoGatewayFastApply(r);if(e&&e.length>0){'
+  );
+  assert.notEqual(withNativeMetadataNormalization, patched);
+  assert.equal(
+    evaluatePatchModule("gateway-fast-mode", withNativeMetadataNormalization),
+    null
+  );
 });
 
 test("binary verifier rejects detached helpers and broken gateway ownership", () => {
