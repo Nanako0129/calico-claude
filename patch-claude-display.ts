@@ -2294,6 +2294,62 @@ function patchStatuslineCommittedUsage(content) {
   return { content: output, candidates, patched: 6 };
 }
 
+// Claude Code's statusline payload builder reads the header-derived rate-limit
+// state (five_hour, seven_day, seven_day_overage_included, overage) but projects
+// only the first two into the JSON handed to the status line command. The other
+// two windows are already parsed from response headers on the same object, so
+// forwarding them costs nothing at render time. Upstream labels
+// seven_day_overage_included "Fable 5 limit"; overage is the usage-credit window.
+// Both keep their upstream key names so a future upstream projection is a
+// drop-in replacement for this patch.
+function patchStatuslineRateLimitWindows(content) {
+  const original = content;
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const window = (local, key) =>
+    `...${local}.${key}&&{${key}:{used_percentage:${local}.${key}.utilization*100,resets_at:${local}.${key}.resets_at}}`;
+
+  const projectionPattern = new RegExp(
+    `\\{\\.\\.\\.(${identifier})\\.five_hour&&\\{five_hour:\\{used_percentage:\\1\\.five_hour\\.utilization\\*100,resets_at:\\1\\.five_hour\\.resets_at\\}\\},\\.\\.\\.\\1\\.seven_day&&\\{seven_day:\\{used_percentage:\\1\\.seven_day\\.utilization\\*100,resets_at:\\1\\.seven_day\\.resets_at\\}\\}\\}`,
+    "g"
+  );
+  const guardPattern = new RegExp(
+    `\\.\\.\\.\\((${identifier})\\.five_hour\\|\\|\\1\\.seven_day\\)&&\\{rate_limits:\\1\\}`,
+    "g"
+  );
+
+  const projectionMatches = [...content.matchAll(projectionPattern)];
+  const guardMatches = [...content.matchAll(guardPattern)];
+  const candidates = projectionMatches.length + guardMatches.length;
+
+  if (projectionMatches.length !== 1 || guardMatches.length !== 1) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const projectionLocal = projectionMatches[0][1];
+  const guardLocal = guardMatches[0][1];
+  const projectionReplacement = `{${[
+    "five_hour",
+    "seven_day",
+    "seven_day_overage_included",
+    "overage",
+  ]
+    .map((key) => window(projectionLocal, key))
+    .join(",")}}`;
+  const guardReplacement = `...Object.keys(${guardLocal}).length>0&&{rate_limits:${guardLocal}}`;
+
+  let output = original.replace(projectionPattern, projectionReplacement);
+  output = output.replace(guardPattern, guardReplacement);
+
+  if (
+    output.split(projectionReplacement).length - 1 !== 1 ||
+    output.split(guardReplacement).length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  return { content: output, candidates, patched: 2 };
+}
+
 function patchGatewayFastMode(content) {
   const original = content;
   const identifier = "[A-Za-z_$][\\w$]*";
@@ -2959,6 +3015,11 @@ const PATCH_MODULES = [
     apply: patchStatuslineCommittedUsage,
   },
   {
+    id: "statusline-rate-limit-windows",
+    description: "Forward Fable 5 and usage-credit rate-limit windows to statusline payloads",
+    apply: patchStatuslineRateLimitWindows,
+  },
+  {
     id: "custom-context-window",
     description: "Allow exact opt-in custom model context windows",
     apply: patchCustomContextWindows,
@@ -3178,6 +3239,7 @@ module.exports = {
   patchCompactBodyPolicy,
   patchBackgroundAgentUsage,
   patchStatuslineCommittedUsage,
+  patchStatuslineRateLimitWindows,
   patchCustomContextWindows,
 };
 
