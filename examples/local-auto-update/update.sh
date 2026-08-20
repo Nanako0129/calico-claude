@@ -1,0 +1,539 @@
+#!/usr/bin/env bash
+#
+# calico update.sh — unattended local updater for patched Claude Code builds
+# published by a Calico release repo (default: Nanako0129/calico-claude).
+#
+# It manages a SEPARATELY NAMED binary (default `calico-claude`) so the official
+# `claude` symlink stays under Anthropic's own updater. See README.md next to
+# this script for the SessionStart hook wiring.
+#
+# Modes:
+#   --hook   Throttled entry point for the SessionStart hook. Never blocks:
+#            if the last check was < THROTTLE_SECONDS ago it exits 0 immediately;
+#            otherwise it records the timestamp, spawns a detached `--run` and
+#            exits 0. stdin (the hook JSON payload) is ignored.
+#   --run    Perform an update if a newer release exists. Verifies checksum and
+#            build attestation (fail-hard) BEFORE installing; rolls back the
+#            symlink if the post-install version check fails.
+#   --force  Like --run, but skips the "already up to date" version gate so a
+#            same-version rebuilt release can be reinstalled. Checksum,
+#            attestation and post-verify still run (fail-hard) as usual.
+#   --check  Report installed vs latest release. Makes no changes.
+#
+# Dependencies: bash 3.2+, curl, python3, and a sha256 checker (`shasum` on
+# macOS, `sha256sum` on Linux). `gh` is optional and only used to verify build
+# provenance attestations.
+#
+# Environment overrides (all optional):
+#   CALICO_REPO           GitHub repo publishing the patched releases.
+#   CALICO_PLATFORM       Force a platform suffix (linux-x64, linux-arm64,
+#                         macos-arm64, win32-x64, win32-arm64).
+#   CALICO_BIN_LINK       Managed symlink path.
+#   CALICO_VERSIONS_DIR   Directory holding installed versions.
+#   CALICO_STATE_DIR      Lock/log/throttle state directory.
+#   CALICO_KEEP_VERSIONS  How many old versions to keep (default 3, 0 = keep all).
+#   CALICO_THROTTLE_SECONDS  Minimum seconds between --hook checks (default 3600).
+#   GH_TOKEN / GITHUB_TOKEN  Used as a bearer token for the releases API.
+
+set -euo pipefail
+
+# --- Constants ---------------------------------------------------------------
+REPO="${CALICO_REPO:-Nanako0129/calico-claude}"
+VERSIONS_DIR="${CALICO_VERSIONS_DIR:-${HOME}/.local/share/calico-claude/versions}"
+BIN_LINK="${CALICO_BIN_LINK:-${HOME}/.local/bin/calico-claude}"
+STATE_DIR="${CALICO_STATE_DIR:-${HOME}/.claude/calico}"
+LOCK_DIR="${STATE_DIR}/.lock"
+LAST_CHECK_FILE="${STATE_DIR}/last-check"
+LOG_FILE="${STATE_DIR}/update.log"
+THROTTLE_SECONDS="${CALICO_THROTTLE_SECONDS:-3600}"
+KEEP_VERSIONS="${CALICO_KEEP_VERSIONS:-3}"
+LOG_MAX_LINES=2000
+API_URL="https://api.github.com/repos/${REPO}/releases?per_page=100"
+
+# Populated by cleanup trap.
+TMP_DIR=""
+
+# Set to 1 by the --force mode. When forcing, perform_update skips the
+# "already up to date" version gate (but still runs checksum, attestation and
+# post-verify) so a same-version rebuilt release can be reinstalled.
+FORCE=0
+
+# --- Helpers -----------------------------------------------------------------
+log() {
+  printf '%s [calico] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
+
+fail() {
+  log "ERROR: $*"
+  exit 1
+}
+
+cleanup() {
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
+  if [[ -d "$LOCK_DIR" ]]; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+# Sets: RELEASE_SUFFIX, ASSET, IS_MACOS.
+# Mirrors detect_platform() in install-patched-claude.sh; keep the two in sync.
+detect_platform() {
+  IS_MACOS=0
+
+  if [[ -n "${CALICO_PLATFORM:-}" ]]; then
+    RELEASE_SUFFIX="$CALICO_PLATFORM"
+  else
+    local os arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
+
+    case "$os" in
+      Linux)
+        case "$arch" in
+          x86_64)        RELEASE_SUFFIX="linux-x64" ;;
+          aarch64|arm64) RELEASE_SUFFIX="linux-arm64" ;;
+          *) fail "Unsupported Linux architecture: ${arch}" ;;
+        esac
+        ;;
+      Darwin)
+        case "$arch" in
+          arm64) RELEASE_SUFFIX="macos-arm64" ;;
+          *) fail "Unsupported macOS architecture: ${arch}. Only Apple Silicon is supported." ;;
+        esac
+        ;;
+      MINGW*|MSYS*|CYGWIN*)
+        case "$arch" in
+          x86_64|amd64)  RELEASE_SUFFIX="win32-x64" ;;
+          aarch64|arm64) RELEASE_SUFFIX="win32-arm64" ;;
+          *) fail "Unsupported Windows architecture: ${arch}" ;;
+        esac
+        ;;
+      *)
+        fail "Unsupported operating system: ${os}"
+        ;;
+    esac
+  fi
+
+  case "$RELEASE_SUFFIX" in
+    linux-x64|linux-arm64) ASSET="claude.native.patched" ;;
+    macos-arm64)           ASSET="claude.native.macos.patched"; IS_MACOS=1 ;;
+    win32-x64|win32-arm64) ASSET="claude.native.windows.patched.exe" ;;
+    *) fail "Unknown platform suffix: ${RELEASE_SUFFIX}" ;;
+  esac
+}
+
+# Verify "<sha256>  <file>" lines in $1 against files in the current directory.
+sha256_check() {
+  local list="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c "$list"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c "$list"
+  else
+    fail "Missing required command: shasum or sha256sum"
+  fi
+}
+
+acquire_lock() {
+  mkdir -p "$STATE_DIR"
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    log "Another update is already in progress (lock held); exiting."
+    exit 0
+  fi
+  trap cleanup EXIT
+}
+
+# Installed version = basename of the symlink target. Does NOT launch the binary.
+get_installed_version() {
+  local target
+  if [[ ! -L "$BIN_LINK" ]]; then
+    # Not a symlink we manage; still try to derive something sensible.
+    if [[ -e "$BIN_LINK" ]]; then
+      log "WARNING: ${BIN_LINK} is not a symlink; cannot derive installed version from link target."
+    fi
+    INSTALLED_VERSION=""
+    return
+  fi
+  target="$(readlink "$BIN_LINK")"
+  INSTALLED_VERSION="$(basename "$target")"
+}
+
+# True if the currently installed binary carries the Calico "(patched)"
+# version marker. Used to detect the official autoupdater overwriting the
+# patched build with a same-version official binary.
+installed_is_patched() {
+  local version_output
+  version_output="$("$BIN_LINK" --version 2>/dev/null || true)"
+  [[ "$version_output" == *"(patched)"* ]]
+}
+
+# Query the releases list, pick the highest semver whose tag matches
+# ^v(X.Y.Z)-<suffix>(-<rebuild>)?$ and that carries the expected asset.
+# Sets: LATEST_VERSION, LATEST_TAG, ASSET_URL, CHECKSUMS_URL (may be empty).
+# Returns 0 when a release was found, 1 when none matched.
+query_latest_release() {
+  require_cmd curl
+  require_cmd python3
+
+  local json_file
+  json_file="$(mktemp)" || fail "Failed to create temp file for release metadata"
+
+  # Built as one non-empty array: bash 3.2 (stock on macOS) treats "${a[@]}"
+  # on an EMPTY array as an unbound variable under `set -u`, so an optional
+  # token must never be its own array.
+  local -a curl_args=(
+    -fsSL
+    -H "Accept: application/vnd.github+json"
+    -H "User-Agent: calico-claude-updater"
+  )
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${GH_TOKEN}")
+  elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  fi
+
+  if ! curl "${curl_args[@]}" "$API_URL" -o "$json_file"; then
+    rm -f "$json_file"
+    fail "Failed to query GitHub releases API for ${REPO}"
+  fi
+
+  local parsed rc
+  set +e
+  parsed="$(python3 - "$ASSET" "$RELEASE_SUFFIX" "$json_file" <<'PY'
+import json, re, sys
+
+asset = sys.argv[1]
+suffix = sys.argv[2]
+json_file = sys.argv[3]
+# Rebuilt releases carry a numeric suffix (v2.1.235-macos-arm64-2). Rank them
+# above the base tag for the same version, matching install-patched-claude.sh.
+pat = re.compile(r'^v(\d+)\.(\d+)\.(\d+)-' + re.escape(suffix) + r'(?:-(\d+))?$')
+
+try:
+    with open(json_file, encoding="utf-8") as handle:
+        data = json.load(handle)
+except Exception:
+    sys.exit(2)
+
+if not isinstance(data, list):
+    sys.exit(2)
+
+best = None
+for rel in data:
+    if not isinstance(rel, dict):
+        continue
+    if rel.get("draft"):
+        continue
+    tag = rel.get("tag_name", "") or ""
+    m = pat.match(tag)
+    if not m:
+        continue
+    ver = tuple(int(x) for x in m.group(1, 2, 3))
+    rank = int(m.group(4) or "1")
+    asset_url = checksums_url = None
+    for a in rel.get("assets", []) or []:
+        name = a.get("name")
+        if name == asset:
+            asset_url = a.get("browser_download_url")
+        elif name == "checksums.txt":
+            checksums_url = a.get("browser_download_url")
+    if not asset_url:
+        continue
+    key = (ver, rank)
+    cand = (key, tag, "%d.%d.%d" % ver, asset_url, checksums_url or "")
+    if best is None or key > best[0]:
+        best = cand
+
+if best is None:
+    sys.exit(3)
+
+print(best[2])
+print(best[1])
+print(best[3])
+print(best[4])
+PY
+)"
+  rc=$?
+  set -e
+  rm -f "$json_file"
+
+  case "$rc" in
+    0) ;;
+    3) return 1 ;;  # no matching release
+    2) fail "Failed to parse GitHub releases JSON" ;;
+    *) fail "Release query failed (rc=${rc})" ;;
+  esac
+
+  LATEST_VERSION="$(printf '%s\n' "$parsed" | sed -n '1p')"
+  LATEST_TAG="$(printf '%s\n' "$parsed" | sed -n '2p')"
+  ASSET_URL="$(printf '%s\n' "$parsed" | sed -n '3p')"
+  CHECKSUMS_URL="$(printf '%s\n' "$parsed" | sed -n '4p')"
+
+  [[ -n "$LATEST_VERSION" && -n "$ASSET_URL" ]] || fail "Incomplete release metadata parsed"
+  return 0
+}
+
+# Compare dotted semver: echoes "newer" if $1 > $2, "same" if equal, "older" otherwise.
+semver_relation() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+def parse(v):
+    return tuple(int(x) for x in v.split("."))
+a = parse(sys.argv[1]); b = parse(sys.argv[2])
+print("newer" if a > b else ("same" if a == b else "older"))
+PY
+}
+
+verify_checksum() {
+  local dir="$1"
+  local checksums_file="${dir}/checksums.txt"
+
+  [[ -s "$checksums_file" ]] || fail "checksums.txt is missing or empty; refusing to install"
+
+  # Extract only the line for our asset so that unrelated entries (missing
+  # files) do not make the checker error out for the wrong reason.
+  local filtered="${dir}/checksums.selected.txt"
+  # Escape regex metacharacters: the asset name contains dots, which would
+  # otherwise match any character and let a decoy entry satisfy the gate.
+  local asset_re="${ASSET//./\\.}"
+  grep -E "[[:space:]]\*?${asset_re}\$" "$checksums_file" > "$filtered" || \
+    fail "No checksum entry for ${ASSET} in checksums.txt"
+
+  ( cd "$dir" && sha256_check "$(basename "$filtered")" ) >/dev/null 2>&1 || \
+    fail "Checksum verification FAILED for ${ASSET}; refusing to install"
+
+  log "Checksum verified for ${ASSET}"
+}
+
+verify_attestation() {
+  local file="$1"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    if gh attestation verify "$file" --repo "$REPO" >/dev/null 2>&1; then
+      log "Attestation verified via gh for ${ASSET}"
+    else
+      fail "Attestation verification FAILED for ${ASSET}; refusing to install"
+    fi
+  else
+    log "WARNING: gh unavailable or not authenticated; skipping attestation verification"
+  fi
+}
+
+# Atomically point BIN_LINK at $1 (an absolute target path).
+swap_symlink() {
+  local target="$1"
+  local tmp="${BIN_LINK}.calico-tmp.$$"
+  ln -s "$target" "$tmp"
+  mv -f "$tmp" "$BIN_LINK"
+}
+
+# Keep the newest KEEP_VERSIONS entries in VERSIONS_DIR and delete the rest. The
+# current symlink target is always kept — after a rollback it may be older than
+# all of them, in which case it is retained on top of the newest KEEP_VERSIONS.
+# KEEP_VERSIONS=0 (or a non-numeric value) disables pruning entirely.
+# Entries are ordered by mtime (newest first) so hand-made names such as
+# "2.1.223.pre-something" are handled without a semver parse.
+prune_old_versions() {
+  [[ "$KEEP_VERSIONS" =~ ^[0-9]+$ ]] || return 0
+  (( KEEP_VERSIONS > 0 )) || return 0
+  [[ -d "$VERSIONS_DIR" ]] || return 0
+
+  local current=""
+  [[ -L "$BIN_LINK" ]] && current="$(basename "$(readlink "$BIN_LINK")")"
+
+  local -a entries=()
+  local name
+  # ls -t sorts by mtime, newest first. Names here are version strings written
+  # by this script, so they never contain newlines.
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    [[ -f "${VERSIONS_DIR}/${name}" ]] || continue
+    entries+=("$name")
+  done < <(ls -t "$VERSIONS_DIR" 2>/dev/null)
+
+  local kept=0
+  for name in "${entries[@]:-}"; do
+    [[ -n "$name" ]] || continue
+    if [[ "$name" == "$current" ]]; then
+      # Always kept, and counted, so KEEP_VERSIONS=3 means three builds on disk
+      # in the normal case rather than four.
+      kept=$((kept + 1))
+      continue
+    fi
+    kept=$((kept + 1))
+    if (( kept <= KEEP_VERSIONS )); then
+      continue
+    fi
+    rm -f "${VERSIONS_DIR}/${name}" && log "Pruned old version ${name}"
+  done
+}
+
+# Keep the detached --run log from growing without bound.
+rotate_log() {
+  [[ -f "$LOG_FILE" ]] || return 0
+  local lines
+  lines="$(wc -l < "$LOG_FILE" 2>/dev/null | tr -d ' ')"
+  [[ "$lines" =~ ^[0-9]+$ ]] || return 0
+  (( lines > LOG_MAX_LINES )) || return 0
+  local tmp="${LOG_FILE}.trim.$$"
+  tail -n "$((LOG_MAX_LINES / 2))" "$LOG_FILE" > "$tmp" 2>/dev/null && mv -f "$tmp" "$LOG_FILE"
+  rm -f "$tmp" 2>/dev/null || true
+}
+
+perform_update() {
+  acquire_lock
+  detect_platform
+
+  get_installed_version
+  log "Installed version: ${INSTALLED_VERSION:-<unknown>} (${RELEASE_SUFFIX})"
+
+  if ! query_latest_release; then
+    log "No matching ${RELEASE_SUFFIX} release found for ${REPO}; nothing to do. Exiting."
+    exit 0
+  fi
+  log "Latest release: ${LATEST_VERSION} (tag ${LATEST_TAG})"
+
+  if [[ -n "$INSTALLED_VERSION" ]]; then
+    local rel
+    rel="$(semver_relation "$LATEST_VERSION" "$INSTALLED_VERSION")"
+    if [[ "$rel" == "newer" ]]; then
+      : # proceed to install
+    elif [[ "$rel" == "same" ]] && ! installed_is_patched; then
+      # Same version but the official autoupdater (or a manual `claude
+      # install`) overwrote the patched binary — self-heal by reinstalling
+      # the patched build of the same version.
+      log "Installed ${INSTALLED_VERSION} matches latest but is NOT patched (official binary detected); reinstalling patched build."
+    elif [[ "$FORCE" == "1" ]]; then
+      # --force: reinstall even when already up to date and already patched
+      # (e.g. the release was rebuilt at the same version). Checksum,
+      # attestation and post-verify below still run unconditionally.
+      log "Installed version ${INSTALLED_VERSION} is up to date (latest ${LATEST_VERSION}), but --force given; reinstalling."
+    else
+      log "Installed version ${INSTALLED_VERSION} is up to date (latest ${LATEST_VERSION}); nothing to do. Exiting."
+      prune_old_versions
+      exit 0
+    fi
+  fi
+
+  # --- Download -------------------------------------------------------------
+  TMP_DIR="$(mktemp -d)" || fail "Failed to create temp download dir"
+  local asset_path="${TMP_DIR}/${ASSET}"
+  log "Downloading ${ASSET} (${LATEST_TAG})"
+  # -sS: no progress meter (this log is appended to unattended), errors still shown.
+  curl -fsSL "$ASSET_URL" -o "$asset_path" || fail "Failed to download ${ASSET}"
+
+  if [[ -n "$CHECKSUMS_URL" ]]; then
+    curl -fsSL "$CHECKSUMS_URL" -o "${TMP_DIR}/checksums.txt" || fail "Failed to download checksums.txt"
+  else
+    fail "Release ${LATEST_TAG} has no checksums.txt asset; refusing to install"
+  fi
+
+  # --- Verify (fail-hard, BEFORE install) -----------------------------------
+  verify_checksum "$TMP_DIR"
+  verify_attestation "$asset_path"
+
+  # --- Install --------------------------------------------------------------
+  mkdir -p "$VERSIONS_DIR"
+  local dest="${VERSIONS_DIR}/${LATEST_VERSION}"
+  install -m 0755 "$asset_path" "$dest" || fail "Failed to install binary to ${dest}"
+  if (( IS_MACOS )); then
+    xattr -d com.apple.quarantine "$dest" 2>/dev/null || true
+  fi
+  log "Installed patched binary to ${dest}"
+
+  # --- Atomic symlink swap --------------------------------------------------
+  mkdir -p "$(dirname "$BIN_LINK")"
+  local old_target=""
+  [[ -L "$BIN_LINK" ]] && old_target="$(readlink "$BIN_LINK")"
+  swap_symlink "$dest"
+  log "Symlink ${BIN_LINK} -> ${dest}"
+
+  # --- Post-verify with rollback --------------------------------------------
+  local version_output
+  version_output="$("$BIN_LINK" --version 2>&1 || true)"
+  if [[ "$version_output" == *"$LATEST_VERSION"* && "$version_output" == *"(patched)"* ]]; then
+    log "Post-verify OK: ${version_output//$'\n'/ | }"
+    log "Update to ${LATEST_VERSION} complete."
+    prune_old_versions
+  else
+    log "ERROR: Post-verify FAILED. Expected version ${LATEST_VERSION} and (patched). Got: ${version_output//$'\n'/ | }"
+    if [[ -n "$old_target" ]]; then
+      swap_symlink "$old_target"
+      log "Rolled back symlink ${BIN_LINK} -> ${old_target}"
+    else
+      log "WARNING: no previous symlink target recorded; cannot roll back."
+    fi
+    exit 1
+  fi
+}
+
+do_check() {
+  detect_platform
+  get_installed_version
+  local installed_display="${INSTALLED_VERSION:-<unknown>}"
+  if query_latest_release; then
+    printf 'Platform:       %s\n' "$RELEASE_SUFFIX"
+    printf 'Installed:      %s\n' "$installed_display"
+    printf 'Latest release: %s (tag %s)\n' "$LATEST_VERSION" "$LATEST_TAG"
+    if [[ -n "$INSTALLED_VERSION" ]]; then
+      case "$(semver_relation "$LATEST_VERSION" "$INSTALLED_VERSION")" in
+        newer) printf 'Status:         update available\n' ;;
+        same)  printf 'Status:         up to date\n' ;;
+        older) printf 'Status:         installed is newer than latest release\n' ;;
+      esac
+    fi
+  else
+    printf 'Platform:       %s\n' "$RELEASE_SUFFIX"
+    printf 'Installed:      %s\n' "$installed_display"
+    printf 'Latest release: none (no matching %s release published yet)\n' "$RELEASE_SUFFIX"
+  fi
+}
+
+do_hook() {
+  # Never block session startup. Ignore stdin (the hook JSON payload).
+  mkdir -p "$STATE_DIR"
+  local now last
+  now="$(date +%s)"
+  last="$(cat "$LAST_CHECK_FILE" 2>/dev/null || echo 0)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+
+  if (( now - last < THROTTLE_SECONDS )); then
+    exit 0
+  fi
+
+  # An unwritable stamp must not turn the "never blocks" hook into a failure.
+  printf '%s\n' "$now" > "$LAST_CHECK_FILE" 2>/dev/null || \
+    log "WARNING: could not write ${LAST_CHECK_FILE}; throttling is degraded."
+  rotate_log
+  nohup bash "$0" --run < /dev/null >> "$LOG_FILE" 2>&1 &
+  disown
+  exit 0
+}
+
+main() {
+  local mode="${1:-}"
+  case "$mode" in
+    --hook)  do_hook ;;
+    --run)   perform_update ;;
+    --force) FORCE=1; perform_update ;;
+    --check) do_check ;;
+    *)
+      cat >&2 <<EOF
+Usage: $0 [--hook|--run|--force|--check]
+
+  --hook   Throttled SessionStart entry point (spawns detached --run, never blocks).
+  --run    Update if a newer verified release exists.
+  --force  Reinstall even when already up to date (skips only the version gate).
+  --check  Report installed vs latest release without changing anything.
+EOF
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
