@@ -754,16 +754,30 @@ const CHECKS: Check[] = [
         `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
         "g"
       );
+      // 2.1.236+ batch tool-use destructured wrapper; see the matching
+      // pattern in patch-claude-display.ts for the canonical/fallback split.
+      const batchWrapperPattern = new RegExp(
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        "g"
+      );
       const wrapperMatches = [
         ...[...content.matchAll(legacyWrapperPattern)].map((match) => ({
           match,
+          local: match[1],
           effortCondition: null,
           effortProperty: null,
         })),
         ...[...content.matchAll(effortWrapperPattern)].map((match) => ({
           match,
+          local: match[1],
           effortCondition: match[11],
           effortProperty: match[12],
+        })),
+        ...[...content.matchAll(batchWrapperPattern)].map((match) => ({
+          match,
+          local: match[10],
+          effortCondition: match[14],
+          effortProperty: match[15],
         })),
       ];
       if (wrapperMatches.length !== 1) {
@@ -797,7 +811,7 @@ const CHECKS: Check[] = [
       ) {
         return "2.1.212 modelsUsed completion requires an effort-bearing statusline wrapper";
       }
-      const wrapperLocal = wrapper.match[1];
+      const wrapperLocal = wrapper.local;
       const wrapperIndex = wrapper.match.index ?? -1;
       const wrapperFunctionStart = content.lastIndexOf("function ", wrapperIndex);
 

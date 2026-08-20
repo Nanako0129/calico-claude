@@ -42,6 +42,18 @@ function effortCommittedUsageFixture(source = committedUsageFixture) {
     );
 }
 
+function batchCommittedUsageFixture(source = committedUsageFixture) {
+  return effortCommittedUsageFixture(source)
+    .replace(
+      "function ZJr(e){return e}",
+      "function ZJr(e){return e}\nfunction K4i(e,t){return{content:e,batchToolUses:[]}}"
+    )
+    .replace(
+      "let Kn={message:{...wo,content:ZJr([Zr],n,i.agentId,{requestId:ge??void 0,messageId:wo.id})},requestId:ge??void 0,",
+      "let{content:Ct,batchToolUses:Bt}=K4i(ZJr([Zr],n,i.agentId,{requestId:ge??void 0,messageId:wo.id}),n),Kn={message:{...wo,content:Ct},...Bt.length>0&&{batchToolUses:Bt},requestId:ge??void 0,"
+    );
+}
+
 const modelsUsedCompletionSignal =
   "function backgroundCompletionSignal(){let ie=BBg(s,e,g),de=Yns(ie,e,{...n,modelsUsed:_},{suppressTelemetry:re});__calicoRefreshAgentUsage(re,ie),Z0u(e,a9r(re),s);return de}";
 
@@ -379,6 +391,44 @@ test("preserves the 2.1.212 effort metadata wrapper", () => {
     ),
     null
   );
+});
+
+test("matches the 2.1.236 batch tool-use destructured wrapper", () => {
+  const source = batchCommittedUsageFixture();
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+
+  assert.match(
+    result.content,
+    /__calicoUsageState:\{committed:!1,usage:null\},\.\.\._&&\{advisorModel:_\},\.\.\.Ie!==void 0&&\{effort:Ie\}/
+  );
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(
+    evaluatePatchModule(
+      "statusline-committed-usage",
+      result.content + modelsUsedCompletionSignal
+    ),
+    null
+  );
+});
+
+test("2.1.236 non-streaming fallback wrappers with inline usage are not canonical", () => {
+  const source = batchCommittedUsageFixture();
+  const fallback =
+    'let{content:fi,batchToolUses:Gs}=K4i(ZJr(Mo.content,n,i.agentId,{requestId:ge??void 0,messageId:Lt.id}),n),sa={message:{...Lt,content:fi,usage:B5e(Wx,Lt.usage)},...Gs.length>0&&{batchToolUses:Gs},requestId:ge??void 0,...OG(i.querySource,i.spawnedBySkill,i.activeSkill,i.activeMcpServer,i.activeMcpTool),type:"assistant",uuid:sar.randomUUID(),timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_},...Ie!==void 0&&{effort:Ie}};';
+  const result = patchStatuslineCommittedUsage(source + fallback);
+
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+
+  const duplicateCanonical = source.replace(
+    "let{content:Ct,batchToolUses:Bt}=K4i(",
+    'if(0){let{content:Xt,batchToolUses:Yt}=K4i(ZJr([Zr],n,i.agentId,{requestId:ge??void 0,messageId:wo.id}),n),Zn={message:{...wo,content:Xt},...Yt.length>0&&{batchToolUses:Yt},requestId:ge??void 0,...OG(i.querySource,i.spawnedBySkill,i.activeSkill,i.activeMcpServer,i.activeMcpTool),type:"assistant",uuid:sar.randomUUID(),timestamp:new Date().toISOString(),...!1,..._&&{advisorModel:_},...Ie!==void 0&&{effort:Ie}};}let{content:Ct,batchToolUses:Bt}=K4i('
+  );
+  const duplicated = patchStatuslineCommittedUsage(duplicateCanonical);
+  assert.equal(duplicated.patched, 0);
+  assert.equal(duplicated.content, duplicateCanonical);
 });
 
 test("2.1.212 wrapper ownership rejects lost, mismatched, and duplicate effort variants", () => {

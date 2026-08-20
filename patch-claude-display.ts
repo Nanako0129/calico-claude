@@ -855,8 +855,9 @@ function patchThinkingStreaming(content) {
   // this filter, which otherwise makes the bug appear main-session-only.
   let briefThinkingCandidates = 0;
   let briefThinkingPatched = 0;
+  // 2.1.236+ wraps the text clause in an extra paren: `if((d?.type==="text"||…)&&…)`.
   const briefThinkingFilterPattern =
-    /if\(([A-Za-z_$][\w$]*)\.type==="assistant"\)\{if\(\1\.isApiErrorMessage\)return!0;(if\(([A-Za-z_$][\w$]*)\?\.type==="tool_use"[\s\S]{0,600}?if\(([A-Za-z_$][\w$]*)\?\.type==="text"[\s\S]{0,300}?return!0;return!1\})/g;
+    /if\(([A-Za-z_$][\w$]*)\.type==="assistant"\)\{if\(\1\.isApiErrorMessage\)return!0;(if\(([A-Za-z_$][\w$]*)\?\.type==="tool_use"[\s\S]{0,600}?if\(\(?([A-Za-z_$][\w$]*)\?\.type==="text"[\s\S]{0,300}?return!0;return!1\})/g;
   output = output.replace(
     briefThinkingFilterPattern,
     (full, entryVar, remainingFilter, contentVar, textContentVar) => {
@@ -2040,6 +2041,15 @@ function patchStatuslineCommittedUsage(content) {
     `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
     "g"
   );
+  // 2.1.236+: batch tool-use destructuring wraps the content builder. The
+  // canonical wrapper is still the one whose content comes from a single
+  // bracketed block (`ueo([ia],…)`) and whose message carries no `usage:`;
+  // the two fallback sites use `ueo(<var>.content,…)` plus `usage:B5e(…)`
+  // and cannot match this shape.
+  const batchWrapperPattern = new RegExp(
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
+    "g"
+  );
   const terminalPattern = new RegExp(
     `for\\(let (${identifierPattern}) of (${identifierPattern})\\)\\1\\.message\\.usage=(${identifierPattern}),\\1\\.message\\.stop_reason=(${identifierPattern}),\\1\\.message\\.stop_details=(${identifierPattern})\\.delta\\.stop_details\\?\\?null;`,
     "g"
@@ -2059,18 +2069,26 @@ function patchStatuslineCommittedUsage(content) {
   const wrapperMatches = [
     ...[...content.matchAll(legacyWrapperPattern)].map((match) => ({
       match,
+      local: match[1],
       effortCondition: null,
       effortProperty: null,
     })),
     ...[...content.matchAll(effortWrapperPattern)].map((match) => ({
       match,
+      local: match[1],
       effortCondition: match[11],
       effortProperty: match[12],
+    })),
+    ...[...content.matchAll(batchWrapperPattern)].map((match) => ({
+      match,
+      local: match[10],
+      effortCondition: match[14],
+      effortProperty: match[15],
     })),
   ];
   const wrapperMatch = wrapperMatches[0];
   const wrapperIndex = wrapperMatch?.match.index ?? -1;
-  const wrapperLocal = wrapperMatch?.match[1];
+  const wrapperLocal = wrapperMatch?.local;
   const wrapperFunctionStart = wrapperIndex === -1 ? -1 : content.lastIndexOf("function ", wrapperIndex);
   const terminalMatches = [...content.matchAll(terminalPattern)];
   const terminalMatch = terminalMatches[0];
