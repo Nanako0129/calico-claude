@@ -5,3 +5,5 @@ claude.display.backup
 original*
 node_modules
 work/
+.DS_Store
+.claude/worktrees/
