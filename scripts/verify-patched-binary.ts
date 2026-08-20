@@ -1089,6 +1089,23 @@ const CHECKS: Check[] = [
       ) {
         return "expected main-session brief filter to preserve thinking entries";
       }
+      // The bare __cc_streamingThinking containment above is satisfied by the
+      // reducer-side __cc_streamingThinkingMessage plumbing alone (substring
+      // coincidence), which let 2.1.236/237 builds pass with the renderer side
+      // silently un-patched. From 2.1.234 (earliest bundle verified for these
+      // anchors) require the renderer threading and inline-extras markers too.
+      const requiresRendererThreading =
+        version[0] > 2 ||
+        (version[0] === 2 &&
+          (version[1] > 1 || (version[1] === 1 && version[2] >= 234)));
+      if (requiresRendererThreading) {
+        if (!content.includes("streamingThinking:__cc_streamingThinking")) {
+          return "expected renderer-side streamingThinking threading (signature or store snapshot)";
+        }
+        if (!content.includes("__cc_streamingThinkingExtras")) {
+          return "expected inline streaming-thinking transcript extras";
+        }
+      }
       return null;
     },
   },

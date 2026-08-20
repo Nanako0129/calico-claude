@@ -575,14 +575,43 @@ function patchThinkingStreaming(content) {
     }
   }
 
+  // 2.1.236+ moves streaming state from useState into a coalescing store
+  // (`_snapshot={streamingToolUses:[],streamingThinking:null,…}`) consumed via
+  // `{streamingToolUses:X,userInputOnProcessing:Y}=hook(ctx.stream)`. The
+  // snapshot already carries streamingThinking natively, so widen that
+  // destructuring and thread the snapshot field as the renderer prop.
+  if (streamingVar === null) {
+    let storeCandidates = 0;
+    let storePatched = 0;
+    const storeSnapshotPattern = new RegExp(
+      `\\{streamingToolUses:(${identifierPattern}),userInputOnProcessing:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\.stream\\)`,
+      "g"
+    );
+    output = output.replace(
+      storeSnapshotPattern,
+      (full, toolUsesVar, inputVar, hookFunction, contextVar) => {
+        if (streamingVar !== null) {
+          return full;
+        }
+        storeCandidates += 1;
+        storePatched += 1;
+        streamingVar = "__cc_streamingThinkingState";
+        return `{streamingToolUses:${toolUsesVar},streamingThinking:__cc_streamingThinkingState,userInputOnProcessing:${inputVar}}=${hookFunction}(${contextVar}.stream)`;
+      }
+    );
+    candidates += storeCandidates;
+    patched += storePatched;
+  }
+
   if (streamingVar !== null) {
     const createElementCallPattern = /createElement\(([A-Za-z_$][\w$]*),\{([^{}]*?)\}\)/g;
     const promptRendererCallPattern =
       /createElement\(([A-Za-z_$][\w$]*),\{([\s\S]{0,2000}?placeholderElement:[\s\S]{0,2000}?agentDefinitions:[^}]*?onOpenRateLimitOptions:[^}]*?isLoading:)([^,}]+)(,streamingText:[^}]*?(?:showThinkingHint:[^}]*?)?isBriefOnly:[^}]*?)\}\)/g;
     const jsxMainRendererPropsPattern =
       /(screen:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
+    // 2.1.235 drops agentDefinitions from the main renderer props run.
     const jsxMainRendererWithoutShowAllPropsPattern =
-      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)((?:agentDefinitions:[^,}]+,)?onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
     const jsxTranscriptRendererPropsPattern =
       /(screen:[^,}]+,agentDefinitions:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
 
@@ -732,6 +761,20 @@ function patchThinkingStreaming(content) {
       redactedSummaryCandidates += 1;
       redactedSummaryPatched += 1;
       return `let ${blockVar}=${messageVar}.message.content.find((${itemVar})=>${itemVar}.type==="thinking"||${itemVar}.type==="redacted_thinking");if(${blockVar}&&(${blockVar}.type==="thinking"||${blockVar}.type==="redacted_thinking"))${setStreamingVar}?.(()=>({thinking:${blockVar}.type==="thinking"?${blockVar}.thinking:${blockVar}.data??"",isStreaming:!1,streamingEndedAt:Date.now()}))`;
+    }
+  );
+  // 2.1.236+ inserts an already-streamed guard between the condition and the
+  // callback: `if(a&&a.type==="thinking")if(G!==null&&G(a))o?.(()=>null);else o?.(…)`.
+  // Extend find/condition to redacted blocks; the guard only ever sees a
+  // thinking-typed block (it was written for `.thinking`, not `.data`).
+  const guardedAssistantThinkingPattern =
+    /let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.message\.content\.find\(\(([A-Za-z_$][\w$]*)\)=>\3\.type==="thinking"\);if\(\1&&\1\.type==="thinking"\)if\(([A-Za-z_$][\w$]*)!==null&&\4\(\1\)\)([A-Za-z_$][\w$]*)\?\.\(\(\)=>null\);else \5\?\.\(\(\)=>\(\{thinking:\1\.thinking,isStreaming:!1,streamingEndedAt:Date\.now\(\)\}\)\)/g;
+  output = output.replace(
+    guardedAssistantThinkingPattern,
+    (_full, blockVar, messageVar, itemVar, guardVar, setStreamingVar) => {
+      redactedSummaryCandidates += 1;
+      redactedSummaryPatched += 1;
+      return `let ${blockVar}=${messageVar}.message.content.find((${itemVar})=>${itemVar}.type==="thinking"||${itemVar}.type==="redacted_thinking");if(${blockVar}&&(${blockVar}.type==="thinking"||${blockVar}.type==="redacted_thinking"))if(${blockVar}.type==="thinking"&&${guardVar}!==null&&${guardVar}(${blockVar}))${setStreamingVar}?.(()=>null);else ${setStreamingVar}?.(()=>({thinking:${blockVar}.type==="thinking"?${blockVar}.thinking:${blockVar}.data??"",isStreaming:!1,streamingEndedAt:Date.now()}))`;
     }
   );
   candidates += redactedSummaryCandidates;
