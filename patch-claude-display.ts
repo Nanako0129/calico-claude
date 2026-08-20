@@ -545,7 +545,11 @@ function patchThinkingStreaming(content) {
   const identifierPattern = "[A-Za-z_$][\\w$]*";
   const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let streamingVar =
-    output.match(/hidePastThinking:!0,streamingThinking:([A-Za-z_$][\w$]*)/)?.[1] ?? null;
+    output.match(/hidePastThinking:!0,streamingThinking:([A-Za-z_$][\w$]*)/)?.[1] ??
+    output.match(
+      /streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),userInputOnProcessing:/
+    )?.[1] ??
+    null;
 
   if (streamingVar === null) {
     const onStreamingThinkingPattern = /onStreamingThinking:([A-Za-z_$][\w$]*)/g;
@@ -569,6 +573,22 @@ function patchThinkingStreaming(content) {
     }
   }
 
+  if (streamingVar === null) {
+    const streamSnapshotPattern =
+      /(\{streamingToolUses:[A-Za-z_$][\w$]*,)(userInputOnProcessing:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\.stream\))/;
+    output = output.replace(streamSnapshotPattern, (full, beforeUserInput, userInputAndHook) => {
+      propCandidates += 1;
+      streamingVar = "__cc_streamingThinking";
+      const replacement =
+        `${beforeUserInput}streamingThinking:${streamingVar},${userInputAndHook}`;
+      if (replacement !== full) {
+        propPatched += 1;
+        return replacement;
+      }
+      return full;
+    });
+  }
+
   if (streamingVar !== null) {
     const createElementCallPattern = /createElement\(([A-Za-z_$][\w$]*),\{([^{}]*?)\}\)/g;
     const promptRendererCallPattern =
@@ -579,6 +599,12 @@ function patchThinkingStreaming(content) {
       /(screen:[^,}]+,streamingToolUses:[^,}]+,)(agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
     const jsxTranscriptRendererPropsPattern =
       /(screen:[^,}]+,agentDefinitions:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
+    const jsxStreamStoreMainRendererPropsPattern =
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
+    const jsxStreamStoreTranscriptRendererPropsPattern =
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+)/g;
+    const jsxStreamStoreTranscriptWrapperPropsPattern =
+      /(focused:[^,}]+,tools:[^,}]+,commands:[^,}]+,streamingToolUses:[^,}]+,)(isLoading:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+)/g;
 
     output = output.replace(createElementCallPattern, (full, component, props) => {
       if (!props.includes("streamingToolUses:")) {
@@ -646,6 +672,24 @@ function patchThinkingStreaming(content) {
       injectStreamingThinking
     );
     output = output.replace(jsxTranscriptRendererPropsPattern, injectStreamingThinking);
+    output = output.replace(jsxStreamStoreMainRendererPropsPattern, injectStreamingThinking);
+    output = output.replace(jsxStreamStoreTranscriptRendererPropsPattern, injectStreamingThinking);
+    output = output.replace(jsxStreamStoreTranscriptWrapperPropsPattern, injectStreamingThinking);
+
+    const transcriptRendererCachePattern = new RegExp(
+      `if\\([^;]{0,2000}\\)(${identifierPattern})=(${identifierPattern})\\.jsx\\((${identifierPattern}),\\{` +
+        `([^{}]{0,2000}?screen:"transcript",[^{}]{0,1000}?streamingThinking:${escapeRegExp(streamingVar)}[^{}]{0,1000}?)` +
+        `\\}\\)(?:,[^;]{0,2000});else \\1=(${identifierPattern})\\[\\d+\\]`,
+      "g"
+    );
+    output = output.replace(
+      transcriptRendererCachePattern,
+      (_full, elementVar, reactNs, component, props) => {
+        propCandidates += 1;
+        propPatched += 1;
+        return `${elementVar}=${reactNs}.jsx(${component},{${props}})`;
+      }
+    );
   }
 
   candidates += propCandidates;
