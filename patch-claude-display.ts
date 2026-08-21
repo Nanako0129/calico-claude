@@ -256,7 +256,12 @@ function patchWriteCreateDiffColors(content) {
       continue;
     }
 
-    const nextCreateSegment = createSegment.replace(before, after);
+    // `after` interpolates captured minified locals (fileVar, contentVar,
+    // styleVar, …), which may themselves contain `$`. A callback return value
+    // is emitted verbatim; passing `after` as a plain string here would let
+    // String.replace's `$&`/`$$` expansion corrupt it if a captured name ever
+    // contains one of those sequences.
+    const nextCreateSegment = createSegment.replace(before, () => after);
     if (nextCreateSegment !== createSegment) {
       patched += 1;
       output = output.slice(0, createStart) + nextCreateSegment + output.slice(updateStart);
@@ -942,8 +947,11 @@ function patchThinkingStreaming(content) {
       };
     }
 
+    // `after` interpolates captured event/setter/helper locals, so it must
+    // reach the string engine only through a callback — a plain-string 2nd
+    // argument would let `$$`/`$&` in a captured name expand.
     return {
-      segment: segment.replace(before, after),
+      segment: segment.replace(before, () => after),
       changed: true,
     };
   };
@@ -1406,7 +1414,9 @@ function patchThinkingStreaming(content) {
           for (const [before, after] of wg6Replacements) {
             if (nextWg6Segment.includes(before)) {
               candidates += 1;
-              nextWg6Segment = nextWg6Segment.replace(before, after);
+              // `after` interpolates captured wg6 locals; go through a
+              // callback so `$$`/`$&` inside a captured name is not expanded.
+              nextWg6Segment = nextWg6Segment.replace(before, () => after);
               if (nextWg6Segment.includes(after)) {
                 patched += 1;
               }
@@ -2050,12 +2060,16 @@ function patchBackgroundAgentUsage(content) {
   const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),__calicoRefreshAgentUsage(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
   const completionRefresh = `__calicoRefreshAgentUsage(${progressMatch[1]},${completionResult}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
 
-  let output = original.replace(trackerPattern, trackerReplacement);
-  output = output.replace(accountingPattern, eventReplacement);
-  output = output.replace(progressPattern, progressReplacement);
+  // Every *Replacement string below interpolates captured minified locals
+  // (trackerName, eventVar, usageVar, progressMatch[...], …), so each must
+  // reach .replace only via a callback — a plain-string 2nd argument would
+  // let `$$`/`$&`/`$1`-`$9` in a captured name expand against these regexes.
+  let output = original.replace(trackerPattern, () => trackerReplacement);
+  output = output.replace(accountingPattern, () => eventReplacement);
+  output = output.replace(progressPattern, () => progressReplacement);
   output = output.replace(
     completionMatch.match[0],
-    completionMatch.match[0] + completionRefresh
+    () => completionMatch.match[0] + completionRefresh
   );
 
   if (
@@ -2332,11 +2346,14 @@ function patchStatuslineCommittedUsage(content) {
   const selectorMatch = selectorMatches[0];
   const selectorReplacement = `${selectorMatch[1]}=${reducerName}(__calicoStatuslineMessages(${selectorMatch[2]})),${selectorMatch[3]}=${selectorMatch[4]}(${selectorMatch[5]},${selectorMatch[6]}())`;
 
-  let output = original.replace(wrapperMatch.match[0], wrapperReplacement);
-  output = output.replace(terminalPattern, terminalReplacement);
+  // wrapperReplacement/terminalReplacement/cloneSyncReplacement interpolate
+  // captured minified locals (terminalItem, terminalArray, cloneSyncSource,
+  // …); route them through callbacks so a captured `$$`/`$&` cannot expand.
+  let output = original.replace(wrapperMatch.match[0], () => wrapperReplacement);
+  output = output.replace(terminalPattern, () => terminalReplacement);
   let cloneIndex = 0;
   output = output.replace(cloneRegistrationPattern, () => cloneReplacements[cloneIndex++]);
-  output = output.replace(cloneSyncPattern, cloneSyncReplacement);
+  output = output.replace(cloneSyncPattern, () => cloneSyncReplacement);
 
   const selectorOutputMatch = [...output.matchAll(selectorPattern)][0];
   const selectorIndex = selectorOutputMatch?.index ?? -1;
@@ -2347,7 +2364,7 @@ function patchStatuslineCommittedUsage(content) {
 
   output =
     output.slice(0, functionStart) + accountingHelper + output.slice(functionStart);
-  output = output.replace(selectorPattern, selectorReplacement);
+  output = output.replace(selectorPattern, () => selectorReplacement);
 
   if (
     output.split(wrapperReplacement).length - 1 !== 1 ||
@@ -2485,8 +2502,11 @@ function patchStatuslineRateLimitWindows(content) {
     .join(",")}}`;
   const guardReplacement = `...Object.keys(${guardLocal}).length>0&&{rate_limits:${guardLocal}}`;
 
-  let output = original.replace(projectionPattern, projectionReplacement);
-  output = output.replace(guardPattern, guardReplacement);
+  // projectionReplacement/guardReplacement interpolate the captured
+  // projectionLocal/guardLocal names; use callbacks so a captured `$1`-style
+  // name cannot be read back as a backreference against these regexes.
+  let output = original.replace(projectionPattern, () => projectionReplacement);
+  output = output.replace(guardPattern, () => guardReplacement);
 
   if (
     output.split(projectionReplacement).length - 1 !== 1 ||
@@ -2941,9 +2961,16 @@ function patchActiveTurnPromptIdentity(content) {
     const extraHeadersFactory = localsMatch[4];
     const headerObjectLocal = localsMatch[5];
 
+    // This replacement interpolates sourceParam, contextParam, contextLocal,
+    // sourceClassifier, promptGetter, and the other captured locals above —
+    // all minified names that may legally contain `$`. localsPattern is a
+    // regex with 5 capture groups, so a captured name like `$1e` would be
+    // read back as a backreference if passed as a plain string; go through a
+    // callback so it is emitted verbatim instead.
     let nextSegment = segment.replace(
       localsPattern,
-      `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetter}()):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
+      () =>
+        `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetter}()):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
     );
     nextSegment = nextSegment.replace(
       new RegExp(
@@ -3029,9 +3056,16 @@ function patchCompactRequestSource(content) {
     // Inject after Session-Id + custom-header spread (...u,). Works with or
     // without a subsequent active-turn __calicoPromptId spread.
     const sourceParam = clientStartMatch[2];
+    // sourceParam is a captured minified local, so it may itself begin with
+    // `$1` (or contain any `$` sequence). This regex has one capture group,
+    // so a plain-string replacement would let `$1`-in-sourceParam expand as
+    // a backreference to the entire matched header prefix instead of naming
+    // the source param — go through a callback so the capture is threaded
+    // explicitly and sourceParam is emitted verbatim.
     nextSegment = nextSegment.replace(
       /("X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,)/,
-      `$1...process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"&&{"x-calico-request-source":"compact"},`
+      (_full, headerPrefix) =>
+        `${headerPrefix}...process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"&&{"x-calico-request-source":"compact"},`
     );
     if (nextSegment === segment) {
       continue;
