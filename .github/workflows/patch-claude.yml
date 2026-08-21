@@ -336,6 +336,8 @@ jobs:
             echo "node_lief_version=${{ steps.dependencies.outputs.version }}"
             echo "run_id=${{ github.run_id }}"
             echo "run_attempt=${{ github.run_attempt }}"
+            echo "source_commit=${{ github.sha }}"
+            echo "source_ref=${{ github.ref_name }}"
           } > work/metadata.txt
 
       - name: Create platform release
@@ -364,7 +366,14 @@ jobs:
             "$VERSION" \
             "$NODE_LIEF_VERSION" >> "$NOTES_PATH"
 
+          # --target pins the tag to the commit that actually produced these
+          # assets. Without it gh creates the tag on the default branch's head,
+          # so a release dispatched from any other ref ends up tagged at code
+          # that cannot rebuild it — and the attestation, which records the real
+          # run, then contradicts the tag. Every 2.1.238 tag was created this
+          # way before this line existed.
           gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
             --title "$TITLE" \
             --notes-file "$NOTES_PATH" \
             work/metadata.txt \
