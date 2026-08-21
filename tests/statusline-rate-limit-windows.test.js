@@ -92,3 +92,30 @@ test("is inert on already-patched content", () => {
   assert.equal(twice.patched, 0);
   assert.equal(twice.content, once.content);
 });
+
+// Global match counts alone do not prove the two anchors belong to each other.
+// Both of the following carry each shape exactly once, so the counts look
+// identical to the healthy fixture — only an ownership proof separates them.
+
+test("rejects anchors that live in different payload builders", () => {
+  const split = `
+function projectOnly(){let k=tLn(),A={...k.five_hour&&{five_hour:{used_percentage:k.five_hour.utilization*100,resets_at:k.five_hour.resets_at}},...k.seven_day&&{seven_day:{used_percentage:k.seven_day.utilization*100,resets_at:k.seven_day.resets_at}}};return A}
+function guardOnly(){let A=somethingElse();return{model:{id:"sonnet"},...(A.five_hour||A.seven_day)&&{rate_limits:A}}}
+`;
+  const result = patchStatuslineRateLimitWindows(split);
+  assert.equal(result.candidates, 2, "both shapes are still found");
+  assert.equal(result.patched, 0, "but they must not be rewritten");
+  assert.equal(result.content, split);
+});
+
+test("rejects a projection that does not initialize the local the guard reads", () => {
+  // Same function, and the guard's local `A` even exists — but the projection
+  // is assigned to `B`, so widening the guard would not see the added windows.
+  const unrelated = `
+function hqw(){let k=tLn(),B={...k.five_hour&&{five_hour:{used_percentage:k.five_hour.utilization*100,resets_at:k.five_hour.resets_at}},...k.seven_day&&{seven_day:{used_percentage:k.seven_day.utilization*100,resets_at:k.seven_day.resets_at}}},A=somethingElse(B);return{model:{id:"sonnet"},...(A.five_hour||A.seven_day)&&{rate_limits:A}}}
+`;
+  const result = patchStatuslineRateLimitWindows(unrelated);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, unrelated);
+});

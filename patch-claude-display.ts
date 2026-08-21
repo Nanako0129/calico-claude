@@ -2327,6 +2327,31 @@ function patchStatuslineRateLimitWindows(content) {
 
   const projectionLocal = projectionMatches[0][1];
   const guardLocal = guardMatches[0][1];
+
+  // Global counts alone do not prove the two anchors belong to each other: an
+  // upstream bundle could carry each shape once in unrelated functions, and
+  // rewriting both would widen a guard that never sees the added windows.
+  // Two independent ownership proofs, because a minified local name like `P`
+  // recurs across functions:
+  //   1. both anchors sit inside the same function
+  //   2. the projection literal is the initializer of the very local the guard reads
+  const projectionIndex = projectionMatches[0].index ?? -1;
+  const guardIndex = guardMatches[0].index ?? -1;
+  const projectionFunctionStart =
+    projectionIndex === -1 ? -1 : content.lastIndexOf("function ", projectionIndex);
+  const guardFunctionStart =
+    guardIndex === -1 ? -1 : content.lastIndexOf("function ", guardIndex);
+  const sharesPayloadBuilder =
+    projectionFunctionStart !== -1 && projectionFunctionStart === guardFunctionStart;
+  const projectionAssignsGuardLocal =
+    projectionIndex !== -1 &&
+    new RegExp(`(?:^|[^\\w$])${guardLocal}=$`).test(
+      content.slice(Math.max(0, projectionIndex - 40), projectionIndex)
+    );
+
+  if (!sharesPayloadBuilder || !projectionAssignsGuardLocal) {
+    return { content: original, candidates, patched: 0 };
+  }
   const projectionReplacement = `{${[
     "five_hour",
     "seven_day",
