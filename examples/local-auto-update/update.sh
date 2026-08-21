@@ -407,6 +407,28 @@ verify_attestation() {
   fi
 }
 
+# An install path that is guaranteed not to exist yet.
+#
+# Installs are append-only: never write over a file that exists. --force, the
+# unpatched self-heal, and a same-version rebuild would otherwise install over
+# the current symlink target, and every preserve/restore/recover mechanism this
+# script ever needed existed to undo exactly that.
+#
+# The suffix comes from mktemp rather than the pid. Pids are unique only among
+# processes alive at the same moment, not over time: a suffixed build that
+# survives pruning can still be on disk when a later run is assigned the same
+# pid, and `install` would then overwrite it — reopening the very hole this
+# design closes. mktemp creates the file exclusively, which also settles the
+# race between two runs choosing a name at the same instant.
+allocate_dest() {
+  local base="$1"
+  if [[ ! -e "$base" ]]; then
+    printf '%s\n' "$base"
+    return 0
+  fi
+  mktemp "${base}.XXXXXX"
+}
+
 # Atomically point BIN_LINK at $1 (an absolute target path).
 swap_symlink() {
   local target="$1"
@@ -424,6 +446,12 @@ swap_symlink() {
 # target is matched by its literal basename, so a pid-suffixed append-only
 # install ("2.1.240.4242") is protected exactly like a bare one.
 prune_old_versions() {
+  # Only the lock holder prunes. A lock old enough to be ignored lets runs
+  # overlap by design, and an overlapping run may have installed its destination
+  # without having swapped the symlink yet, or be holding a rollback target that
+  # this run's symlink does not name. Deleting either would strand it. Skipping
+  # a cleanup pass costs nothing; the next run that does hold the lock prunes.
+  [[ "$LOCK_CREATED" == "1" ]] || return 0
   [[ "$KEEP_VERSIONS" =~ ^[0-9]+$ ]] || return 0
   (( KEEP_VERSIONS > 0 )) || return 0
   [[ -d "$VERSIONS_DIR" ]] || return 0
@@ -544,16 +572,9 @@ perform_update() {
 
   # --- Install --------------------------------------------------------------
   mkdir -p "$VERSIONS_DIR"
-  local dest="${VERSIONS_DIR}/${LATEST_VERSION}"
-  # Installs are append-only: never write over a file that exists. --force, the
-  # unpatched self-heal, and a same-version rebuild would otherwise install
-  # over the current symlink target, and every preserve/restore/recover
-  # mechanism this script ever needed existed to undo exactly that. A suffixed
-  # sibling makes the intermediate state impossible; pruning cleans it up like
-  # any other old build. The pid is unique among concurrent runs on one machine.
-  if [[ -e "$dest" ]]; then
-    dest="${dest}.$$"
-  fi
+  local dest
+  dest="$(allocate_dest "${VERSIONS_DIR}/${LATEST_VERSION}")" ||
+    fail "Failed to allocate an install path under ${VERSIONS_DIR}"
   if ! install -m 0755 "$asset_path" "$dest"; then
     fail "Failed to install binary to ${dest}"
   fi

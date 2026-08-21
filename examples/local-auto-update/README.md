@@ -46,6 +46,7 @@ a script and not a one-line `curl | bash` in a cron job:
 | Installs **never overwrite** | If the destination exists (`--force`, the self-heal, a same-version rebuild), the new build goes to a unique sibling `<X.Y.Z>.<pid>` instead. No intermediate state where the working binary is gone can exist, so no preserve/restore/recover machinery is needed — rollback is only ever a symlink swap back to a file that was never touched. |
 | Versions are compared as **whole tokens** | `2.1.24` is a substring of `2.1.240`; a substring test would accept a mislabeled release at the one gate meant to catch it. The installed version is the leading `X.Y.Z` of the symlink target's basename, so a pid-suffixed install still reads as its bare version. |
 | Post-install verify can **roll back** | If the installed binary does not report both the expected version and `(patched)`, the symlink returns to its previous target — or is removed outright when this was a first install, since a link to a binary that just failed its check is worse than no link. The failed build stays in `versions/` and is pruned like any other old one. |
+| Pruning only runs while **holding the lock** | An ignored lock lets runs overlap by design, and an overlapping run may have installed a destination without swapping its symlink yet. Deleting it would strand that run, so a run without the lock skips the cleanup pass. |
 | The lock is an **efficiency device**, not a correctness one | Because installs never overwrite, two concurrent updaters cost a duplicate download, never a broken install. So the lock has no claim protocol: a lock younger than an hour means another run is working and this one exits; an older (or unmeasurable) one is *ignored* — never deleted, moved, or taken over, and a run that ignored a lock leaves it in place on exit. A run only ever removes a lock it created itself. |
 | Rebuilds are tracked by **release tag**, not version | A corrected build is republished as `-2` at the same version. Comparing versions alone would report "up to date" and no unattended user would ever receive it. |
 
@@ -145,7 +146,7 @@ asset; the attestation proves the release asset came out of this repo's CI.
 bash examples/local-auto-update/test-update.sh
 ```
 
-63 assertions, offline: platform detection, the checksum gate (tampered, absent,
+68 assertions, offline: platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
 throttling, lock behaviour (a young lock blocks; an aged one is ignored but

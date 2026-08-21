@@ -153,9 +153,11 @@ seed_versions() { # <current-version> <version...>
   [[ -n "$current" ]] && ln -sf "${CALICO_VERSIONS_DIR}/${current}" "$CALICO_BIN_LINK"
 }
 
+# Pruning is now gated on holding the lock, which acquire_lock sets. These cases
+# call the function directly, so they stand in for the lock holder explicitly.
 prune_with() { # <keep>
   CALICO_KEEP_VERSIONS="$1" bash -c '
-    stub="$1"; source "$stub"; prune_old_versions >/dev/null 2>&1
+    stub="$1"; source "$stub"; LOCK_CREATED=1; prune_old_versions >/dev/null 2>&1
   ' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH")
   ls "$CALICO_VERSIONS_DIR" | sort | tr '\n' ' ' | sed 's/ $//'
 }
@@ -263,6 +265,44 @@ if [[ "$reported" =~ ^[0-9]+$ ]] && (( reported < 60 )); then
 else
   bad "a freshly created lock measures under the startup grace (got: ${reported})"
 fi
+
+# A run that proceeded past an ignored lock may be overlapping another updater,
+# which could be mid-install or holding a rollback target this run cannot see.
+seed_versions "2.1.5" 2.1.1 2.1.2 2.1.3 2.1.4 2.1.5
+kept="$(CALICO_KEEP_VERSIONS=3 bash -c '
+  stub="$1"; source "$stub"; LOCK_CREATED=0; prune_old_versions >/dev/null 2>&1
+' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH"); ls "$CALICO_VERSIONS_DIR" | sort | tr '\n' ' ' | sed 's/ $//')"
+check "a run that does not hold the lock prunes nothing" "2.1.1 2.1.2 2.1.3 2.1.4 2.1.5" "$kept"
+
+# --- 5c. install path allocation ----------------------------------------------
+# The suffix must come from an exclusive create, not from the pid: pids are
+# unique only among live processes, so a suffixed build that survives pruning
+# can collide with a later run that is assigned the same pid.
+
+# Both allocations must happen inside ONE process. Calling a helper twice from
+# the harness would fork twice, giving each call a different pid — a pid-derived
+# suffix would then look unique and the mutation would go undetected.
+alloc() { # <base> [count] ; echoes <count> allocations from a single process
+  bash -c 'stub="$1"; source "$stub"; n="${3:-1}"; while (( n-- > 0 )); do allocate_dest "$2"; done' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH") "$1" "${2:-1}"
+}
+
+alloc_dir="${SANDBOX}/alloc"; rm -rf "$alloc_dir"; mkdir -p "$alloc_dir"
+base="${alloc_dir}/9.9.9"
+check "an unused base path is returned as-is" "$base" "$(alloc "$base")"
+
+printf 'EXISTING
+' > "$base"
+pair="$(alloc "$base" 2)"
+first="$(printf '%s\n' "$pair" | sed -n '1p')"
+second="$(printf '%s\n' "$pair" | sed -n '2p')"
+if [[ "$first" != "$base" && "$second" != "$base" ]]; then
+  ok "an occupied base path yields a suffixed sibling"
+else bad "an occupied base path yields a suffixed sibling ($first / $second)"; fi
+# Both calls run in the same test process, so a pid-derived suffix would repeat.
+if [[ "$first" != "$second" ]]; then
+  ok "two allocations against the same base differ"
+else bad "two allocations against the same base differ (both: $first)"; fi
+check "the occupied base is left untouched" "EXISTING" "$(cat "$base")"
 
 # --- 6. log rotation ----------------------------------------------------------
 LOG="${CALICO_STATE_DIR}/update.log"
