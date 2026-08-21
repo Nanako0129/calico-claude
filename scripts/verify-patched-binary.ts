@@ -1011,6 +1011,39 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "statusline-rate-limit-windows",
+    kind: "custom",
+    describe:
+      "Fable 5 and usage-credit windows forwarded, two-window rate_limits guard replaced",
+    disabledMarker: /\.\.\.Object\.keys\([A-Za-z_$][\w$]*\)\.length>0&&\{rate_limits:/,
+    run: (content: string): string | null => {
+      const identifier = "[A-Za-z_$][\\w$]*";
+      const windowMarker = (key: string) =>
+        new RegExp(
+          `\\.\\.\\.(${identifier})\\.${key}&&\\{${key}:\\{used_percentage:\\1\\.${key}\\.utilization\\*100,resets_at:\\1\\.${key}\\.resets_at\\}\\}`
+        );
+      const missing = ["five_hour", "seven_day", "seven_day_overage_included", "overage"].filter(
+        (key) => !windowMarker(key).test(content)
+      );
+      if (missing.length > 0) {
+        return `missing forwarded rate-limit window(s): ${missing.join(", ")}`;
+      }
+      const widenedGuard = new RegExp(
+        `\\.\\.\\.Object\\.keys\\((${identifier})\\)\\.length>0&&\\{rate_limits:\\1\\}`
+      );
+      if (!widenedGuard.test(content)) {
+        return "rate_limits payload guard was not widened to all windows";
+      }
+      const originalGuard = new RegExp(
+        `\\.\\.\\.\\((${identifier})\\.five_hour\\|\\|\\1\\.seven_day\\)&&\\{rate_limits:\\1\\}`
+      );
+      if (originalGuard.test(content)) {
+        return "original two-window rate_limits guard is still present";
+      }
+      return null;
+    },
+  },
+  {
     id: "custom-context-window",
     kind: "custom",
     describe: "validated opt-in context resolver and effective status-line window",

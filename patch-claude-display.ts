@@ -2355,6 +2355,139 @@ function patchStatuslineCommittedUsage(content) {
   return { content: output, candidates, patched: 6 };
 }
 
+// Claude Code's statusline payload builder reads the header-derived rate-limit
+// state (five_hour, seven_day, seven_day_overage_included, overage) but projects
+// only the first two into the JSON handed to the status line command. The other
+// two windows are already parsed from response headers on the same object, so
+// forwarding them costs nothing at render time. Upstream labels
+// seven_day_overage_included "Fable 5 limit"; overage is the usage-credit window.
+// Both keep their upstream key names so a future upstream projection is a
+// drop-in replacement for this patch.
+function patchStatuslineRateLimitWindows(content) {
+  const original = content;
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const window = (local, key) =>
+    `...${local}.${key}&&{${key}:{used_percentage:${local}.${key}.utilization*100,resets_at:${local}.${key}.resets_at}}`;
+
+  const projectionPattern = new RegExp(
+    `\\{\\.\\.\\.(${identifier})\\.five_hour&&\\{five_hour:\\{used_percentage:\\1\\.five_hour\\.utilization\\*100,resets_at:\\1\\.five_hour\\.resets_at\\}\\},\\.\\.\\.\\1\\.seven_day&&\\{seven_day:\\{used_percentage:\\1\\.seven_day\\.utilization\\*100,resets_at:\\1\\.seven_day\\.resets_at\\}\\}\\}`,
+    "g"
+  );
+  const guardPattern = new RegExp(
+    `\\.\\.\\.\\((${identifier})\\.five_hour\\|\\|\\1\\.seven_day\\)&&\\{rate_limits:\\1\\}`,
+    "g"
+  );
+
+  const projectionMatches = [...content.matchAll(projectionPattern)];
+  const guardMatches = [...content.matchAll(guardPattern)];
+  const candidates = projectionMatches.length + guardMatches.length;
+
+  if (projectionMatches.length !== 1 || guardMatches.length !== 1) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  const projectionLocal = projectionMatches[0][1];
+  const guardLocal = guardMatches[0][1];
+
+  // Global counts alone do not prove the two anchors belong to each other: an
+  // upstream bundle could carry each shape once in unrelated functions, and
+  // rewriting both would widen a guard that never sees the added windows.
+  // Two independent ownership proofs, because a minified local name like `P`
+  // recurs across functions:
+  //   1. both anchors sit inside the same function
+  //   2. the projection literal is the initializer of the very local the guard reads
+  const projectionIndex = projectionMatches[0].index ?? -1;
+  const guardIndex = guardMatches[0].index ?? -1;
+  const projectionFunctionStart =
+    projectionIndex === -1 ? -1 : content.lastIndexOf("function ", projectionIndex);
+  const guardFunctionStart =
+    guardIndex === -1 ? -1 : content.lastIndexOf("function ", guardIndex);
+  const sharesPayloadBuilder =
+    projectionFunctionStart !== -1 && projectionFunctionStart === guardFunctionStart;
+  // `.` is excluded from the boundary class deliberately: without it,
+  // `x.A={...projection...}` reads as an assignment to a local named `A`, and
+  // the windows would be added to a property while an unrelated local drives
+  // the guard. Same boundary as the occurrence test below.
+  const projectionAssignsGuardLocal =
+    projectionIndex !== -1 &&
+    new RegExp(`(?:^|[^\\w$.])${guardLocal}=$`).test(
+      content.slice(Math.max(0, projectionIndex - 40), projectionIndex)
+    );
+
+  // `function ` does not bound a lexical scope on its own. An arrow callback can
+  // hold the projection while the guard sits in the enclosing function with a
+  // shadowed local of the same name:
+  //   items.map(()=>{let A={...projection...}}); let A=other; return {...guard...}
+  // Both lastIndexOf calls land on the enclosing function and the initializer
+  // test sees the callback's `A=`, so neither check above rejects it. Walk the
+  // text between the anchors instead and require that reaching the guard never
+  // closes a bracket it did not open — that is, the guard is reached without
+  // leaving the block the projection lives in.
+  const projectionEnd =
+    projectionIndex === -1 ? -1 : projectionIndex + projectionMatches[0][0].length;
+  let leftProjectionScope = projectionEnd === -1 || guardIndex < projectionEnd;
+  if (!leftProjectionScope) {
+    let depth = 0;
+    for (const ch of content.slice(projectionEnd, guardIndex)) {
+      if (ch === "{" || ch === "(" || ch === "[") {
+        depth += 1;
+      } else if (ch === "}" || ch === ")" || ch === "]") {
+        depth -= 1;
+        if (depth < 0) {
+          leftProjectionScope = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Every way the guard's local can stop referring to this projection —
+  // reassignment, a shadowing `let` in a deeper block, an arrow parameter, a
+  // destructuring or catch binding — is a distinct syntactic form, and matching
+  // them one at a time only invites the next one. This patcher has no AST to
+  // resolve bindings with, so it asks for something stricter and complete
+  // instead: the name must not occur between the two anchors at all. If it
+  // never appears, it cannot have been rebound or shadowed by any form.
+  //
+  // Property accesses are excluded, since `x.A` binds nothing. In the bundles
+  // this targets the span between the anchors is the remainder of the payload
+  // object literal and does not mention the local at all.
+  const between = projectionEnd === -1 ? "" : content.slice(projectionEnd, guardIndex);
+  const guardLocalOccursBetween = new RegExp(
+    `(?:^|[^\\w$.])${guardLocal}(?![\\w$])`
+  ).test(between);
+
+  if (
+    !sharesPayloadBuilder ||
+    !projectionAssignsGuardLocal ||
+    leftProjectionScope ||
+    guardLocalOccursBetween
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+  const projectionReplacement = `{${[
+    "five_hour",
+    "seven_day",
+    "seven_day_overage_included",
+    "overage",
+  ]
+    .map((key) => window(projectionLocal, key))
+    .join(",")}}`;
+  const guardReplacement = `...Object.keys(${guardLocal}).length>0&&{rate_limits:${guardLocal}}`;
+
+  let output = original.replace(projectionPattern, projectionReplacement);
+  output = output.replace(guardPattern, guardReplacement);
+
+  if (
+    output.split(projectionReplacement).length - 1 !== 1 ||
+    output.split(guardReplacement).length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  return { content: output, candidates, patched: 2 };
+}
+
 function patchGatewayFastMode(content) {
   const original = content;
   const identifier = "[A-Za-z_$][\\w$]*";
@@ -3020,6 +3153,11 @@ const PATCH_MODULES = [
     apply: patchStatuslineCommittedUsage,
   },
   {
+    id: "statusline-rate-limit-windows",
+    description: "Forward Fable 5 and usage-credit rate-limit windows to statusline payloads",
+    apply: patchStatuslineRateLimitWindows,
+  },
+  {
     id: "custom-context-window",
     description: "Allow exact opt-in custom model context windows",
     apply: patchCustomContextWindows,
@@ -3239,6 +3377,7 @@ module.exports = {
   patchCompactBodyPolicy,
   patchBackgroundAgentUsage,
   patchStatuslineCommittedUsage,
+  patchStatuslineRateLimitWindows,
   patchCustomContextWindows,
 };
 

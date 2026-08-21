@@ -292,6 +292,57 @@ Likely break signs:
 - a valid partial-zero response is discarded
 - the module reports `0` candidates or the verifier reports an occurrence mismatch
 
+### `statusline-rate-limit-windows`
+
+Intent:
+
+- forward every rate-limit window Claude Code already holds into the status line JSON, not just
+  the two it currently projects
+
+Source of truth:
+
+- the header parser builds the internal `rawUtilization` state from four abbreviated headers:
+  `anthropic-ratelimit-unified-5h-*` (`five_hour`), `-7d-*` (`seven_day`), `-7d_oi-*`
+  (`seven_day_overage_included`), and `-overage-*` (`overage`)
+- upstream's own label map names `seven_day_overage_included` the "Fable 5 limit" and `overage`
+  the "usage credit limit"; both are first-class `rateLimitType` cases in the limit-message paths
+- the status line payload builder reads that same state object and projects only `five_hour` and
+  `seven_day`, so the other two windows are dropped after they have already been parsed
+- this is a projection widening, not a new data source: no extra request, no extra work per render
+
+Old bundle shape we match:
+
+- the two-window projection object literal, matched by shape with the state local captured:
+  `{...L.five_hour&&{five_hour:{used_percentage:L.five_hour.utilization*100,resets_at:L.five_hour.resets_at}},...L.seven_day&&{...}}`
+- the payload guard that admits the object only when one of those two windows exists:
+  `...P.five_hour||P.seven_day)&&{rate_limits:P}`
+- both anchors must occur exactly once; anything else returns the original bundle with `patched: 0`
+
+What we rewrite:
+
+- append `seven_day_overage_included` and `overage` spreads in the same shape as the existing two
+- widen the guard to `...Object.keys(P).length>0&&{rate_limits:P}` so a payload carrying only a
+  Fable or credit window still emits `rate_limits`
+
+Why this exists:
+
+- coralline (and any other status line) can only render what the payload carries; Fable usage is
+  visible on claude.ai but absent from the status line JSON, tracked as coralline issue 43
+- upstream key names are preserved verbatim, so if Anthropic ever forwards these windows itself,
+  the field names already match and this module simply stops applying
+
+Likely break signs:
+
+- the module reports `0` candidates after an upstream refactor of the payload builder
+- upstream renames the window keys or moves the projection off `rawUtilization`
+- upstream widens the projection itself, at which point the first anchor no longer matches and
+  this module should be retired rather than repaired
+
+Caveat:
+
+- the `7d_oi` headers are only present when the server emits them for that account; the patch
+  forwards the window when it exists and changes nothing when it does not
+
 ### `gateway-fast-mode`
 
 Intent:
