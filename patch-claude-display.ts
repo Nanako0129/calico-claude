@@ -1584,6 +1584,81 @@ function patchSubagentPromptVisibility(content, ctx = {}) {
   };
 }
 
+function patchDisableUsageWrapUpHints(content) {
+  // 2.1.238+ injects meta wrap-up prompts near the usage limit ("Checkpoint
+  // now: finish the current step, then list up to 3 short bullets ...") plus a
+  // matching TUI notice. Both injection paths are gated on statsig flags read
+  // by name with disabled defaults ("off" / !1), so renaming the gate name
+  // literals makes every lookup miss and fall back to disabled. Replacements
+  // are the same length as the originals, so no preserveLength branch is
+  // needed. Anchoring on the gate-name string literals (not minified locals)
+  // keeps this stable across bundle rebuilds.
+  const gateRenames = [
+    // grace-window wrap-up injection ("off" | "basic" | "next-steps")
+    ['"tengu_lantern_wick_mode"', '"calico_lantern_wick_off"'],
+    // 95% near-limit "checkpoint now" injection + notice (boolean)
+    ['"tengu_vellum_anchor"', '"calico_vellum_gone_"'],
+  ];
+
+  const perGateCounts = gateRenames.map(([from]) => content.split(from).length - 1);
+  const candidates = perGateCounts.reduce((sum, count) => sum + count, 0);
+  const presentGates = perGateCounts.filter((count) => count > 0).length;
+
+  if (presentGates > 0 && presentGates < gateRenames.length) {
+    // Partial match: upstream changed or removed exactly one gate literal
+    // while keeping the other. Renaming only the survivor would ship a bundle
+    // with the other wrap-up injection path still active under its new gate
+    // name, so patch nothing and report zero patched to fail --assert-all
+    // loudly instead.
+    return {
+      content,
+      candidates,
+      patched: 0,
+    };
+  }
+
+  if (presentGates === 0) {
+    // Pre-feature bundles (< 2.1.238) carry neither gate; that is an expected
+    // no-op, not a matcher failure, so report it as skipped and keep
+    // --assert-all green for older rebuilds. A 2.1.238+ bundle (or one with
+    // unparseable VERSION metadata) without the gates stays a hard failure:
+    // that is how --assert-all catches upstream renaming the gates away.
+    const versionMatch = content.match(
+      /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/
+    );
+    if (versionMatch) {
+      const [major, minor, micro] = versionMatch.slice(1).map(Number);
+      const preFeature =
+        major < 2 || (major === 2 && (minor < 1 || (minor === 1 && micro < 238)));
+      if (preFeature) {
+        return {
+          content,
+          candidates,
+          patched: 0,
+          skipped: true,
+          reason: `pre-2.1.238 bundle (${major}.${minor}.${micro}) has no usage wrap-up gates`,
+        };
+      }
+    }
+    return {
+      content,
+      candidates,
+      patched: 0,
+    };
+  }
+
+  let output = content;
+  for (const [from, to] of gateRenames) {
+    output = output.split(from).join(to);
+  }
+
+  return {
+    content: output,
+    candidates,
+    patched: candidates,
+  };
+}
+
 function patchDisableSpinnerTips(content, ctx = {}) {
   const disabledGuardPattern = /if\([A-Za-z_$][\w$]*\(\)\.spinnerTipsEnabled===!1\)return;/g;
   const enabledExpressionPattern = /[A-Za-z_$][\w$]*\.spinnerTipsEnabled!==!1/g;
@@ -3203,6 +3278,11 @@ const PATCH_MODULES = [
     apply: patchDisableSpinnerTips,
   },
   {
+    id: "disable-usage-wrapup",
+    description: "Disable near-limit / grace-window wrap-up prompt injection",
+    apply: patchDisableUsageWrapUpHints,
+  },
+  {
     id: "version-output",
     description: "Append (patched) to plain --version output",
     apply: patchVersionOutput,
@@ -3309,8 +3389,11 @@ function main() {
     patchResults.set(module.id, {
       candidates: result.candidates,
       patched: result.patched,
-      skipped: false,
-      reason: null,
+      // A module may report an expected no-op (e.g. the target feature does
+      // not exist in this bundle version) as skipped so --assert-all treats
+      // it like a disabled module instead of a matcher failure.
+      skipped: result.skipped === true,
+      reason: result.skipped === true ? result.reason ?? "not applicable" : null,
     });
   }
 
@@ -3371,6 +3454,7 @@ function main() {
 }
 
 module.exports = {
+  patchDisableUsageWrapUpHints,
   patchGatewayFastMode,
   patchActiveTurnPromptIdentity,
   patchCompactRequestSource,
