@@ -754,16 +754,30 @@ const CHECKS: Check[] = [
         `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
         "g"
       );
+      // 2.1.236+ batch tool-use destructured wrapper; see the matching
+      // pattern in patch-claude-display.ts for the canonical/fallback split.
+      const batchWrapperPattern = new RegExp(
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        "g"
+      );
       const wrapperMatches = [
         ...[...content.matchAll(legacyWrapperPattern)].map((match) => ({
           match,
+          local: match[1],
           effortCondition: null,
           effortProperty: null,
         })),
         ...[...content.matchAll(effortWrapperPattern)].map((match) => ({
           match,
+          local: match[1],
           effortCondition: match[11],
           effortProperty: match[12],
+        })),
+        ...[...content.matchAll(batchWrapperPattern)].map((match) => ({
+          match,
+          local: match[10],
+          effortCondition: match[14],
+          effortProperty: match[15],
         })),
       ];
       if (wrapperMatches.length !== 1) {
@@ -797,7 +811,7 @@ const CHECKS: Check[] = [
       ) {
         return "2.1.212 modelsUsed completion requires an effort-bearing statusline wrapper";
       }
-      const wrapperLocal = wrapper.match[1];
+      const wrapperLocal = wrapper.local;
       const wrapperIndex = wrapper.match.index ?? -1;
       const wrapperFunctionStart = content.lastIndexOf("function ", wrapperIndex);
 
@@ -1074,6 +1088,42 @@ const CHECKS: Check[] = [
         )
       ) {
         return "expected main-session brief filter to preserve thinking entries";
+      }
+      // The bare __cc_streamingThinking containment above is satisfied by the
+      // reducer-side __cc_streamingThinkingMessage plumbing alone (substring
+      // coincidence), which let 2.1.236/237 builds pass with the renderer side
+      // silently un-patched. From 2.1.234 (earliest bundle verified for these
+      // anchors) require the renderer threading and inline-extras markers too.
+      const requiresRendererThreading =
+        version[0] > 2 ||
+        (version[0] === 2 &&
+          (version[1] > 1 || (version[1] === 1 && version[2] >= 234)));
+      if (requiresRendererThreading) {
+        // The renderer must declare the streamingThinking parameter…
+        const rendererSignaturePattern =
+          /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:[A-Za-z_$][\w$]*,/;
+        if (!rendererSignaturePattern.test(content)) {
+          return "expected renderer signature to declare a streamingThinking parameter";
+        }
+        // …and exactly one call site must actually pass it. The signature also
+        // matches the `screen:…,streamingToolUses:…,streamingThinking:` shape,
+        // so exclude its own __cc_streamingThinking param; the 2.1.236+ store
+        // destructure has no preceding `screen:` and cannot match. A marker
+        // existing (signature injected, store local declared) is not proof the
+        // renderer receives the value — broken-2.1.235-class bundles carry the
+        // signature and the inline extras with no caller prop, and must fail
+        // here.
+        const rendererCallSitePattern =
+          /screen:[^,}]+,streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*)[,}]/g;
+        const rendererCallSites = [...content.matchAll(rendererCallSitePattern)].filter(
+          (match) => match[1] !== "__cc_streamingThinking"
+        );
+        if (rendererCallSites.length !== 1) {
+          return `expected 1 renderer call-site streamingThinking prop, found ${rendererCallSites.length}`;
+        }
+        if (!content.includes("__cc_streamingThinkingExtras")) {
+          return "expected inline streaming-thinking transcript extras";
+        }
       }
       return null;
     },

@@ -211,6 +211,12 @@ Source of truth:
 - Claude Code 2.1.212 appends `...effortLocal!==void 0&&{effort:effortLocal}` after the existing
   advisor metadata; the cell is inserted immediately after the native `...!1` marker so both metadata
   spreads remain byte-for-byte intact
+- Claude Code 2.1.236 routes the content builder through a batch tool-use destructuring:
+  `let{content:pp,batchToolUses:Up}=K4i(ueo([block],…),ctx)` followed by
+  `wrapper={message:{…,content:pp},...Up.length>0&&{batchToolUses:Up},…}`; the canonical wrapper
+  is still the one built from a single bracketed block (`ueo([block],…)`) whose message carries no
+  inline `usage:` — the two non-streaming fallback sites use `ueo(<var>.content,…)` plus
+  `usage:B5e(…)` and stay outside the anchor
 - production app state shallow-copies the wrapper before the terminal event; the shared object cell
   survives that copy, unlike the old primitive top-level boolean which remained stale `false`
 - the normal terminal `message_delta` mutation loop is the only path that can set `committed:!0`
@@ -265,8 +271,9 @@ Atomicity and verification:
 - the wrapper, canonical `case"message_delta"` aggregation, terminal loop, both clone
   registrations, clone-sync loop, and status-line selector are matched by semantic bundle shape
   rather than platform-varying minified locals; each anchor must occur exactly once
-- legacy advisor-only and 2.1.212 advisor-plus-effort tails are syntax variants of one wrapper role;
-  the effort condition and property must use the same local, and both variants present together fail
+- legacy advisor-only, 2.1.212 advisor-plus-effort, and 2.1.236 batch-destructured wrappers are
+  syntax variants of one wrapper role; the effort condition and property must use the same local,
+  and multiple variants present together fail
 - if any required anchor is missing or repeated, the module returns the original bundle with
   `patched: 0`
 - `scripts/verify-patched-binary.ts` checks commit-cell/helper/selector occurrence counts, confirms
@@ -542,9 +549,13 @@ Old bundle shapes we match:
 - 2.1.168-style UI reducers can run `displayTransform?.finalize()` inside the `message_stop` branch before switching to `"tool-use"`, and can use a block-form `case"message_delta":{...}`. The reducer patch must preserve those existing side effects while adding streaming-thinking cleanup before the stream transitions to normal response state.
 - 2.1.183-style UI reducers can keep `onStreamingThinking:<setter>` on the outer event dispatcher while moving the stream-event switch into a separate inner handler that destructures `onSetStreamMode`, `onStreamingToolUses`, `onStreamingText`, and `displayTransform`, but not `onStreamingThinking`. In that shape, inject `onStreamingThinking` into the inner handler destructuring, then patch `stream_request_start`, thinking/redacted-thinking block start, `thinking_delta`, text/message transitions, and `message_stop` there.
 - 2.1.199-style live thinking can still use the same `onStreamingThinking` state but may surface duplicate virtual entries if a thinking content-block start is handled more than once for the same index. Treat `streamingThinking.messages` as keyed by content-block index, not append-only.
-- 2.1.216-style main sessions can filter normalized transcript entries in brief mode, retaining text and selected tool-use blocks while dropping thinking. Preserve thinking and redacted-thinking in that filter; subagents do not take this `isBriefOnly` path, so they can appear healthy while the main session stays blank until another block lands.
+- 2.1.216-style main sessions can filter normalized transcript entries in brief mode, retaining text and selected tool-use blocks while dropping thinking. Preserve thinking and redacted-thinking in that filter; subagents do not take this `isBriefOnly` path, so they can appear healthy while the main session stays blank until another block lands. 2.1.236 wraps the filter's text clause in an extra paren (`if((d?.type==="text"||Vui(d))&&…)`); the anchor accepts that optional paren. This injection is opportunistic in the patch counts, so a missed anchor keeps `--assert-all` green — the version-gated check in `verify-patched-binary.ts` (≥2.1.216 requires the injected filter) is the guard that catches it.
 - 2.1.227-style UI reducers can continue the options-destructuring `let` statement with an `authoringProgressSurface` local instead of ending it with a semicolon. Their `message_stop` branch also conditionally resets authoring progress after finalizing display state, so preserve that side effect while injecting streaming-thinking cleanup.
 - 2.1.233-style main renderer calls can omit `showAllInTranscript:` between `streamingToolUses:` and `agentDefinitions:`. Prop threading must still inject `streamingThinking:` into that call; reducer matches alone can remain nonzero while live thinking stays invisible.
+- 2.1.235 drops `agentDefinitions:` from the main renderer props run (and `toolJSX:`/`verbose:` from the renderer signature, adding `pauseAnimation:`), so the main prop-threading matcher treats `agentDefinitions:` as optional. This loss was completely silent: prop threading is opportunistic in the counts (13→12 with `--assert-all` still green), and the user-visible symptom was live thinking that stalls and then back-fills all at once.
+- 2.1.236 moves streaming state from `useState` into a coalescing store class (`_snapshot={streamingToolUses:[],streamingThinking:null,…}` with `subscribe`/`getSnapshot`, the changelog's "event streams are no longer re-scanned" change). `onStreamingThinking:` is wired as `ctx.stream.setStreamingThinking` (member expression, so the identifier-only setter→useState rediscovery finds nothing and the whole renderer side — signature injection, inline extras, prop threading — silently cascades away, 12→8). The snapshot natively carries `streamingThinking`, so the patch widens the main component's `{streamingToolUses:X,userInputOnProcessing:Y}=hook(ctx.stream)` destructuring with `streamingThinking:__cc_streamingThinkingState` and threads that as the prop.
+- 2.1.236 also wraps the summarized-thinking completion callback in an already-streamed guard (`if(a&&a.type==="thinking")if(G!==null&&G(a))o?.(()=>null);else o?.(…)`); the redacted-summary rewrite preserves the guard but applies it only to thinking-typed blocks, since the guard was written against `.thinking`, not `.data`.
+- the binary verifier's bare `__cc_streamingThinking` containment is satisfied by the reducer-side `__cc_streamingThinkingMessage` plumbing alone (substring coincidence) — that is how the 2.1.236/237 renderer-side loss passed verification. From 2.1.234 the verifier additionally requires `streamingThinking:__cc_streamingThinking` (signature or store-snapshot threading) and `__cc_streamingThinkingExtras`.
 - the duplicate live-thinking suppressor should match the semantic row shape around `param:{type:"thinking",thinking:<var>.thinking}` and the surrounding `marginTop:1` wrapper, not a specific wrapper component identifier
 
 Why this exists:

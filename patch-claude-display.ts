@@ -575,14 +575,43 @@ function patchThinkingStreaming(content) {
     }
   }
 
+  // 2.1.236+ moves streaming state from useState into a coalescing store
+  // (`_snapshot={streamingToolUses:[],streamingThinking:null,…}`) consumed via
+  // `{streamingToolUses:X,userInputOnProcessing:Y}=hook(ctx.stream)`. The
+  // snapshot already carries streamingThinking natively, so widen that
+  // destructuring and thread the snapshot field as the renderer prop.
+  if (streamingVar === null) {
+    let storeCandidates = 0;
+    let storePatched = 0;
+    const storeSnapshotPattern = new RegExp(
+      `\\{streamingToolUses:(${identifierPattern}),userInputOnProcessing:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\.stream\\)`,
+      "g"
+    );
+    output = output.replace(
+      storeSnapshotPattern,
+      (full, toolUsesVar, inputVar, hookFunction, contextVar) => {
+        if (streamingVar !== null) {
+          return full;
+        }
+        storeCandidates += 1;
+        storePatched += 1;
+        streamingVar = "__cc_streamingThinkingState";
+        return `{streamingToolUses:${toolUsesVar},streamingThinking:__cc_streamingThinkingState,userInputOnProcessing:${inputVar}}=${hookFunction}(${contextVar}.stream)`;
+      }
+    );
+    candidates += storeCandidates;
+    patched += storePatched;
+  }
+
   if (streamingVar !== null) {
     const createElementCallPattern = /createElement\(([A-Za-z_$][\w$]*),\{([^{}]*?)\}\)/g;
     const promptRendererCallPattern =
       /createElement\(([A-Za-z_$][\w$]*),\{([\s\S]{0,2000}?placeholderElement:[\s\S]{0,2000}?agentDefinitions:[^}]*?onOpenRateLimitOptions:[^}]*?isLoading:)([^,}]+)(,streamingText:[^}]*?(?:showThinkingHint:[^}]*?)?isBriefOnly:[^}]*?)\}\)/g;
     const jsxMainRendererPropsPattern =
       /(screen:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
+    // 2.1.235 drops agentDefinitions from the main renderer props run.
     const jsxMainRendererWithoutShowAllPropsPattern =
-      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(agentDefinitions:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)((?:agentDefinitions:[^,}]+,)?onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
     const jsxTranscriptRendererPropsPattern =
       /(screen:[^,}]+,agentDefinitions:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
 
@@ -734,6 +763,20 @@ function patchThinkingStreaming(content) {
       return `let ${blockVar}=${messageVar}.message.content.find((${itemVar})=>${itemVar}.type==="thinking"||${itemVar}.type==="redacted_thinking");if(${blockVar}&&(${blockVar}.type==="thinking"||${blockVar}.type==="redacted_thinking"))${setStreamingVar}?.(()=>({thinking:${blockVar}.type==="thinking"?${blockVar}.thinking:${blockVar}.data??"",isStreaming:!1,streamingEndedAt:Date.now()}))`;
     }
   );
+  // 2.1.236+ inserts an already-streamed guard between the condition and the
+  // callback: `if(a&&a.type==="thinking")if(G!==null&&G(a))o?.(()=>null);else o?.(…)`.
+  // Extend find/condition to redacted blocks; the guard only ever sees a
+  // thinking-typed block (it was written for `.thinking`, not `.data`).
+  const guardedAssistantThinkingPattern =
+    /let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.message\.content\.find\(\(([A-Za-z_$][\w$]*)\)=>\3\.type==="thinking"\);if\(\1&&\1\.type==="thinking"\)if\(([A-Za-z_$][\w$]*)!==null&&\4\(\1\)\)([A-Za-z_$][\w$]*)\?\.\(\(\)=>null\);else \5\?\.\(\(\)=>\(\{thinking:\1\.thinking,isStreaming:!1,streamingEndedAt:Date\.now\(\)\}\)\)/g;
+  output = output.replace(
+    guardedAssistantThinkingPattern,
+    (_full, blockVar, messageVar, itemVar, guardVar, setStreamingVar) => {
+      redactedSummaryCandidates += 1;
+      redactedSummaryPatched += 1;
+      return `let ${blockVar}=${messageVar}.message.content.find((${itemVar})=>${itemVar}.type==="thinking"||${itemVar}.type==="redacted_thinking");if(${blockVar}&&(${blockVar}.type==="thinking"||${blockVar}.type==="redacted_thinking"))if(${blockVar}.type==="thinking"&&${guardVar}!==null&&${guardVar}(${blockVar}))${setStreamingVar}?.(()=>null);else ${setStreamingVar}?.(()=>({thinking:${blockVar}.type==="thinking"?${blockVar}.thinking:${blockVar}.data??"",isStreaming:!1,streamingEndedAt:Date.now()}))`;
+    }
+  );
   candidates += redactedSummaryCandidates;
   patched += redactedSummaryPatched;
 
@@ -855,8 +898,9 @@ function patchThinkingStreaming(content) {
   // this filter, which otherwise makes the bug appear main-session-only.
   let briefThinkingCandidates = 0;
   let briefThinkingPatched = 0;
+  // 2.1.236+ wraps the text clause in an extra paren: `if((d?.type==="text"||…)&&…)`.
   const briefThinkingFilterPattern =
-    /if\(([A-Za-z_$][\w$]*)\.type==="assistant"\)\{if\(\1\.isApiErrorMessage\)return!0;(if\(([A-Za-z_$][\w$]*)\?\.type==="tool_use"[\s\S]{0,600}?if\(([A-Za-z_$][\w$]*)\?\.type==="text"[\s\S]{0,300}?return!0;return!1\})/g;
+    /if\(([A-Za-z_$][\w$]*)\.type==="assistant"\)\{if\(\1\.isApiErrorMessage\)return!0;(if\(([A-Za-z_$][\w$]*)\?\.type==="tool_use"[\s\S]{0,600}?if\(\(?([A-Za-z_$][\w$]*)\?\.type==="text"[\s\S]{0,300}?return!0;return!1\})/g;
   output = output.replace(
     briefThinkingFilterPattern,
     (full, entryVar, remainingFilter, contentVar, textContentVar) => {
@@ -2040,6 +2084,15 @@ function patchStatuslineCommittedUsage(content) {
     `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
     "g"
   );
+  // 2.1.236+: batch tool-use destructuring wraps the content builder. The
+  // canonical wrapper is still the one whose content comes from a single
+  // bracketed block (`ueo([ia],…)`) and whose message carries no `usage:`;
+  // the two fallback sites use `ueo(<var>.content,…)` plus `usage:B5e(…)`
+  // and cannot match this shape.
+  const batchWrapperPattern = new RegExp(
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
+    "g"
+  );
   const terminalPattern = new RegExp(
     `for\\(let (${identifierPattern}) of (${identifierPattern})\\)\\1\\.message\\.usage=(${identifierPattern}),\\1\\.message\\.stop_reason=(${identifierPattern}),\\1\\.message\\.stop_details=(${identifierPattern})\\.delta\\.stop_details\\?\\?null;`,
     "g"
@@ -2059,18 +2112,26 @@ function patchStatuslineCommittedUsage(content) {
   const wrapperMatches = [
     ...[...content.matchAll(legacyWrapperPattern)].map((match) => ({
       match,
+      local: match[1],
       effortCondition: null,
       effortProperty: null,
     })),
     ...[...content.matchAll(effortWrapperPattern)].map((match) => ({
       match,
+      local: match[1],
       effortCondition: match[11],
       effortProperty: match[12],
+    })),
+    ...[...content.matchAll(batchWrapperPattern)].map((match) => ({
+      match,
+      local: match[10],
+      effortCondition: match[14],
+      effortProperty: match[15],
     })),
   ];
   const wrapperMatch = wrapperMatches[0];
   const wrapperIndex = wrapperMatch?.match.index ?? -1;
-  const wrapperLocal = wrapperMatch?.match[1];
+  const wrapperLocal = wrapperMatch?.local;
   const wrapperFunctionStart = wrapperIndex === -1 ? -1 : content.lastIndexOf("function ", wrapperIndex);
   const terminalMatches = [...content.matchAll(terminalPattern)];
   const terminalMatch = terminalMatches[0];
