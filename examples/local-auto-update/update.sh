@@ -247,7 +247,28 @@ acquire_lock() {
       fi
     fi
     log "Reclaiming stale lock (owner ${owner:-unknown} is no longer running)."
-    rm -rf "$LOCK_DIR"
+    # Two runs can both see the same dead owner. `rm -rf` on the shared path
+    # would let the second run delete the lock the first had just re-acquired
+    # and both would install concurrently — so the claim must be one atomic
+    # step. Renaming to a per-pid name is that step: only one rename of the
+    # stale directory can succeed, and the loser exits instead of installing.
+    local claimed="${LOCK_DIR}.stale.$$"
+    if ! mv "$LOCK_DIR" "$claimed" 2>/dev/null; then
+      log "Lost the race to reclaim the stale lock; exiting."
+      exit 0
+    fi
+    # The rename can still land on a FRESH lock: another reclaimer may have
+    # finished swapping the stale directory for its own between our staleness
+    # check and the mv. Re-check the owner of what was actually grabbed; a
+    # live one gets its lock back and this run bows out.
+    local grabbed
+    grabbed="$(cat "${claimed}/pid" 2>/dev/null || true)"
+    if [[ "$grabbed" =~ ^[0-9]+$ ]] && kill -0 "$grabbed" 2>/dev/null; then
+      mv "$claimed" "$LOCK_DIR" 2>/dev/null || rm -rf "$claimed"
+      log "Lost the race to reclaim the stale lock; exiting."
+      exit 0
+    fi
+    rm -rf "$claimed"
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
       log "Lost the race to reclaim the stale lock; exiting."
       exit 0
@@ -503,9 +524,13 @@ recover_preserved() {
   for preserved in "$VERSIONS_DIR"/*.preserved.*; do
     [[ -e "$preserved" ]] || continue
     base="${preserved%.preserved.*}"
-    if [[ -e "$base" ]]; then
-      rm -f "$preserved"
-    elif mv -f "$preserved" "$base"; then
+    # Restore unconditionally, even over a present $base. Every completed
+    # transaction removes its preserved copy (post-verify success deletes it,
+    # failure moves it back), so one still on disk means the previous run died
+    # mid-install — and a $base present alongside it is the replacement that
+    # was never post-verified. Preferring that $base would delete the only
+    # known-good build and keep an unverified one.
+    if mv -f "$preserved" "$base"; then
       log "Recovered ${base} left behind by an interrupted reinstall."
     fi
   done
