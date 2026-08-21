@@ -51,10 +51,7 @@ done
 case "$url" in
   *checksums.txt) [ -n "$FAKE_CHECKSUMS" ] && cat "$FAKE_CHECKSUMS" > "$out" || exit 1 ;;
   *api.github.com*) cat "$FAKE_RELEASES" > "$out" ;;
-  *) # A competing updater finishing mid-download is simulated here rather than
-     # by timing: the hook runs at the moment this run is fetching the asset.
-     [ -n "$RACE_HOOK" ] && sh -c "$RACE_HOOK"
-     [ -n "$FAKE_ASSET" ] && cat "$FAKE_ASSET" > "$out" || exit 1 ;;
+  *) [ -n "$FAKE_ASSET" ] && cat "$FAKE_ASSET" > "$out" || exit 1 ;;
 esac
 STUB
 chmod +x "${STUB_BIN}/curl"
@@ -156,11 +153,9 @@ seed_versions() { # <current-version> <version...>
   [[ -n "$current" ]] && ln -sf "${CALICO_VERSIONS_DIR}/${current}" "$CALICO_BIN_LINK"
 }
 
-# Pruning is now gated on holding the lock, which acquire_lock sets. These cases
-# call the function directly, so they stand in for the lock holder explicitly.
 prune_with() { # <keep>
   CALICO_KEEP_VERSIONS="$1" bash -c '
-    stub="$1"; source "$stub"; LOCK_CREATED=1; prune_old_versions >/dev/null 2>&1
+    stub="$1"; source "$stub"; prune_old_versions >/dev/null 2>&1
   ' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH")
   ls "$CALICO_VERSIONS_DIR" | sort | tr '\n' ' ' | sed 's/ $//'
 }
@@ -179,22 +174,6 @@ check "prune never deletes the current symlink target" "2.1.1 2.1.3 2.1.4 2.1.5"
 seed_versions "" 2.1.1 2.1.2 2.1.3 2.1.4
 rm -f "$CALICO_BIN_LINK"
 check "prune tolerates a missing symlink" "2.1.2 2.1.3 2.1.4" "$(prune_with 3)"
-
-# A build young enough to belong to an overlapping run is left alone even when
-# the retention count says it should go: that run may not have swapped its link
-# yet, and deleting its destination would strand it.
-#
-# The young build must fall OUTSIDE the retention count for this to test
-# anything. `ls -t` puts the newest first, so it has to sit behind a current
-# target that is newer still — otherwise it survives on its retention slot and
-# the age check is never consulted.
-rm -rf "$CALICO_VERSIONS_DIR" "${SANDBOX}/bin"; mkdir -p "$CALICO_VERSIONS_DIR" "${SANDBOX}/bin"
-printf 'old\n' > "${CALICO_VERSIONS_DIR}/2.1.1"
-touch -t 202601011000 "${CALICO_VERSIONS_DIR}/2.1.1"
-printf 'in flight\n' > "${CALICO_VERSIONS_DIR}/2.1.8"
-printf 'current\n' > "${CALICO_VERSIONS_DIR}/2.1.9"
-ln -sf "${CALICO_VERSIONS_DIR}/2.1.9" "$CALICO_BIN_LINK"
-check "prune leaves a just-created build alone" "2.1.8 2.1.9" "$(prune_with 1)"
 
 # --- 4. hook throttling -------------------------------------------------------
 # --hook must never block and must not spawn --run while inside the window.
@@ -402,7 +381,7 @@ e2e_run() { # <mode>
       FAKE_RELEASES="$E2E/releases.json" FAKE_ASSET="$E2E/asset" FAKE_CHECKSUMS="$E2E/checksums.txt" \
       CALICO_PLATFORM=linux-x64 CALICO_REPO="calico-test/stubbed" \
       CALICO_VERSIONS_DIR="$E2E/versions" CALICO_BIN_LINK="$E2E/bin/calico-claude" \
-      CALICO_STATE_DIR="$E2E/state" E2E_COUNTER="$E2E/calls" RACE_HOOK="${RACE_HOOK:-}" \
+      CALICO_STATE_DIR="$E2E/state" E2E_COUNTER="$E2E/calls" \
       bash "$UPDATE_SH" "$1" 2>&1
 }
 
@@ -411,9 +390,6 @@ printf '#!/bin/sh\necho "0.0.0 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}
 printf '#!/bin/sh\necho "9.9.99 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}/asset-superstring"
 # Passes the pre-install check, then reports a different version once installed.
 printf '#!/bin/sh\nn=$(cat "$E2E_COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$E2E_COUNTER"\nif [ "$n" -le 1 ]; then echo "9.9.9 (Claude Code)"; echo "(patched)"; else echo "0.0.0 (Claude Code)"; echo "(patched)"; fi\n' > "${SANDBOX}/asset-flips"
-# Verifies correctly, then deletes itself from its installed path — standing in
-# for a concurrent prune landing between verification and the swap.
-printf '#!/bin/sh\nn=$(cat "$E2E_COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$E2E_COUNTER"\n[ "$n" -ge 2 ] && rm -f "$0"\necho "9.9.9 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}/asset-vanishes"
 
 e2e_reset "${SANDBOX}/asset-good"
 out="$(e2e_run --run)"
@@ -573,113 +549,22 @@ if [[ -e "$E2E/bin/calico-claude" || -L "$E2E/bin/calico-claude" ]]; then
   bad "e2e: no launcher is created when the build fails its check"
 else ok "e2e: no launcher is created when the build fails its check"; fi
 
-# --- 8e2. a slower run must not downgrade the launcher --------------------------
-# Overlapping runs can be looking at different releases. If the newer one swaps
-# first, an unconditional swap here would move the launcher backwards, and the
-# tag record would then describe a build it no longer points at.
+# --- 8e2. a failed tag-record write leaves the launcher unchanged --------------
+# The tag record and the symlink describe one fact between them. The record is
+# written before the swap, so a failure to write it must leave the launcher
+# exactly where it was rather than advance past what the record says.
 
 e2e_reset "${SANDBOX}/asset-good"
 cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
 ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
-printf '#!/bin/sh\necho "9.9.10 (Claude Code)"\necho "(patched)"\n' > "$E2E/versions/9.9.10"
-chmod +x "$E2E/versions/9.9.10"
-out="$(RACE_HOOK="ln -sf $E2E/versions/9.9.10 $E2E/bin/calico-claude" e2e_run --run)"
-check "e2e: the launcher keeps the newer build another run installed" "$E2E/versions/9.9.10" "$(readlink "$E2E/bin/calico-claude")"
-if printf '%s' "$out" | grep -q "newer than"; then
-  ok "e2e: the skipped swap says why"
-else bad "e2e: the skipped swap says why (got: ${out})"; fi
-# The build it downloaded is still on disk; only the launcher was left alone.
-if [[ -e "$E2E/versions/9.9.9" ]]; then
-  ok "e2e: the downloaded build is kept for pruning"
-else bad "e2e: the downloaded build is kept for pruning"; fi
-
-# --- 8e3. the launcher update is serialized ------------------------------------
-# Reading the current target, deciding, and swapping is a read-modify-write on
-# shared state. A held commit lock must make this run leave the launcher alone
-# rather than race; an abandoned one must not wedge updates forever.
-
-e2e_reset "${SANDBOX}/asset-good"
-cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
-ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
-mkdir -p "$E2E/state/.commit-lock"
-out="$(CALICO_COMMIT_WAIT=2 e2e_run --run)"
-check "e2e: a held commit lock leaves the launcher alone" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
-if [[ -e "$E2E/versions/9.9.9" ]]; then
-  ok "e2e: the build is still installed when the commit lock is unavailable"
-else bad "e2e: the build is still installed when the commit lock is unavailable"; fi
-if [[ -d "$E2E/state/.commit-lock" ]]; then
-  ok "e2e: another run's commit lock is not removed"
-else bad "e2e: another run's commit lock is not removed"; fi
-
-# An expired commit lock is NOT reclaimed. Every delete-and-reacquire protocol
-# tried here let two runs enter the section the lock serializes; stopping is the
-# safe direction, and unlike the run lock this one cannot be stranded by an
-# ordinary kill since it spans two syscalls.
-e2e_reset "${SANDBOX}/asset-good"
-mkdir -p "$E2E/state/.commit-lock"
-python3 -c "import os,sys; t=float(sys.argv[2]); os.utime(sys.argv[1],(t,t))" \
-  "$E2E/state/.commit-lock" "$(( $(date +%s) - 3600 ))"
-out="$(CALICO_COMMIT_WAIT=2 e2e_run --run)"
-check "e2e: an expired commit lock does not fail the run" "0" "$?"
-if [[ -d "$E2E/state/.commit-lock" ]]; then
-  ok "e2e: an expired commit lock is left in place, not reclaimed"
-else bad "e2e: an expired commit lock is left in place, not reclaimed"; fi
-if [[ -e "$E2E/bin/calico-claude" || -L "$E2E/bin/calico-claude" ]]; then
-  bad "e2e: the launcher is not moved while a commit lock is held"
-else ok "e2e: the launcher is not moved while a commit lock is held"; fi
-if printf '%s' "$out" | grep -q "remove it by hand"; then
-  ok "e2e: an expired commit lock tells the user how to clear it"
-else bad "e2e: an expired commit lock tells the user how to clear it (got: ${out})"; fi
-
-# Same version, newer rebuild: comparing X.Y.Z alone would call these equal and
-# let a stale base-tag run replace the rebuild.
-e2e_reset "${SANDBOX}/asset-good"
-cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
-ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
-printf 'v9.9.9-linux-x64-2\n' > "$E2E/state/installed-tag"
-out="$(e2e_run --force)"
-check "e2e: a base-tag run does not replace a newer rebuild" "$E2E/versions/9.9.9" "$(readlink "$E2E/bin/calico-claude")"
-check "e2e: the newer rebuild tag survives" "v9.9.9-linux-x64-2" "$(cat "$E2E/state/installed-tag")"
-
-# --- 8e4. a destination pruned mid-run is not swapped to -------------------------
-# The age-based in-flight protection assumes a run reaches the swap within
-# PRUNE_MIN_AGE_SECONDS of installing. A suspended machine breaks that, and a
-# later run can prune the destination this one is about to point at.
-
-e2e_reset "${SANDBOX}/asset-vanishes"
-cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
-ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
-# The fixture passes verification and then removes its own installed copy, which
-# is what a concurrent prune during a long pause looks like from here.
+printf 'v9.9.8-linux-x64\n' > "$E2E/state/installed-tag"
+chmod 400 "$E2E/state/installed-tag"
 out="$(e2e_run --run)"
-check "e2e: a destination removed mid-run does not fail the run" "0" "$?"
-check "e2e: the launcher is not pointed at a removed destination" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
-if [[ -L "$E2E/bin/calico-claude" && -e "$E2E/bin/calico-claude" ]]; then
-  ok "e2e: the launcher still resolves to a real file"
-else bad "e2e: the launcher still resolves to a real file"; fi
-
-# --- 8e5. the launcher never advances past its record ---------------------------
-# The tag record and the symlink describe one fact between them. A stale high
-# rebuild rank left on top of a newer version makes later rebuilds read as
-# already current — unreachable even with --force — so the launcher must not
-# move when the record cannot be updated with it.
-#
-# A read-only state directory blocks both the commit lock and the tag write.
-# Both paths must produce the same outcome, which is what this asserts: the
-# launcher stays put and the record is untouched. CALICO_COMMIT_WAIT keeps the
-# lock retry from stretching the suite.
-
-e2e_reset "${SANDBOX}/asset-good"
-cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
-ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
-printf 'v9.9.8-linux-x64-5\n' > "$E2E/state/installed-tag"
-chmod 500 "$E2E/state"
-out="$(CALICO_COMMIT_WAIT=1 e2e_run --run)"
 rc=$?
-chmod 700 "$E2E/state"
-check "e2e: an unwritable state directory does not fail the run" "0" "$rc"
-check "e2e: the launcher is not advanced past its record" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
-check "e2e: the stale record is left intact" "v9.9.8-linux-x64-5" "$(cat "$E2E/state/installed-tag")"
+chmod 600 "$E2E/state/installed-tag"
+check "e2e: a failed tag-record write does not fail the run" "0" "$rc"
+check "e2e: the launcher is not advanced when the tag write fails" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
+check "e2e: the stale record is left intact" "v9.9.8-linux-x64" "$(cat "$E2E/state/installed-tag")"
 
 # --- 8f. a launcher we do not manage is refused --------------------------------
 # swap_symlink would mv over a regular file, and nothing could put it back.

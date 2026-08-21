@@ -33,10 +33,10 @@ SessionStart hook ──► update.sh --hook ──► throttled? ──► exit
                               mismatch ─► leave the launcher untouched and exit;
                                           the rejected build is pruned later
                                                      │
-   atomic symlink swap, unless the launcher already points at a newer version
+              write the tag record, then atomic symlink swap; a failed write
+                                     leaves the launcher unchanged
                                                      │
-                                            prune, skipping builds young enough
-                                            to belong to an overlapping run
+                                                  prune
 ```
 
 Two properties are worth stating explicitly, because they are the reason this is
@@ -49,13 +49,7 @@ a script and not a one-line `curl | bash` in a cron job:
 | Versions are compared as **whole tokens** | `2.1.24` is a substring of `2.1.240`; a substring test would accept a mislabeled release at the one gate meant to catch it. The installed version is the leading `X.Y.Z` of the symlink target's basename, so a pid-suffixed install still reads as its bare version. |
 | The build is verified **before** the swap | It is checked directly, never through the launcher symlink. Reading it through the link is unsound once runs can overlap — another updater may have repointed it — and verifying first removes the need to undo a swap at all. |
 | A launcher that is not a symlink is **refused** | Replacing a regular file would destroy something this updater did not create and cannot restore. |
-| Pruning runs **inside the commit lock** | Pruning snapshots the current target and then deletes. If another run swaps in between, the snapshot names a build that is no longer current and the live one can be deleted, leaving the launcher dangling. Inside the lock the target cannot move. |
-| The tag record and the launcher **advance together** | They describe one fact between them. The record is written to a temporary file before the swap, so a failure is caught while the launcher is still untouched; what remains after the swap is a rename. |
-| The destination is **re-checked under the commit lock** | Age-based in-flight protection assumes a run reaches the swap soon after installing; a suspended machine breaks that. One stat inside the lock is the only point where the answer cannot change underneath. |
-| Pruning is gated by **age**, not by the lock | An entry younger than `PRUNE_MIN_AGE_SECONDS` may belong to a run that has not swapped its link yet, so it is left alone. Gating on the lock instead would have been worse: an abandoned lock is never removed, so pruning would stop for good. |
-| An expired commit lock is **not reclaimed** | Every delete-and-reacquire protocol tried here let two runs enter the section the lock serializes. Unlike the run lock, this one spans two syscalls and cannot be stranded by an ordinary kill, so a stranded one means something needs a human — and stopping is the safe direction. The message names the directory to remove. |
-| The launcher update is **serialized** | Downloading and installing need no exclusion because they are append-only, but reading the current target, deciding, and swapping is a read-modify-write on shared state. A short commit lock covers only those steps; failing to take it leaves the launcher unchanged and the build in place for a later run. |
-| Downgrades compare the **whole release identity** | Version alone would treat a base tag and its `-2` rebuild as equal and let a stale run replace the newer one. |
+| The tag record and the launcher **advance together** | They describe one fact between them. The record is written before the swap, so a failure to write it is caught while the launcher is still untouched. |
 | The lock is an **efficiency device**, not a correctness one | Because installs never overwrite, two concurrent updaters cost a duplicate download, never a broken install. So the lock has no claim protocol: a lock younger than an hour means another run is working and this one exits; an older (or unmeasurable) one is *ignored* — never deleted, moved, or taken over, and a run that ignored a lock leaves it in place on exit. A run only ever removes a lock it created itself. |
 | Rebuilds are tracked by **release tag**, not version | A corrected build is republished as `-2` at the same version. Comparing versions alone would report "up to date" and no unattended user would ever receive it. |
 
@@ -63,6 +57,10 @@ It also self-heals one specific failure: if the installed version already matche
 the latest release but `--version` no longer prints `(patched)`, the official
 updater (or a manual `claude install`) has overwritten the patched build, and the
 script reinstalls it.
+
+Concurrent updaters are outside this example's scope: normal use is one hook, on
+one machine, at most once an hour, and the behavior of two overlapping runs is
+not defined.
 
 ## Install
 
@@ -155,7 +153,7 @@ asset; the attestation proves the release asset came out of this repo's CI.
 bash examples/local-auto-update/test-update.sh
 ```
 
-95 assertions, offline: platform detection, the checksum gate (tampered, absent,
+79 assertions, offline: platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
 throttling, lock behaviour (a young lock blocks; an aged one is ignored but
@@ -173,6 +171,7 @@ driven through stubbed `curl` and `gh`:
 | A `-2` rebuild of the installed version | Installed; the tag is recorded |
 | A rebuild already installed, or no tag recorded | Left alone |
 | A suffixed symlink target | Reads as its bare version; pruning never deletes it |
+| The tag record can't be written | Run exits 0; launcher and record both stay unchanged |
 
 Two of those cases run under `/bin/bash` specifically rather than whatever `bash`
 is on `PATH`. Stock macOS ships bash 3.2, where `"${empty_array[@]}"` is an

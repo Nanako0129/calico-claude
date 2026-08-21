@@ -74,7 +74,6 @@ fail() {
 }
 
 cleanup() {
-  release_commit_lock
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
   fi
@@ -191,20 +190,6 @@ sha256_check() {
 # A lock older than this is assumed abandoned (SIGKILL, power loss, reboot) and
 # is IGNORED, never removed. Any real run finishes far inside an hour.
 LOCK_MAX_AGE_SECONDS=3600
-
-# The commit lock covers only pointing the launcher: reading the current target
-# and tag, deciding, then swapping. Downloading and installing need no exclusion
-# because they are append-only. Held for two syscalls, so a stale one means a
-# process died inside that window — rare enough that taking it over on expiry is
-# safe, since the worst case of a lost race there is two valid builds competing
-# for the link and the later one winning.
-COMMIT_LOCK_DIR="${STATE_DIR}/.commit-lock"
-COMMIT_LOCK_MAX_AGE_SECONDS=60
-COMMIT_LOCK_WAIT_SECONDS="${CALICO_COMMIT_WAIT:-30}"
-COMMIT_LOCK_HELD=0
-
-# Seconds a freshly installed build is treated as possibly in flight.
-PRUNE_MIN_AGE_SECONDS=300
 
 # Age of a path in seconds, or non-zero when it cannot be determined.
 #
@@ -449,61 +434,6 @@ allocate_dest() {
   mktemp "${base}.XXXXXX"
 }
 
-# Serialize the launcher update. Returns 1 when it could not be taken, which is
-# not an error: the build is installed and a later run will point at it.
-acquire_commit_lock() {
-  local deadline=$(( $(date +%s) + COMMIT_LOCK_WAIT_SECONDS ))
-  while ! mkdir "$COMMIT_LOCK_DIR" 2>/dev/null; do
-    if (( $(date +%s) >= deadline )); then
-      local age
-      age="$(path_age_seconds "$COMMIT_LOCK_DIR" || true)"
-      if [[ "$age" =~ ^[0-9]+$ ]] && (( age > COMMIT_LOCK_MAX_AGE_SECONDS )); then
-        # Deliberately NOT reclaimed. Every delete-and-reacquire protocol tried
-        # here had the same hole: two runs both see the lock expired, one
-        # removes and recreates it, the second removes that new lock and takes
-        # it, and both enter the section the lock exists to serialize. There is
-        # no way to fix that without an atomic primitive this script does not
-        # have — so it is not attempted.
-        #
-        # Unlike the run lock, an abandoned commit lock cannot be left behind by
-        # an ordinary kill: it is held across two syscalls. If one is somehow
-        # stranded it needs a human, and stopping is the safe direction — the
-        # build is installed and nothing is corrupted, only the launcher stays
-        # where it was.
-        log "Commit lock ${COMMIT_LOCK_DIR} has been held for ${age}s. It is not reclaimed automatically; remove it by hand if no update is running."
-      fi
-      return 1
-    fi
-    sleep 1
-  done
-  COMMIT_LOCK_HELD=1
-  return 0
-}
-
-release_commit_lock() {
-  if [[ "$COMMIT_LOCK_HELD" == "1" ]]; then
-    rm -rf "$COMMIT_LOCK_DIR" 2>/dev/null || true
-    COMMIT_LOCK_HELD=0
-  fi
-}
-
-# Rank-aware comparison of two release tags for the same or different versions.
-# Echoes "newer", "same" or "older" describing $1 relative to $2.
-release_relation() { # <version-a> <tag-a> <version-b> <tag-b>
-  local rel
-  rel="$(semver_relation "$1" "$3")"
-  if [[ "$rel" != "same" ]]; then
-    printf '%s\n' "$rel"
-    return 0
-  fi
-  local rank_a rank_b
-  rank_a="$(tag_rebuild_rank "$2")"
-  rank_b="$(tag_rebuild_rank "$4")"
-  if (( rank_a > rank_b )); then printf 'newer\n'
-  elif (( rank_a < rank_b )); then printf 'older\n'
-  else printf 'same\n'; fi
-}
-
 # Atomically point BIN_LINK at $1 (an absolute target path).
 swap_symlink() {
   local target="$1"
@@ -549,16 +479,6 @@ prune_old_versions() {
     fi
     kept=$((kept + 1))
     if (( kept <= KEEP_VERSIONS )); then
-      continue
-    fi
-    # A build young enough to belong to an overlapping run is left alone: it may
-    # have been installed moments ago by an updater that has not swapped its
-    # link yet, and deleting it would strand that run. Gating this on holding
-    # the lock instead would be worse — an abandoned lock is never removed, so
-    # pruning would stop for good and old builds would accumulate forever.
-    local age
-    if age="$(path_age_seconds "${VERSIONS_DIR}/${name}")" &&
-      (( age < PRUNE_MIN_AGE_SECONDS )); then
       continue
     fi
     rm -f "${VERSIONS_DIR}/${name}" && log "Pruned old version ${name}"
@@ -618,13 +538,7 @@ perform_update() {
       log "Installed version ${INSTALLED_VERSION} is up to date (latest ${LATEST_VERSION}), but --force given; reinstalling."
     else
       log "Installed version ${INSTALLED_VERSION} is up to date (latest ${LATEST_VERSION}); nothing to do. Exiting."
-      # Same reasoning as the post-swap prune: the current target must not move
-      # while this decides what to delete. Skipping the pass when the lock is
-      # busy costs nothing.
-      if acquire_commit_lock; then
-        prune_old_versions
-        release_commit_lock
-      fi
+      prune_old_versions
       exit 0
     fi
   fi
@@ -689,69 +603,24 @@ perform_update() {
   log "Verified before swap: ${version_output//$'\n'/ | }"
 
   # --- Point the launcher at it ---------------------------------------------
-  # Reading the current target, deciding, and swapping is a read-modify-write on
-  # state other runs share. The check and the swap were previously two unguarded
-  # steps, so a newer run could land between them and be overwritten. Everything
-  # up to here needed no exclusion; only this does.
   mkdir -p "$(dirname "$BIN_LINK")"
-  if ! acquire_commit_lock; then
-    log "Could not take the commit lock within ${COMMIT_LOCK_WAIT_SECONDS}s; leaving ${BIN_LINK} unchanged. ${dest} is installed and a later run will point at it."
-    exit 0
-  fi
-
-  # Read inside the lock, so the tag record and the symlink are always read and
-  # written as one pair — comparing versions alone would let a stale base-tag
-  # run replace a newer same-version rebuild.
-  if [[ -L "$BIN_LINK" ]]; then
-    local live_version live_tag
-    live_version="$(basename "$(readlink "$BIN_LINK")")"
-    live_version="$(printf '%s' "$live_version" | sed -n 's/^\([0-9][0-9.]*[0-9]\).*/\1/p')"
-    live_tag="$(cat "$INSTALLED_TAG_FILE" 2>/dev/null || true)"
-    if [[ -n "$live_version" ]] &&
-      [[ "$(release_relation "$live_version" "${live_tag:-v}" "$LATEST_VERSION" "$LATEST_TAG")" == "newer" ]]; then
-      log "${BIN_LINK} already points at ${live_tag:-$live_version}, newer than ${LATEST_TAG}; leaving it alone. The build stays in ${VERSIONS_DIR}."
-      release_commit_lock
-      exit 0
-    fi
-  fi
-
-  # The age-based in-flight protection assumes a run reaches this point within
-  # PRUNE_MIN_AGE_SECONDS of installing. A suspended laptop breaks that: this run
-  # can sit here for hours while a later one, seeing an aged run lock and an aged
-  # destination, prunes it. Re-checking inside the commit lock costs one stat and
-  # is the only point where the answer cannot change underneath us.
-  if [[ ! -e "$dest" ]]; then
-    log "${dest} was removed while this run was paused; leaving ${BIN_LINK} unchanged. A later run will reinstall."
-    release_commit_lock
-    exit 0
-  fi
 
   # The tag record and the symlink describe one fact between them, so a failure
   # to write the record must not leave the launcher advanced. Treating that write
   # as merely "degraded" could strand a high rebuild rank from an older version
   # on top of a newer one, after which a later rebuild reads as already current
-  # and becomes unreachable even with --force. Write it to a temporary file
-  # first: a failure there is caught while the launcher is still untouched, and
-  # what remains after the swap is a rename.
-  local tag_tmp="${INSTALLED_TAG_FILE}.tmp.$$"
-  if ! printf '%s\n' "$LATEST_TAG" > "$tag_tmp" 2>/dev/null; then
-    rm -f "$tag_tmp" 2>/dev/null || true
+  # and becomes unreachable even with --force. Written before the swap: a
+  # failure here is caught while the launcher is still untouched.
+  if ! printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null; then
     log "Cannot write ${INSTALLED_TAG_FILE}; leaving ${BIN_LINK} unchanged so the record and the launcher stay consistent."
-    release_commit_lock
     exit 0
   fi
 
   swap_symlink "$dest"
-  mv -f "$tag_tmp" "$INSTALLED_TAG_FILE"
   log "Symlink ${BIN_LINK} -> ${dest}"
   log "Update to ${LATEST_TAG} complete."
 
-  # Pruned while still holding the commit lock. Pruning snapshots the current
-  # target and then deletes; if another run swaps in between, the snapshot names
-  # a build that is no longer current and the live one can be deleted, leaving
-  # the launcher dangling. Inside the lock the target cannot move.
   prune_old_versions
-  release_commit_lock
 }
 
 do_check() {
