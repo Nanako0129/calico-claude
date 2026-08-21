@@ -1600,19 +1600,24 @@ function patchDisableUsageWrapUpHints(content) {
     ['"tengu_vellum_anchor"', '"calico_vellum_gone_"'],
   ];
 
-  let candidates = 0;
-  let patched = 0;
-  let output = content;
-  for (const [from, to] of gateRenames) {
-    const count = output.split(from).length - 1;
-    candidates += count;
-    if (count > 0) {
-      output = output.split(from).join(to);
-      patched += count;
-    }
+  const perGateCounts = gateRenames.map(([from]) => content.split(from).length - 1);
+  const candidates = perGateCounts.reduce((sum, count) => sum + count, 0);
+  const presentGates = perGateCounts.filter((count) => count > 0).length;
+
+  if (presentGates > 0 && presentGates < gateRenames.length) {
+    // Partial match: upstream changed or removed exactly one gate literal
+    // while keeping the other. Renaming only the survivor would ship a bundle
+    // with the other wrap-up injection path still active under its new gate
+    // name, so patch nothing and report zero patched to fail --assert-all
+    // loudly instead.
+    return {
+      content,
+      candidates,
+      patched: 0,
+    };
   }
 
-  if (patched === 0) {
+  if (presentGates === 0) {
     // Pre-feature bundles (< 2.1.238) carry neither gate; that is an expected
     // no-op, not a matcher failure, so report it as skipped and keep
     // --assert-all green for older rebuilds. A 2.1.238+ bundle (or one with
@@ -1627,20 +1632,30 @@ function patchDisableUsageWrapUpHints(content) {
         major < 2 || (major === 2 && (minor < 1 || (minor === 1 && micro < 238)));
       if (preFeature) {
         return {
-          content: output,
+          content,
           candidates,
-          patched,
+          patched: 0,
           skipped: true,
           reason: `pre-2.1.238 bundle (${major}.${minor}.${micro}) has no usage wrap-up gates`,
         };
       }
     }
+    return {
+      content,
+      candidates,
+      patched: 0,
+    };
+  }
+
+  let output = content;
+  for (const [from, to] of gateRenames) {
+    output = output.split(from).join(to);
   }
 
   return {
     content: output,
     candidates,
-    patched,
+    patched: candidates,
   };
 }
 

@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { patchDisableUsageWrapUpHints } = require("../patch-claude-display.ts");
+const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
 const patcherPath = path.join(__dirname, "..", "patch-claude-display.ts");
 
@@ -78,6 +79,46 @@ test("never reports skipped when gates are present and patched", () => {
   );
   assert.equal(result.patched, 2);
   assert.ok(!result.skipped);
+});
+
+test("refuses to patch when only one gate literal survives", () => {
+  // Upstream changing or removing exactly one gate must not ship a bundle
+  // with the other injection path still active: nothing gets renamed and
+  // patched stays 0 so --assert-all fails loudly.
+  for (const survivor of ['"tengu_lantern_wick_mode"', '"tengu_vellum_anchor"']) {
+    const partial = versionedBundle("2.1.238", `it(${survivor},"off")`);
+    const result = patchDisableUsageWrapUpHints(partial);
+    assert.ok(result.candidates > 0);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, partial);
+    assert.ok(!result.skipped);
+  }
+});
+
+test("verifier requires both renamed gates on 2.1.238+ bundles", () => {
+  const both = versionedBundle(
+    "2.1.238",
+    'it("calico_lantern_wick_off","off");it("calico_vellum_gone_",!1)'
+  );
+  assert.equal(evaluatePatchModule("disable-usage-wrapup", both), null);
+
+  const lanternOnly = versionedBundle("2.1.238", 'it("calico_lantern_wick_off","off")');
+  assert.match(
+    evaluatePatchModule("disable-usage-wrapup", lanternOnly),
+    /expected renamed usage wrap-up gate "calico_vellum_gone_"/
+  );
+
+  const residual = versionedBundle("2.1.238", 'it("tengu_vellum_anchor",!1)');
+  assert.match(
+    evaluatePatchModule("disable-usage-wrapup", residual),
+    /residual usage wrap-up gate/
+  );
+
+  // Pre-feature bundles carry neither name and pass with nothing to prove.
+  assert.equal(
+    evaluatePatchModule("disable-usage-wrapup", versionedBundle("2.1.237", "run()")),
+    null
+  );
 });
 
 // End-to-end --assert-all behavior through the CLI: a pre-2.1.238 bundle must

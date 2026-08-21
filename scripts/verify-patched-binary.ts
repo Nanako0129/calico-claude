@@ -1187,13 +1187,33 @@ const CHECKS: Check[] = [
       "usage-limit wrap-up statsig gate names renamed to dead calico gates",
     run: (content: string): string | null => {
       // Bundles older than the feature carry neither the original gates nor
-      // the renames; that is a pass (nothing to neutralize). If upstream
-      // reintroduces or renames the gates, --assert-all on the patch module
-      // is the guard that catches zero candidates.
+      // the renames; that is a pass (nothing to neutralize). 2.1.238+ bundles
+      // must carry BOTH renamed gates, so a bundle where upstream changed or
+      // removed one gate literal while the patcher renamed only the survivor
+      // cannot pass as "nothing to neutralize" with an injection path left
+      // active under a new gate name.
       const problems: string[] = [];
       for (const gate of ["tengu_lantern_wick_mode", "tengu_vellum_anchor"]) {
         if (content.includes(`"${gate}"`)) {
           problems.push(`found residual usage wrap-up gate "${gate}"`);
+        }
+      }
+      const versionMatch = content.match(
+        /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/
+      );
+      if (versionMatch) {
+        const [major, minor, micro] = versionMatch.slice(1).map(Number);
+        const featureEra =
+          major > 2 ||
+          (major === 2 && (minor > 1 || (minor === 1 && micro >= 238)));
+        if (featureEra) {
+          for (const renamed of ["calico_lantern_wick_off", "calico_vellum_gone_"]) {
+            if (!content.includes(`"${renamed}"`)) {
+              problems.push(
+                `expected renamed usage wrap-up gate "${renamed}" in a 2.1.238+ bundle`
+              );
+            }
+          }
         }
       }
       return problems.length > 0 ? problems.join("; ") : null;
