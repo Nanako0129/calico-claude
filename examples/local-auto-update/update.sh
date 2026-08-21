@@ -74,6 +74,7 @@ fail() {
 }
 
 cleanup() {
+  release_commit_lock
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
   fi
@@ -190,6 +191,17 @@ sha256_check() {
 # A lock older than this is assumed abandoned (SIGKILL, power loss, reboot) and
 # is IGNORED, never removed. Any real run finishes far inside an hour.
 LOCK_MAX_AGE_SECONDS=3600
+
+# The commit lock covers only pointing the launcher: reading the current target
+# and tag, deciding, then swapping. Downloading and installing need no exclusion
+# because they are append-only. Held for two syscalls, so a stale one means a
+# process died inside that window — rare enough that taking it over on expiry is
+# safe, since the worst case of a lost race there is two valid builds competing
+# for the link and the later one winning.
+COMMIT_LOCK_DIR="${STATE_DIR}/.commit-lock"
+COMMIT_LOCK_MAX_AGE_SECONDS=60
+COMMIT_LOCK_WAIT_SECONDS="${CALICO_COMMIT_WAIT:-30}"
+COMMIT_LOCK_HELD=0
 
 # Seconds a freshly installed build is treated as possibly in flight.
 PRUNE_MIN_AGE_SECONDS=300
@@ -437,6 +449,51 @@ allocate_dest() {
   mktemp "${base}.XXXXXX"
 }
 
+# Serialize the launcher update. Returns 1 when it could not be taken, which is
+# not an error: the build is installed and a later run will point at it.
+acquire_commit_lock() {
+  local deadline=$(( $(date +%s) + COMMIT_LOCK_WAIT_SECONDS ))
+  while ! mkdir "$COMMIT_LOCK_DIR" 2>/dev/null; do
+    local age
+    if age="$(path_age_seconds "$COMMIT_LOCK_DIR")" &&
+      (( age > COMMIT_LOCK_MAX_AGE_SECONDS )); then
+      log "Commit lock is ${age}s old; a run died holding it. Taking it over."
+      rm -rf "$COMMIT_LOCK_DIR"
+      continue
+    fi
+    if (( $(date +%s) >= deadline )); then
+      return 1
+    fi
+    sleep 1
+  done
+  COMMIT_LOCK_HELD=1
+  return 0
+}
+
+release_commit_lock() {
+  if [[ "$COMMIT_LOCK_HELD" == "1" ]]; then
+    rm -rf "$COMMIT_LOCK_DIR" 2>/dev/null || true
+    COMMIT_LOCK_HELD=0
+  fi
+}
+
+# Rank-aware comparison of two release tags for the same or different versions.
+# Echoes "newer", "same" or "older" describing $1 relative to $2.
+release_relation() { # <version-a> <tag-a> <version-b> <tag-b>
+  local rel
+  rel="$(semver_relation "$1" "$3")"
+  if [[ "$rel" != "same" ]]; then
+    printf '%s\n' "$rel"
+    return 0
+  fi
+  local rank_a rank_b
+  rank_a="$(tag_rebuild_rank "$2")"
+  rank_b="$(tag_rebuild_rank "$4")"
+  if (( rank_a > rank_b )); then printf 'newer\n'
+  elif (( rank_a < rank_b )); then printf 'older\n'
+  else printf 'same\n'; fi
+}
+
 # Atomically point BIN_LINK at $1 (an absolute target path).
 swap_symlink() {
   local target="$1"
@@ -616,28 +673,37 @@ perform_update() {
   log "Verified before swap: ${version_output//$'\n'/ | }"
 
   # --- Point the launcher at it ---------------------------------------------
-  # Overlapping runs (possible once an aged lock is ignored) can be looking at
-  # different releases: one queried the API before a rebuild was published and
-  # the other after. If the newer run swaps first, an unconditional swap here
-  # would downgrade the launcher, and the tag record written below would then
-  # describe a build it no longer points at — every later run would read that
-  # pairing and treat the older build as current.
+  # Reading the current target, deciding, and swapping is a read-modify-write on
+  # state other runs share. The check and the swap were previously two unguarded
+  # steps, so a newer run could land between them and be overwritten. Everything
+  # up to here needed no exclusion; only this does.
   mkdir -p "$(dirname "$BIN_LINK")"
+  if ! acquire_commit_lock; then
+    log "Could not take the commit lock within ${COMMIT_LOCK_WAIT_SECONDS}s; leaving ${BIN_LINK} unchanged. ${dest} is installed and a later run will point at it."
+    exit 0
+  fi
+
+  # Read inside the lock, so the tag record and the symlink are always read and
+  # written as one pair — comparing versions alone would let a stale base-tag
+  # run replace a newer same-version rebuild.
   if [[ -L "$BIN_LINK" ]]; then
-    local live_version
+    local live_version live_tag
     live_version="$(basename "$(readlink "$BIN_LINK")")"
     live_version="$(printf '%s' "$live_version" | sed -n 's/^\([0-9][0-9.]*[0-9]\).*/\1/p')"
+    live_tag="$(cat "$INSTALLED_TAG_FILE" 2>/dev/null || true)"
     if [[ -n "$live_version" ]] &&
-      [[ "$(semver_relation "$live_version" "$LATEST_VERSION")" == "newer" ]]; then
-      log "${BIN_LINK} already points at ${live_version}, newer than ${LATEST_VERSION}; leaving it alone. The build stays in ${VERSIONS_DIR}."
+      [[ "$(release_relation "$live_version" "${live_tag:-v}" "$LATEST_VERSION" "$LATEST_TAG")" == "newer" ]]; then
+      log "${BIN_LINK} already points at ${live_tag:-$live_version}, newer than ${LATEST_TAG}; leaving it alone. The build stays in ${VERSIONS_DIR}."
+      release_commit_lock
       exit 0
     fi
   fi
-  swap_symlink "$dest"
-  log "Symlink ${BIN_LINK} -> ${dest}"
 
+  swap_symlink "$dest"
   printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
     log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."
+  release_commit_lock
+  log "Symlink ${BIN_LINK} -> ${dest}"
   log "Update to ${LATEST_TAG} complete."
   prune_old_versions
 }

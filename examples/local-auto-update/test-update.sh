@@ -590,6 +590,45 @@ if [[ -e "$E2E/versions/9.9.9" ]]; then
   ok "e2e: the downloaded build is kept for pruning"
 else bad "e2e: the downloaded build is kept for pruning"; fi
 
+# --- 8e3. the launcher update is serialized ------------------------------------
+# Reading the current target, deciding, and swapping is a read-modify-write on
+# shared state. A held commit lock must make this run leave the launcher alone
+# rather than race; an abandoned one must not wedge updates forever.
+
+e2e_reset "${SANDBOX}/asset-good"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
+ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
+mkdir -p "$E2E/state/.commit-lock"
+out="$(CALICO_COMMIT_WAIT=2 e2e_run --run)"
+check "e2e: a held commit lock leaves the launcher alone" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
+if [[ -e "$E2E/versions/9.9.9" ]]; then
+  ok "e2e: the build is still installed when the commit lock is unavailable"
+else bad "e2e: the build is still installed when the commit lock is unavailable"; fi
+if [[ -d "$E2E/state/.commit-lock" ]]; then
+  ok "e2e: another run's commit lock is not removed"
+else bad "e2e: another run's commit lock is not removed"; fi
+
+# An abandoned commit lock must be taken over, or updates stop for good.
+e2e_reset "${SANDBOX}/asset-good"
+mkdir -p "$E2E/state/.commit-lock"
+python3 -c "import os,sys; t=float(sys.argv[2]); os.utime(sys.argv[1],(t,t))" \
+  "$E2E/state/.commit-lock" "$(( $(date +%s) - 3600 ))"
+out="$(e2e_run --run)"
+check "e2e: an abandoned commit lock is taken over" "0" "$?"
+if [[ -L "$E2E/bin/calico-claude" ]]; then
+  ok "e2e: the launcher is updated after taking over a stale commit lock"
+else bad "e2e: the launcher is updated after taking over a stale commit lock"; fi
+
+# Same version, newer rebuild: comparing X.Y.Z alone would call these equal and
+# let a stale base-tag run replace the rebuild.
+e2e_reset "${SANDBOX}/asset-good"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
+ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
+printf 'v9.9.9-linux-x64-2\n' > "$E2E/state/installed-tag"
+out="$(e2e_run --force)"
+check "e2e: a base-tag run does not replace a newer rebuild" "$E2E/versions/9.9.9" "$(readlink "$E2E/bin/calico-claude")"
+check "e2e: the newer rebuild tag survives" "v9.9.9-linux-x64-2" "$(cat "$E2E/state/installed-tag")"
+
 # --- 8f. a launcher we do not manage is refused --------------------------------
 # swap_symlink would mv over a regular file, and nothing could put it back.
 
