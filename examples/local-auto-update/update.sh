@@ -54,6 +54,10 @@ API_URL="https://api.github.com/repos/${REPO}/releases?per_page=100"
 # Populated by cleanup trap.
 TMP_DIR=""
 
+# Set while a reinstall has moved the existing build aside; cleanup restores it.
+PRESERVED_PATH=""
+PRESERVED_DEST=""
+
 # Set to 1 by the --force mode. When forcing, perform_update skips the
 # "already up to date" version gate (but still runs checksum, attestation and
 # post-verify) so a same-version rebuilt release can be reinstalled.
@@ -70,6 +74,16 @@ fail() {
 }
 
 cleanup() {
+  # Set while a reinstall has the previous build moved aside. Restoring it here
+  # covers every exit that runs a trap; recover_preserved covers the ones that
+  # do not.
+  if [[ -n "$PRESERVED_PATH" && -e "$PRESERVED_PATH" ]]; then
+    if [[ -e "$PRESERVED_DEST" ]]; then
+      rm -f "$PRESERVED_PATH" 2>/dev/null || true
+    else
+      mv -f "$PRESERVED_PATH" "$PRESERVED_DEST" 2>/dev/null || true
+    fi
+  fi
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
   fi
@@ -185,16 +199,20 @@ sha256_check() {
 # a corpse to reclaim. Only needs to exceed the mkdir-to-write window.
 LOCK_STARTUP_GRACE=60
 
-# Age of the lock directory in seconds. stat is not portable, so try both forms.
+# Age of the lock directory in seconds, or empty when it cannot be determined.
+#
+# Exit status cannot drive the fallback here: GNU `stat -f` means
+# --file-system, so on Linux it SUCCEEDS with unrelated multi-line output and a
+# `-f || -c` chain never reaches the second form. Try the GNU spelling first and
+# validate the output instead.
 lock_age_seconds() {
   local mtime
-  mtime="$(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0)"
-  [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
-  if (( mtime == 0 )); then
-    printf '%s\n' "$((LOCK_STARTUP_GRACE + 1))"
-  else
-    printf '%s\n' "$(( $(date +%s) - mtime ))"
+  mtime="$(stat -c %Y "$LOCK_DIR" 2>/dev/null || true)"
+  if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
+    mtime="$(stat -f %m "$LOCK_DIR" 2>/dev/null || true)"
   fi
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$(( $(date +%s) - mtime ))"
 }
 
 # The lock records its owner pid. A run killed by SIGKILL, a power loss, or a
@@ -215,9 +233,18 @@ acquire_lock() {
     # let two installers proceed at once and then remove each other's lock.
     # Concurrent SessionStart hooks make this reachable, since their throttle
     # check is not synchronized either. Age is what separates the two.
-    if [[ ! -s "${LOCK_DIR}/pid" ]] && (( $(lock_age_seconds) < LOCK_STARTUP_GRACE )); then
-      log "Another update is starting up (lock has no owner yet); exiting."
-      exit 0
+    if [[ ! -s "${LOCK_DIR}/pid" ]]; then
+      local age
+      if ! age="$(lock_age_seconds)"; then
+        # Unknown age. Reclaiming could let two installers run at once, which is
+        # worse than waiting; a genuinely abandoned lock is then cleared by hand.
+        log "Lock has no owner and its age cannot be determined; leaving it alone. Remove ${LOCK_DIR} manually if no update is running."
+        exit 0
+      fi
+      if (( age < LOCK_STARTUP_GRACE )); then
+        log "Another update is starting up (lock has no owner yet); exiting."
+        exit 0
+      fi
     fi
     log "Reclaiming stale lock (owner ${owner:-unknown} is no longer running)."
     rm -rf "$LOCK_DIR"
@@ -466,9 +493,28 @@ rotate_log() {
   rm -f "$tmp" 2>/dev/null || true
 }
 
+# A reinstall moves the existing build aside before installing over it. If the
+# run is killed between those two points, EXIT traps do not run (SIGKILL, power
+# loss), and the launcher is left pointing at nothing while the working binary
+# sits under a .preserved.<pid> name. Put it back on the next run.
+recover_preserved() {
+  [[ -d "$VERSIONS_DIR" ]] || return 0
+  local preserved base
+  for preserved in "$VERSIONS_DIR"/*.preserved.*; do
+    [[ -e "$preserved" ]] || continue
+    base="${preserved%.preserved.*}"
+    if [[ -e "$base" ]]; then
+      rm -f "$preserved"
+    elif mv -f "$preserved" "$base"; then
+      log "Recovered ${base} left behind by an interrupted reinstall."
+    fi
+  done
+}
+
 perform_update() {
   acquire_lock
   detect_platform
+  recover_preserved
 
   get_installed_version
   log "Installed version: ${INSTALLED_VERSION:-<unknown>} (${RELEASE_SUFFIX})"
@@ -552,10 +598,11 @@ perform_update() {
   local preserved=""
   if [[ -e "$dest" ]]; then
     preserved="${dest}.preserved.$$"
+    PRESERVED_DEST="$dest"
     mv -f "$dest" "$preserved" || fail "Failed to preserve the existing ${dest}"
+    PRESERVED_PATH="$preserved"
   fi
   if ! install -m 0755 "$asset_path" "$dest"; then
-    [[ -n "$preserved" ]] && mv -f "$preserved" "$dest"
     fail "Failed to install binary to ${dest}"
   fi
   if (( IS_MACOS )); then
@@ -575,6 +622,7 @@ perform_update() {
   version_output="$("$BIN_LINK" --version 2>&1 || true)"
   if version_output_matches "$version_output" "$LATEST_VERSION"; then
     log "Post-verify OK: ${version_output//$'\n'/ | }"
+    PRESERVED_PATH=""
     [[ -n "$preserved" ]] && rm -f "$preserved"
     printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
       log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."
@@ -584,6 +632,7 @@ perform_update() {
     log "ERROR: Post-verify FAILED. Expected version ${LATEST_VERSION} and (patched). Got: ${version_output//$'\n'/ | }"
     if [[ -n "$preserved" ]]; then
       mv -f "$preserved" "$dest"
+      PRESERVED_PATH=""
       log "Restored the previous ${dest} that this install had replaced."
     fi
     if [[ -n "$old_target" ]]; then

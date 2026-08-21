@@ -251,6 +251,36 @@ out="$(run_locked)"
 if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "an aged pid-less lock is reclaimed"; else bad "an aged pid-less lock is reclaimed (got: ${out})"; fi
 rm -rf "${LOCK_STATE}/.lock"
 
+# --- 5b. lock age ---------------------------------------------------------------
+# `stat` formatting differs between GNU and BSD, and the GNU spelling of the BSD
+# flag SUCCEEDS with unrelated output rather than failing — so a `-f || -c`
+# chain silently never falls through on Linux. This asserts the measured age,
+# which fails on either platform if the wrong form is used.
+
+age_of() { # <seconds-ago> ; echoes what lock_age_seconds reports
+  local probe="${SANDBOX}/age-probe"
+  rm -rf "$probe"; mkdir -p "$probe/.lock"
+  python3 -c "import os,sys; t=float(sys.argv[2]); os.utime(sys.argv[1],(t,t))" \
+    "$probe/.lock" "$(( $(date +%s) - $1 ))"
+  CALICO_STATE_DIR="$probe" bash -c '
+    stub="$1"; source "$stub"; lock_age_seconds || echo UNKNOWN
+  ' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH")
+}
+
+reported="$(age_of 3600)"
+if [[ "$reported" =~ ^[0-9]+$ ]] && (( reported > 3500 && reported < 3700 )); then
+  ok "lock age is measured correctly on this platform ($reported s for a 1h-old lock)"
+else
+  bad "lock age is measured correctly on this platform (got: ${reported})"
+fi
+
+reported="$(age_of 5)"
+if [[ "$reported" =~ ^[0-9]+$ ]] && (( reported < 60 )); then
+  ok "a freshly created lock measures under the startup grace ($reported s)"
+else
+  bad "a freshly created lock measures under the startup grace (got: ${reported})"
+fi
+
 # --- 6. log rotation ----------------------------------------------------------
 LOG="${CALICO_STATE_DIR}/update.log"
 python3 -c "
@@ -432,6 +462,34 @@ check "e2e: the symlink still resolves to the restored build" "$E2E/versions/9.9
 if [[ -z "$(find "$E2E/versions" -name '*.preserved.*' 2>/dev/null)" ]]; then
   ok "e2e: no preserved copy is left behind"
 else bad "e2e: no preserved copy is left behind"; fi
+
+# --- 8c2. interrupted reinstall recovery --------------------------------------
+# SIGKILL or power loss between "move the old build aside" and "install the new
+# one" runs no EXIT trap: the launcher points at nothing and the working binary
+# is stranded under a .preserved.<pid> name. The next run must put it back.
+
+e2e_reset "${SANDBOX}/asset-good"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9.preserved.4242"; chmod +x "$E2E/versions/9.9.9.preserved.4242"
+ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"   # dangling, as after a kill
+printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
+out="$(e2e_run --run)"
+if cmp -s "$E2E/versions/9.9.9" "${SANDBOX}/asset-good"; then
+  ok "e2e: an interrupted reinstall is recovered on the next run"
+else bad "e2e: an interrupted reinstall is recovered on the next run"; fi
+if [[ -z "$(find "$E2E/versions" -name '*.preserved.*' 2>/dev/null)" ]]; then
+  ok "e2e: the stranded copy is cleared after recovery"
+else bad "e2e: the stranded copy is cleared after recovery"; fi
+
+# A preserved copy whose destination already exists is leftover, not a rescue.
+e2e_reset "${SANDBOX}/asset-good"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
+printf 'STALE\n' > "$E2E/versions/9.9.9.preserved.4242"
+ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
+printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
+out="$(e2e_run --run)"
+if cmp -s "$E2E/versions/9.9.9" "${SANDBOX}/asset-good"; then
+  ok "e2e: a leftover copy does not overwrite a present build"
+else bad "e2e: a leftover copy does not overwrite a present build"; fi
 
 # --- 8d. --check must agree with --run ----------------------------------------
 # A read-only check that reports "up to date" while --run would immediately
