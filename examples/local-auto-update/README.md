@@ -42,7 +42,8 @@ a script and not a one-line `curl | bash` in a cron job:
 | The artifact is run **where it was downloaded** | `--force` and the self-heal path both write to a destination that already exists. Checking only after that write would destroy the very build the rollback needs to restore. |
 | Versions are compared as **whole tokens** | `2.1.24` is a substring of `2.1.240`; a substring test would accept a mislabeled release at the one gate meant to catch it. |
 | Post-install verify can **roll back** | If the installed binary does not report both the expected version and `(patched)`, the symlink returns to its previous target — or is removed outright when this was a first install, since a link to a binary that just failed its check is worse than no link. |
-| A lock records its **owner pid** | A run killed by SIGKILL or a reboot leaves the lock behind. Without a liveness check, every later run would treat that corpse as contention and exit 0 forever, silently ending all updates. |
+| A lock records its **owner pid** | A run killed by SIGKILL or a reboot leaves the lock behind. Without a liveness check, every later run would treat that corpse as contention and exit 0 forever, silently ending all updates. A lock with no owner *yet* is treated as a run still starting up, not as a corpse — deleting it would let two installers proceed at once. |
+| Rebuilds are tracked by **release tag**, not version | A corrected build is republished as `-2` at the same version. Comparing versions alone would report "up to date" and no unattended user would ever receive it. |
 
 It also self-heals one specific failure: if the installed version already matches
 the latest release but `--version` no longer prints `(patched)`, the official
@@ -117,7 +118,7 @@ script itself needs no editing:
 | `CALICO_PLATFORM` | auto-detected | Force a platform suffix (`linux-x64`, `linux-arm64`, `macos-arm64`, `win32-x64`, `win32-arm64`). |
 | `CALICO_BIN_LINK` | `~/.local/bin/calico-claude` | The managed symlink. |
 | `CALICO_VERSIONS_DIR` | `~/.local/share/calico-claude/versions` | Where builds are kept. |
-| `CALICO_STATE_DIR` | `~/.claude/calico` | Lock, throttle stamp, and `update.log`. |
+| `CALICO_STATE_DIR` | `~/.claude/calico` | Lock, throttle stamp, installed release tag, and `update.log`. |
 | `CALICO_KEEP_VERSIONS` | `3` | Newest builds to keep. `0` disables pruning. The current symlink target is always kept — after a rollback it survives on top of the newest N. |
 | `CALICO_THROTTLE_SECONDS` | `3600` | Minimum gap between `--hook` checks. |
 | `GH_TOKEN` / `GITHUB_TOKEN` | unset | Bearer token for the releases API, if you hit the anonymous rate limit. |
@@ -140,14 +141,21 @@ asset; the attestation proves the release asset came out of this repo's CI.
 bash examples/local-auto-update/test-update.sh
 ```
 
-46 assertions, offline: platform detection, the checksum gate (tampered, absent,
+52 assertions, offline: platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
-throttling, live vs. stale lock ownership, log rotation, release selection, and
-a set of end-to-end `--run` cases driven through stubbed `curl` and `gh`: a good
-artifact installs; a bad artifact leaves an existing same-version build intact;
-a version that merely *contains* the expected one is rejected; and a binary that
-passes its pre-install check but fails afterwards leaves no symlink behind.
+throttling, lock ownership across live / stale / not-yet-written owners, log
+rotation, release selection, and end-to-end `--run` cases driven through stubbed
+`curl` and `gh`:
+
+| Case | Expected |
+|---|---|
+| A good artifact | Installs; symlink points at it |
+| A bad artifact under `--force` | Run fails; the existing same-version build survives byte-for-byte |
+| A version that merely *contains* the expected one | Rejected; nothing installed |
+| Passes pre-install, fails afterwards, no previous target | Run fails; no symlink left behind |
+| A `-2` rebuild of the installed version | Installed; the tag is recorded |
+| A rebuild already installed, or no tag recorded | Left alone |
 
 Two of those cases run under `/bin/bash` specifically rather than whatever `bash`
 is on `PATH`. Stock macOS ships bash 3.2, where `"${empty_array[@]}"` is an

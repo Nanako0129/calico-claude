@@ -44,6 +44,7 @@ BIN_LINK="${CALICO_BIN_LINK:-${HOME}/.local/bin/calico-claude}"
 STATE_DIR="${CALICO_STATE_DIR:-${HOME}/.claude/calico}"
 LOCK_DIR="${STATE_DIR}/.lock"
 LAST_CHECK_FILE="${STATE_DIR}/last-check"
+INSTALLED_TAG_FILE="${STATE_DIR}/installed-tag"
 LOG_FILE="${STATE_DIR}/update.log"
 THROTTLE_SECONDS="${CALICO_THROTTLE_SECONDS:-3600}"
 KEEP_VERSIONS="${CALICO_KEEP_VERSIONS:-3}"
@@ -142,6 +143,32 @@ version_output_matches() {
   [[ "$(version_token "$output")" == "$expected" ]]
 }
 
+# Rebuild rank of a release tag. A corrected build is republished under a numeric
+# suffix (v2.1.240-macos-arm64-2); the base tag ranks 1. Platform suffixes such
+# as `x64` or `arm64` are not bare integers, so a base tag never misreads as a
+# rebuild.
+tag_rebuild_rank() {
+  local suffix="${1##*-}"
+  if [[ "$suffix" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$suffix"
+  else
+    printf '1\n'
+  fi
+}
+
+# Rank of the tag this script last installed. Absent (first run, or an install
+# predating this file) means the base build, so a base-tag release still reads
+# as "nothing newer" and nothing is reinstalled needlessly.
+installed_rebuild_rank() {
+  local recorded
+  recorded="$(cat "$INSTALLED_TAG_FILE" 2>/dev/null || true)"
+  if [[ -n "$recorded" ]]; then
+    tag_rebuild_rank "$recorded"
+  else
+    printf '1\n'
+  fi
+}
+
 # Verify "<sha256>  <file>" lines in $1 against files in the current directory.
 sha256_check() {
   local list="$1"
@@ -151,6 +178,22 @@ sha256_check() {
     sha256sum -c "$list"
   else
     fail "Missing required command: shasum or sha256sum"
+  fi
+}
+
+# Seconds a pid-less lock is treated as a run still starting up rather than as
+# a corpse to reclaim. Only needs to exceed the mkdir-to-write window.
+LOCK_STARTUP_GRACE=60
+
+# Age of the lock directory in seconds. stat is not portable, so try both forms.
+lock_age_seconds() {
+  local mtime
+  mtime="$(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0)"
+  [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
+  if (( mtime == 0 )); then
+    printf '%s\n' "$((LOCK_STARTUP_GRACE + 1))"
+  else
+    printf '%s\n' "$(( $(date +%s) - mtime ))"
   fi
 }
 
@@ -165,6 +208,15 @@ acquire_lock() {
     owner="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
     if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
       log "Another update is already in progress (pid ${owner}); exiting."
+      exit 0
+    fi
+    # No readable owner yet. That is either a run killed between mkdir and the
+    # write, or a run that is about to write it — and deleting the latter would
+    # let two installers proceed at once and then remove each other's lock.
+    # Concurrent SessionStart hooks make this reachable, since their throttle
+    # check is not synchronized either. Age is what separates the two.
+    if [[ ! -s "${LOCK_DIR}/pid" ]] && (( $(lock_age_seconds) < LOCK_STARTUP_GRACE )); then
+      log "Another update is starting up (lock has no owner yet); exiting."
       exit 0
     fi
     log "Reclaiming stale lock (owner ${owner:-unknown} is no longer running)."
@@ -432,6 +484,12 @@ perform_update() {
     rel="$(semver_relation "$LATEST_VERSION" "$INSTALLED_VERSION")"
     if [[ "$rel" == "newer" ]]; then
       : # proceed to install
+    elif [[ "$rel" == "same" ]] &&
+      (( $(tag_rebuild_rank "$LATEST_TAG") > $(installed_rebuild_rank) )); then
+      # Same version, but republished as a corrected build. Without this the
+      # unattended path would report "up to date" and no user would ever receive
+      # a rebuild until upstream happened to ship a new version.
+      log "Installed ${INSTALLED_VERSION} matches latest, but ${LATEST_TAG} is a newer rebuild; reinstalling."
     elif [[ "$rel" == "same" ]] && ! installed_is_patched; then
       # Same version but the official autoupdater (or a manual `claude
       # install`) overwrote the patched binary — self-heal by reinstalling
@@ -502,7 +560,9 @@ perform_update() {
   version_output="$("$BIN_LINK" --version 2>&1 || true)"
   if version_output_matches "$version_output" "$LATEST_VERSION"; then
     log "Post-verify OK: ${version_output//$'\n'/ | }"
-    log "Update to ${LATEST_VERSION} complete."
+    printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
+      log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."
+    log "Update to ${LATEST_TAG} complete."
     prune_old_versions
   else
     log "ERROR: Post-verify FAILED. Expected version ${LATEST_VERSION} and (patched). Got: ${version_output//$'\n'/ | }"

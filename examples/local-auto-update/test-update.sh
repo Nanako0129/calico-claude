@@ -229,11 +229,19 @@ if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "a stale lock is reclaimed
 if [[ ! -d "${CALICO_STATE_DIR}/.lock" ]]; then ok "the reclaimed lock is released on exit"; else bad "the reclaimed lock is released on exit"; fi
 rm -rf "${CALICO_STATE_DIR}/.lock"
 
-# A lock directory with no pid file at all (older layout, or a crash between
-# mkdir and the write) must also be reclaimable rather than permanent.
+# A pid-less lock is ambiguous: a run killed between mkdir and the write, or one
+# that is about to write it. Deleting the second would let two installers run at
+# once, so a fresh one counts as contention and only an aged one is reclaimed.
 mkdir -p "${CALICO_STATE_DIR}/.lock"
 out="$(run_locked)"
-if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "a pid-less lock is reclaimed"; else bad "a pid-less lock is reclaimed (got: ${out})"; fi
+if [[ "$out" == *"starting up"* ]]; then ok "a freshly pid-less lock is treated as contention"; else bad "a freshly pid-less lock is treated as contention (got: ${out})"; fi
+if [[ -d "${CALICO_STATE_DIR}/.lock" ]]; then ok "a freshly pid-less lock is not deleted"; else bad "a freshly pid-less lock is not deleted"; fi
+rm -rf "${CALICO_STATE_DIR}/.lock"
+
+mkdir -p "${CALICO_STATE_DIR}/.lock"
+touch -t 202601010000 "${CALICO_STATE_DIR}/.lock"
+out="$(run_locked)"
+if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "an aged pid-less lock is reclaimed"; else bad "an aged pid-less lock is reclaimed (got: ${out})"; fi
 rm -rf "${CALICO_STATE_DIR}/.lock"
 
 # --- 6. log rotation ----------------------------------------------------------
@@ -354,6 +362,45 @@ check "e2e: a binary failing post-verify fails the run" "1" "$?"
 if [[ -e "$E2E/bin/calico-claude" || -L "$E2E/bin/calico-claude" ]]; then
   bad "e2e: the symlink is removed when there is no rollback target"
 else ok "e2e: the symlink is removed when there is no rollback target"; fi
+
+# --- 8b. same-version rebuilds ------------------------------------------------
+# A corrected build is republished under a numeric suffix while the version
+# stays the same. Comparing versions alone reports "up to date", so unattended
+# users would never receive it.
+
+e2e_rebuild_releases() { # <highest-tag>
+  cat > "$E2E/releases.json" <<JSON
+[{"tag_name":"v9.9.9-linux-x64","assets":[
+  {"name":"claude.native.patched","browser_download_url":"https://example.invalid/asset"},
+  {"name":"checksums.txt","browser_download_url":"https://example.invalid/checksums.txt"}]},
+ {"tag_name":"$1","assets":[
+  {"name":"claude.native.patched","browser_download_url":"https://example.invalid/asset"},
+  {"name":"checksums.txt","browser_download_url":"https://example.invalid/checksums.txt"}]}]
+JSON
+}
+e2e_installed() { # <tag>
+  cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
+  ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
+  printf '%s\n' "$1" > "$E2E/state/installed-tag"
+}
+
+e2e_reset "${SANDBOX}/asset-good"; e2e_rebuild_releases "v9.9.9-linux-x64-2"
+e2e_installed "v9.9.9-linux-x64"
+out="$(e2e_run --run)"
+if [[ "$out" == *"newer rebuild"* ]]; then ok "a newer rebuild of the installed version is picked up"; else bad "a newer rebuild of the installed version is picked up (got: ${out})"; fi
+check "the rebuild tag is recorded after install" "v9.9.9-linux-x64-2" "$(cat "$E2E/state/installed-tag")"
+
+e2e_reset "${SANDBOX}/asset-good"; e2e_rebuild_releases "v9.9.9-linux-x64-2"
+e2e_installed "v9.9.9-linux-x64-2"
+out="$(e2e_run --run)"
+if [[ "$out" == *"up to date"* ]]; then ok "an already-installed rebuild is not reinstalled"; else bad "an already-installed rebuild is not reinstalled (got: ${out})"; fi
+
+# Installs predating this feature have no recorded tag. They must not be
+# reinstalled just because the file is missing.
+e2e_reset "${SANDBOX}/asset-good"
+e2e_installed "v9.9.9-linux-x64"; rm -f "$E2E/state/installed-tag"
+out="$(e2e_run --run)"
+if [[ "$out" == *"up to date"* ]]; then ok "a missing tag record does not force a reinstall"; else bad "a missing tag record does not force a reinstall (got: ${out})"; fi
 
 # --- 9. usage -----------------------------------------------------------------
 bash "$UPDATE_SH" >/dev/null 2>&1
