@@ -73,7 +73,7 @@ cleanup() {
     rm -rf "$TMP_DIR"
   fi
   if [[ -d "$LOCK_DIR" ]]; then
-    rmdir "$LOCK_DIR" 2>/dev/null || true
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
   fi
 }
 
@@ -128,6 +128,20 @@ detect_platform() {
   esac
 }
 
+# Leading X.Y.Z token of a `--version` line. Substring matching is not safe
+# here: "2.1.24" is a substring of "2.1.240", so a mislabeled release would pass
+# the very gate meant to catch it.
+version_token() {
+  printf '%s' "$1" | sed -n '1s/^[^0-9]*\([0-9][0-9.]*[0-9]\).*/\1/p'
+}
+
+# True when `--version` output reports exactly $2 and carries the patched marker.
+version_output_matches() {
+  local output="$1" expected="$2"
+  [[ "$output" == *"(patched)"* ]] || return 1
+  [[ "$(version_token "$output")" == "$expected" ]]
+}
+
 # Verify "<sha256>  <file>" lines in $1 against files in the current directory.
 sha256_check() {
   local list="$1"
@@ -140,12 +154,27 @@ sha256_check() {
   fi
 }
 
+# The lock records its owner pid. A run killed by SIGKILL, a power loss, or a
+# reboot leaves the directory behind with no EXIT trap to remove it; without a
+# liveness check every later run would treat that corpse as contention and exit
+# 0 forever, silently ending all updates.
 acquire_lock() {
   mkdir -p "$STATE_DIR"
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    log "Another update is already in progress (lock held); exiting."
-    exit 0
+    local owner
+    owner="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
+    if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
+      log "Another update is already in progress (pid ${owner}); exiting."
+      exit 0
+    fi
+    log "Reclaiming stale lock (owner ${owner:-unknown} is no longer running)."
+    rm -rf "$LOCK_DIR"
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+      log "Lost the race to reclaim the stale lock; exiting."
+      exit 0
+    fi
   fi
+  printf '%s\n' "$$" > "${LOCK_DIR}/pid"
   trap cleanup EXIT
 }
 
@@ -437,6 +466,21 @@ perform_update() {
   verify_checksum "$TMP_DIR"
   verify_attestation "$asset_path"
 
+  # --- Pre-install artifact check -------------------------------------------
+  # Run the downloaded file where it sits. Installing first would overwrite an
+  # existing same-version build (the --force and self-heal paths both do this),
+  # destroying the very file the post-install rollback would need to restore.
+  chmod +x "$asset_path" || fail "Failed to make ${ASSET} executable"
+  if (( IS_MACOS )); then
+    xattr -d com.apple.quarantine "$asset_path" 2>/dev/null || true
+  fi
+  local artifact_version
+  artifact_version="$("$asset_path" --version 2>&1 || true)"
+  if ! version_output_matches "$artifact_version" "$LATEST_VERSION"; then
+    fail "Downloaded ${ASSET} reports '${artifact_version//$'\n'/ | }', expected ${LATEST_VERSION} and (patched); refusing to install"
+  fi
+  log "Artifact verified before install: ${artifact_version//$'\n'/ | }"
+
   # --- Install --------------------------------------------------------------
   mkdir -p "$VERSIONS_DIR"
   local dest="${VERSIONS_DIR}/${LATEST_VERSION}"
@@ -456,7 +500,7 @@ perform_update() {
   # --- Post-verify with rollback --------------------------------------------
   local version_output
   version_output="$("$BIN_LINK" --version 2>&1 || true)"
-  if [[ "$version_output" == *"$LATEST_VERSION"* && "$version_output" == *"(patched)"* ]]; then
+  if version_output_matches "$version_output" "$LATEST_VERSION"; then
     log "Post-verify OK: ${version_output//$'\n'/ | }"
     log "Update to ${LATEST_VERSION} complete."
     prune_old_versions
@@ -466,7 +510,10 @@ perform_update() {
       swap_symlink "$old_target"
       log "Rolled back symlink ${BIN_LINK} -> ${old_target}"
     else
-      log "WARNING: no previous symlink target recorded; cannot roll back."
+      # First install: there is nothing to roll back to, but leaving the link
+      # pointing at a binary that just failed its check is worse than no link.
+      rm -f "$BIN_LINK"
+      log "Removed ${BIN_LINK}; it pointed at a binary that failed post-verify and there was no previous target."
     fi
     exit 1
   fi

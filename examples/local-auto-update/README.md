@@ -23,10 +23,12 @@ SessionStart hook ──► update.sh --hook ──► throttled? ──► exit
                                                      │
    download ─► checksums.txt (fail-hard) ─► gh attestation verify (fail-hard)
                                                      │
-   install versions/<X.Y.Z> ─► atomic symlink swap ─► `--version` must show
-                                                      the new version AND
-                                                      `(patched)`, else roll the
-                                                      symlink back
+   run the downloaded file in place: exact version + `(patched)` (fail-hard)
+                                                     │
+   install versions/<X.Y.Z> ─► atomic symlink swap ─► re-check through the link
+                                                     │
+                              mismatch ─► restore the previous target, or remove
+                                          the link when there is no previous one
                                                      │
                                             prune to the newest 3 versions
 ```
@@ -36,8 +38,11 @@ a script and not a one-line `curl | bash` in a cron job:
 
 | Property | Why |
 | --- | --- |
-| Verification happens **before** install | A failed checksum or attestation must never reach `versions/`, let alone the symlink. |
-| Post-install verify can **roll back** | If the new binary does not report both the expected version and `(patched)`, the symlink returns to the previous target and the run exits non-zero. |
+| Verification happens **before** install | A failed checksum, attestation, or version check must never reach `versions/`, let alone the symlink. |
+| The artifact is run **where it was downloaded** | `--force` and the self-heal path both write to a destination that already exists. Checking only after that write would destroy the very build the rollback needs to restore. |
+| Versions are compared as **whole tokens** | `2.1.24` is a substring of `2.1.240`; a substring test would accept a mislabeled release at the one gate meant to catch it. |
+| Post-install verify can **roll back** | If the installed binary does not report both the expected version and `(patched)`, the symlink returns to its previous target — or is removed outright when this was a first install, since a link to a binary that just failed its check is worse than no link. |
+| A lock records its **owner pid** | A run killed by SIGKILL or a reboot leaves the lock behind. Without a liveness check, every later run would treat that corpse as contention and exit 0 forever, silently ending all updates. |
 
 It also self-heals one specific failure: if the installed version already matches
 the latest release but `--version` no longer prints `(patched)`, the official
@@ -135,10 +140,14 @@ asset; the attestation proves the release asset came out of this repo's CI.
 bash examples/local-auto-update/test-update.sh
 ```
 
-An offline self-check: platform detection, the checksum gate (including tampered,
-absent, and empty `checksums.txt`), pruning (including the rollback shape where
-the symlink points at an older build), hook throttling, lock contention, log
-rotation, and release selection against a stubbed `curl`.
+46 assertions, offline: platform detection, the checksum gate (tampered, absent,
+empty, and a decoy that only matches through an unescaped dot), pruning
+(including the rollback shape where the symlink points at an older build), hook
+throttling, live vs. stale lock ownership, log rotation, release selection, and
+a set of end-to-end `--run` cases driven through stubbed `curl` and `gh`: a good
+artifact installs; a bad artifact leaves an existing same-version build intact;
+a version that merely *contains* the expected one is rejected; and a binary that
+passes its pre-install check but fails afterwards leaves no symlink behind.
 
 Two of those cases run under `/bin/bash` specifically rather than whatever `bash`
 is on `PATH`. Stock macOS ships bash 3.2, where `"${empty_array[@]}"` is an

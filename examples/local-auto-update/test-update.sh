@@ -27,6 +27,61 @@ export CALICO_VERSIONS_DIR="${SANDBOX}/versions"
 export CALICO_BIN_LINK="${SANDBOX}/bin/calico-claude"
 mkdir -p "$CALICO_STATE_DIR" "$CALICO_VERSIONS_DIR" "${SANDBOX}/bin"
 
+# --- curl stub ----------------------------------------------------------------
+# Installed before any case that can reach the network. `--hook` spawns a
+# detached `--run`, and a nonexistent CALICO_REPO does not prevent that run from
+# contacting api.github.com — it only guarantees a 404. Without the stub on PATH
+# the suite would break its own offline guarantee and could leave a detached
+# curl behind after the sandbox is removed.
+STUB_BIN="${SANDBOX}/stub-bin"
+mkdir -p "$STUB_BIN"
+cat > "${STUB_BIN}/curl" <<'STUB'
+#!/bin/sh
+# Minimal curl stand-in. Serves the release list, the asset, or its checksums
+# depending on the URL, so a full --run can be exercised without a network.
+out=""
+url=""
+prev=""
+for arg in "$@"; do
+  [ "$prev" = "-o" ] && out="$arg"
+  case "$arg" in http*) url="$arg" ;; esac
+  prev="$arg"
+done
+[ -n "$out" ] || exit 1
+case "$url" in
+  *checksums.txt) [ -n "$FAKE_CHECKSUMS" ] && cat "$FAKE_CHECKSUMS" > "$out" || exit 1 ;;
+  *api.github.com*) cat "$FAKE_RELEASES" > "$out" ;;
+  *) [ -n "$FAKE_ASSET" ] && cat "$FAKE_ASSET" > "$out" || exit 1 ;;
+esac
+STUB
+chmod +x "${STUB_BIN}/curl"
+cat > "${STUB_BIN}/gh" <<'STUB'
+#!/bin/sh
+# Unauthenticated gh: exercises the documented "skip attestation with a warning"
+# path rather than failing a stub asset that carries no real provenance.
+[ "$1" = "auth" ] && exit 1
+exit 1
+STUB
+chmod +x "${STUB_BIN}/gh"
+
+cat > "${SANDBOX}/releases.json" <<'JSON'
+[
+  {"tag_name": "v2.1.240-linux-x64", "assets": [
+    {"name": "claude.native.patched", "browser_download_url": "https://example.invalid/a"},
+    {"name": "checksums.txt", "browser_download_url": "https://example.invalid/c"}]},
+  {"tag_name": "v2.1.240-linux-x64-2", "assets": [
+    {"name": "claude.native.patched", "browser_download_url": "https://example.invalid/a2"},
+    {"name": "checksums.txt", "browser_download_url": "https://example.invalid/c2"}]},
+  {"tag_name": "v2.1.241-linux-x64", "assets": [
+    {"name": "checksums.txt", "browser_download_url": "https://example.invalid/c3"}]},
+  {"tag_name": "v2.1.243-linux-x64", "draft": true, "assets": [
+    {"name": "claude.native.patched", "browser_download_url": "https://example.invalid/a4"},
+    {"name": "checksums.txt", "browser_download_url": "https://example.invalid/c4"}]},
+  {"tag_name": "v2.1.242-macos-arm64", "assets": [
+    {"name": "claude.native.macos.patched", "browser_download_url": "https://example.invalid/a5"}]}
+]
+JSON
+
 # --- 1. platform detection ----------------------------------------------------
 for pair in "linux-x64:claude.native.patched:0" \
             "linux-arm64:claude.native.patched:0" \
@@ -125,6 +180,8 @@ check "prune tolerates a missing symlink" "2.1.2 2.1.3 2.1.4" "$(prune_with 3)"
 # CALICO_REPO points at a nonexistent repo so any spawned --run fails fast
 # without touching the network in a meaningful way.
 export CALICO_REPO="calico-test/does-not-exist"
+export PATH="${STUB_BIN}:${PATH}"
+export FAKE_RELEASES="${SANDBOX}/releases.json"
 rm -f "${CALICO_STATE_DIR}/last-check" "${CALICO_STATE_DIR}/update.log"
 printf '%s\n' "$(date +%s)" > "${CALICO_STATE_DIR}/last-check"
 before="$(cat "${CALICO_STATE_DIR}/last-check")"
@@ -148,12 +205,36 @@ CALICO_THROTTLE_SECONDS=3600 bash "$UPDATE_SH" --hook < /dev/null >/dev/null 2>&
 check "hook tolerates a corrupt last-check" "0" "$?"
 
 # --- 5. lock ------------------------------------------------------------------
+# A live owner means real contention; a dead one means the previous run was
+# killed before its EXIT trap ran, and the lock must be reclaimed rather than
+# obeyed forever.
+run_locked() { CALICO_PLATFORM=linux-x64 bash "$UPDATE_SH" --run 2>&1; }
+
 mkdir -p "${CALICO_STATE_DIR}/.lock"
-out="$(CALICO_PLATFORM=linux-x64 bash "$UPDATE_SH" --run 2>&1)"
+printf '%s\n' "$$" > "${CALICO_STATE_DIR}/.lock/pid"
+out="$(run_locked)"
 rc=$?
-check "run exits 0 when the lock is held" "0" "$rc"
-if [[ "$out" == *"lock held"* ]]; then ok "run reports the held lock"; else bad "run reports the held lock"; fi
-rmdir "${CALICO_STATE_DIR}/.lock"
+check "run exits 0 when a live owner holds the lock" "0" "$rc"
+if [[ "$out" == *"already in progress (pid $$)"* ]]; then ok "run reports the live lock owner"; else bad "run reports the live lock owner (got: ${out})"; fi
+if [[ -d "${CALICO_STATE_DIR}/.lock" ]]; then ok "a live owner's lock survives"; else bad "a live owner's lock survives"; fi
+rm -rf "${CALICO_STATE_DIR}/.lock"
+
+# Find a pid that is definitely not running, so the lock reads as abandoned.
+dead_pid=999999
+while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid - 1)); done
+mkdir -p "${CALICO_STATE_DIR}/.lock"
+printf '%s\n' "$dead_pid" > "${CALICO_STATE_DIR}/.lock/pid"
+out="$(run_locked)"
+if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "a stale lock is reclaimed instead of obeyed"; else bad "a stale lock is reclaimed instead of obeyed (got: ${out})"; fi
+if [[ ! -d "${CALICO_STATE_DIR}/.lock" ]]; then ok "the reclaimed lock is released on exit"; else bad "the reclaimed lock is released on exit"; fi
+rm -rf "${CALICO_STATE_DIR}/.lock"
+
+# A lock directory with no pid file at all (older layout, or a crash between
+# mkdir and the write) must also be reclaimable rather than permanent.
+mkdir -p "${CALICO_STATE_DIR}/.lock"
+out="$(run_locked)"
+if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "a pid-less lock is reclaimed"; else bad "a pid-less lock is reclaimed (got: ${out})"; fi
+rm -rf "${CALICO_STATE_DIR}/.lock"
 
 # --- 6. log rotation ----------------------------------------------------------
 LOG="${CALICO_STATE_DIR}/update.log"
@@ -178,39 +259,8 @@ check "rotate_log leaves a small log alone" "1" "$(wc -l < "$LOG" | tr -d ' ')"
 # Stock macOS ships /bin/bash 3.2, where "${empty_array[@]}" is an unbound
 # variable under `set -u`. The suite otherwise runs under whatever `bash` is on
 # PATH (often Homebrew 5.x), which hides that class of bug entirely.
-STUB_BIN="${SANDBOX}/stub-bin"
-mkdir -p "$STUB_BIN"
-cat > "${STUB_BIN}/curl" <<'STUB'
-#!/bin/sh
-# Minimal curl stand-in: writes $FAKE_RELEASES to whatever -o names.
-out=""
-prev=""
-for arg in "$@"; do
-  [ "$prev" = "-o" ] && out="$arg"
-  prev="$arg"
-done
-[ -n "$out" ] || exit 1
-cat "$FAKE_RELEASES" > "$out"
-STUB
-chmod +x "${STUB_BIN}/curl"
-
-cat > "${SANDBOX}/releases.json" <<'JSON'
-[
-  {"tag_name": "v2.1.240-linux-x64", "assets": [
-    {"name": "claude.native.patched", "browser_download_url": "https://example.invalid/a"},
-    {"name": "checksums.txt", "browser_download_url": "https://example.invalid/c"}]},
-  {"tag_name": "v2.1.240-linux-x64-2", "assets": [
-    {"name": "claude.native.patched", "browser_download_url": "https://example.invalid/a2"},
-    {"name": "checksums.txt", "browser_download_url": "https://example.invalid/c2"}]},
-  {"tag_name": "v2.1.241-linux-x64", "assets": [
-    {"name": "checksums.txt", "browser_download_url": "https://example.invalid/c3"}]},
-  {"tag_name": "v2.1.243-linux-x64", "draft": true, "assets": [
-    {"name": "claude.native.patched", "browser_download_url": "https://example.invalid/a4"},
-    {"name": "checksums.txt", "browser_download_url": "https://example.invalid/c4"}]},
-  {"tag_name": "v2.1.242-macos-arm64", "assets": [
-    {"name": "claude.native.macos.patched", "browser_download_url": "https://example.invalid/a5"}]}
-]
-JSON
+# The curl stub is installed near the top of this file, because the hook cases
+# below spawn a detached `--run` that would otherwise reach the network.
 
 run_check() { # <bash-binary> ; runs --check with a stubbed curl and no token
   env -u GH_TOKEN -u GITHUB_TOKEN \
@@ -239,7 +289,73 @@ else
   printf 'skip /bin/bash not present\n'
 fi
 
-# --- 8. usage -----------------------------------------------------------------
+# --- 8. end-to-end --run ------------------------------------------------------
+# Drives the real install path with stubbed curl and gh. These cover the parts
+# that unit-level cases cannot: what happens to files already on disk when the
+# incoming artifact turns out to be wrong.
+
+E2E="${SANDBOX}/e2e"
+e2e_reset() { # <asset-body-file>
+  rm -rf "$E2E"; mkdir -p "$E2E/versions" "$E2E/bin" "$E2E/state"
+  cp "$1" "$E2E/asset"; chmod +x "$E2E/asset"
+  ( cd "$E2E" && { shasum -a 256 asset 2>/dev/null || sha256sum asset; } \
+      | sed 's/asset$/claude.native.patched/' > "$E2E/checksums.txt" )
+  cat > "$E2E/releases.json" <<JSON
+[{"tag_name":"v9.9.9-linux-x64","assets":[
+  {"name":"claude.native.patched","browser_download_url":"https://example.invalid/asset"},
+  {"name":"checksums.txt","browser_download_url":"https://example.invalid/checksums.txt"}]}]
+JSON
+}
+e2e_run() { # <mode>
+  env PATH="${STUB_BIN}:${PATH}" \
+      FAKE_RELEASES="$E2E/releases.json" FAKE_ASSET="$E2E/asset" FAKE_CHECKSUMS="$E2E/checksums.txt" \
+      CALICO_PLATFORM=linux-x64 CALICO_REPO="calico-test/stubbed" \
+      CALICO_VERSIONS_DIR="$E2E/versions" CALICO_BIN_LINK="$E2E/bin/calico-claude" \
+      CALICO_STATE_DIR="$E2E/state" E2E_COUNTER="$E2E/calls" \
+      bash "$UPDATE_SH" "$1" 2>&1
+}
+
+printf '#!/bin/sh\necho "9.9.9 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}/asset-good"
+printf '#!/bin/sh\necho "0.0.0 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}/asset-wrongver"
+printf '#!/bin/sh\necho "9.9.99 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}/asset-superstring"
+# Passes the pre-install check, then reports a different version once installed.
+printf '#!/bin/sh\nn=$(cat "$E2E_COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$E2E_COUNTER"\nif [ "$n" -le 1 ]; then echo "9.9.9 (Claude Code)"; echo "(patched)"; else echo "0.0.0 (Claude Code)"; echo "(patched)"; fi\n' > "${SANDBOX}/asset-flips"
+
+e2e_reset "${SANDBOX}/asset-good"
+out="$(e2e_run --run)"
+check "e2e: a good artifact installs" "0" "$?"
+if [[ -L "$E2E/bin/calico-claude" && "$(readlink "$E2E/bin/calico-claude")" == "$E2E/versions/9.9.9" ]]; then
+  ok "e2e: symlink points at the installed version"
+else bad "e2e: symlink points at the installed version"; fi
+
+# The reinstall paths (--force, and the self-heal for an unpatched same-version
+# binary) write to a destination that already exists. If the incoming artifact
+# is only checked after that write, the rollback target is already destroyed.
+e2e_reset "${SANDBOX}/asset-wrongver"
+printf 'KNOWN GOOD\n' > "$E2E/versions/9.9.9"
+ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
+out="$(e2e_run --force)"
+rc=$?
+check "e2e: a bad artifact fails --force" "1" "$rc"
+check "e2e: the existing same-version build is left intact" "KNOWN GOOD" "$(cat "$E2E/versions/9.9.9")"
+check "e2e: the symlink still points at the surviving build" "$E2E/versions/9.9.9" "$(readlink "$E2E/bin/calico-claude")"
+
+# "2.1.24" is a substring of "2.1.240"; only an exact token comparison rejects it.
+e2e_reset "${SANDBOX}/asset-superstring"
+out="$(e2e_run --run)"
+check "e2e: a version that merely contains the expected one is rejected" "1" "$?"
+if [[ -e "$E2E/versions/9.9.9" ]]; then bad "e2e: superstring version must not be installed"; else ok "e2e: superstring version must not be installed"; fi
+
+# First install, nothing to roll back to: a link to a binary that just failed
+# its check is worse than no link at all.
+e2e_reset "${SANDBOX}/asset-flips"
+out="$(e2e_run --run)"
+check "e2e: a binary failing post-verify fails the run" "1" "$?"
+if [[ -e "$E2E/bin/calico-claude" || -L "$E2E/bin/calico-claude" ]]; then
+  bad "e2e: the symlink is removed when there is no rollback target"
+else ok "e2e: the symlink is removed when there is no rollback target"; fi
+
+# --- 9. usage -----------------------------------------------------------------
 bash "$UPDATE_SH" >/dev/null 2>&1
 check "no mode exits 2" "2" "$?"
 
