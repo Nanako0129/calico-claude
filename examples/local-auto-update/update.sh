@@ -422,7 +422,11 @@ verify_attestation() {
 # race between two runs choosing a name at the same instant.
 allocate_dest() {
   local base="$1"
-  if [[ ! -e "$base" ]]; then
+  # `set -o noclobber` makes this redirect an O_EXCL create: it succeeds only if
+  # it created the file. Testing `[[ -e ]]` first would not do — two overlapping
+  # runs can both find the base absent and then install over each other, which
+  # an ignored lock explicitly permits. Reserving it is the test.
+  if (set -o noclobber; : > "$base") 2>/dev/null; then
     printf '%s\n' "$base"
     return 0
   fi

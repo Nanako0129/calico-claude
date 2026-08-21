@@ -289,6 +289,18 @@ alloc() { # <base> [count] ; echoes <count> allocations from a single process
 alloc_dir="${SANDBOX}/alloc"; rm -rf "$alloc_dir"; mkdir -p "$alloc_dir"
 base="${alloc_dir}/9.9.9"
 check "an unused base path is returned as-is" "$base" "$(alloc "$base")"
+rm -f "$base"
+
+# Two overlapping runs can both find the base absent — an ignored lock permits
+# exactly that — so the base must be reserved, not merely tested for.
+fresh_pair="$(alloc "$base" 2)"
+fresh_first="$(printf '%s\n' "$fresh_pair" | sed -n '1p')"
+fresh_second="$(printf '%s\n' "$fresh_pair" | sed -n '2p')"
+check "the first allocation of a free base takes the base itself" "$base" "$fresh_first"
+if [[ "$fresh_second" != "$base" && "$fresh_second" != "$fresh_first" ]]; then
+  ok "a second allocation cannot take the base another run just reserved"
+else bad "a second allocation cannot take the base another run just reserved (got: $fresh_second)"; fi
+rm -f "$base" "$fresh_second"
 
 printf 'EXISTING
 ' > "$base"
