@@ -709,6 +709,17 @@ perform_update() {
     fi
   fi
 
+  # The age-based in-flight protection assumes a run reaches this point within
+  # PRUNE_MIN_AGE_SECONDS of installing. A suspended laptop breaks that: this run
+  # can sit here for hours while a later one, seeing an aged run lock and an aged
+  # destination, prunes it. Re-checking inside the commit lock costs one stat and
+  # is the only point where the answer cannot change underneath us.
+  if [[ ! -e "$dest" ]]; then
+    log "${dest} was removed while this run was paused; leaving ${BIN_LINK} unchanged. A later run will reinstall."
+    release_commit_lock
+    exit 0
+  fi
+
   swap_symlink "$dest"
   printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
     log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."

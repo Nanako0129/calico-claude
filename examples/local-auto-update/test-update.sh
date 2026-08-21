@@ -411,6 +411,9 @@ printf '#!/bin/sh\necho "0.0.0 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}
 printf '#!/bin/sh\necho "9.9.99 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}/asset-superstring"
 # Passes the pre-install check, then reports a different version once installed.
 printf '#!/bin/sh\nn=$(cat "$E2E_COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$E2E_COUNTER"\nif [ "$n" -le 1 ]; then echo "9.9.9 (Claude Code)"; echo "(patched)"; else echo "0.0.0 (Claude Code)"; echo "(patched)"; fi\n' > "${SANDBOX}/asset-flips"
+# Verifies correctly, then deletes itself from its installed path — standing in
+# for a concurrent prune landing between verification and the swap.
+printf '#!/bin/sh\nn=$(cat "$E2E_COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$E2E_COUNTER"\n[ "$n" -ge 2 ] && rm -f "$0"\necho "9.9.9 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX}/asset-vanishes"
 
 e2e_reset "${SANDBOX}/asset-good"
 out="$(e2e_run --run)"
@@ -637,6 +640,23 @@ printf 'v9.9.9-linux-x64-2\n' > "$E2E/state/installed-tag"
 out="$(e2e_run --force)"
 check "e2e: a base-tag run does not replace a newer rebuild" "$E2E/versions/9.9.9" "$(readlink "$E2E/bin/calico-claude")"
 check "e2e: the newer rebuild tag survives" "v9.9.9-linux-x64-2" "$(cat "$E2E/state/installed-tag")"
+
+# --- 8e4. a destination pruned mid-run is not swapped to -------------------------
+# The age-based in-flight protection assumes a run reaches the swap within
+# PRUNE_MIN_AGE_SECONDS of installing. A suspended machine breaks that, and a
+# later run can prune the destination this one is about to point at.
+
+e2e_reset "${SANDBOX}/asset-vanishes"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
+ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
+# The fixture passes verification and then removes its own installed copy, which
+# is what a concurrent prune during a long pause looks like from here.
+out="$(e2e_run --run)"
+check "e2e: a destination removed mid-run does not fail the run" "0" "$?"
+check "e2e: the launcher is not pointed at a removed destination" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
+if [[ -L "$E2E/bin/calico-claude" && -e "$E2E/bin/calico-claude" ]]; then
+  ok "e2e: the launcher still resolves to a real file"
+else bad "e2e: the launcher still resolves to a real file"; fi
 
 # --- 8f. a launcher we do not manage is refused --------------------------------
 # swap_symlink would mv over a regular file, and nothing could put it back.

@@ -154,9 +154,13 @@ The official updater can install a new version and repoint the `claude` symlink 
 binary. The renamed Calico binary is immune to that, but it also stops receiving updates.
 
 [`examples/local-auto-update/`](./examples/local-auto-update/) closes that gap: a SessionStart hook
-that checks at most hourly, verifies checksum and build attestation **before** installing, rolls the
-symlink back if the new binary fails its post-install check, and reinstalls the patched build if the
-official updater ever overwrites it.
+that checks at most hourly and never blocks startup. Before anything is installed it verifies the
+release checksum, and — when an authenticated `gh` is available — the build provenance attestation;
+without `gh` it logs a warning and proceeds on the checksum alone, so provenance is not a guarantee
+in that configuration. The downloaded build is then run and must report the exact expected version
+plus `(patched)`; only after that does the launcher symlink move. A build that fails leaves the
+launcher untouched, so there is nothing to roll back. It also reinstalls the patched build if the
+official updater ever replaces it.
 
 ---
 
