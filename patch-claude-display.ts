@@ -2376,22 +2376,27 @@ function patchStatuslineRateLimitWindows(content) {
     }
   }
 
-  // The depth walk still permits the inverse nesting: the projection initializes
-  // an outer `A` and a deeper block declares its own `A` around the guard, which
-  // only increases depth. Rather than resolve bindings (this patcher has no
-  // AST), require that nothing reassigns the guard's local between the two
-  // anchors. A shadowing declaration is one such write, and so is a plain
-  // reassignment — both mean the guard does not read this projection.
+  // Every way the guard's local can stop referring to this projection —
+  // reassignment, a shadowing `let` in a deeper block, an arrow parameter, a
+  // destructuring or catch binding — is a distinct syntactic form, and matching
+  // them one at a time only invites the next one. This patcher has no AST to
+  // resolve bindings with, so it asks for something stricter and complete
+  // instead: the name must not occur between the two anchors at all. If it
+  // never appears, it cannot have been rebound or shadowed by any form.
+  //
+  // Property accesses are excluded, since `x.A` binds nothing. In the bundles
+  // this targets the span between the anchors is the remainder of the payload
+  // object literal and does not mention the local at all.
   const between = projectionEnd === -1 ? "" : content.slice(projectionEnd, guardIndex);
-  const guardLocalIsRebound = new RegExp(
-    `[^\\w$.!<>=+\\-*/%&|^]${guardLocal}=(?!=)`
+  const guardLocalOccursBetween = new RegExp(
+    `(?:^|[^\\w$.])${guardLocal}(?![\\w$])`
   ).test(between);
 
   if (
     !sharesPayloadBuilder ||
     !projectionAssignsGuardLocal ||
     leftProjectionScope ||
-    guardLocalIsRebound
+    guardLocalOccursBetween
   ) {
     return { content: original, candidates, patched: 0 };
   }

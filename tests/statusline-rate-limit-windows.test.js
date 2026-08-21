@@ -166,3 +166,22 @@ function hqw(){let k=tLn(),A={...k.five_hour&&{five_hour:{used_percentage:k.five
   assert.equal(result.candidates, 2);
   assert.equal(result.patched, 0);
 });
+
+// The binding forms below are all distinct syntax. They are covered by one
+// condition — the guard's local must not occur between the anchors — rather
+// than by a matcher per form, which is what kept admitting the next variant.
+for (const [name, middle] of [
+  ["an arrow parameter", `items.map((A)=>({...(A.five_hour||A.seven_day)&&{rate_limits:A}}));`],
+  ["a destructured parameter", `items.map(({A})=>({...(A.five_hour||A.seven_day)&&{rate_limits:A}}));`],
+  ["a catch binding", `try{x()}catch(A){log(A)};`],
+  ["a for-loop binding", `for(let A of xs){use(A)};`],
+]) {
+  test(`rejects a guard shadowed by ${name}`, () => {
+    const source = `
+function hqw(){let k=tLn(),A={...k.five_hour&&{five_hour:{used_percentage:k.five_hour.utilization*100,resets_at:k.five_hour.resets_at}},...k.seven_day&&{seven_day:{used_percentage:k.seven_day.utilization*100,resets_at:k.seven_day.resets_at}}};${middle}return{model:{id:"sonnet"},...(A.five_hour||A.seven_day)&&{rate_limits:A}}}
+`;
+    const result = patchStatuslineRateLimitWindows(source);
+    assert.equal(result.patched, 0, "the guard may not be rewritten");
+    assert.equal(result.content, source);
+  });
+}
