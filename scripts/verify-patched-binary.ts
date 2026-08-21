@@ -1180,8 +1180,9 @@ const CHECKS: Check[] = [
   {
     id: "disable-usage-wrapup",
     kind: "custom",
-    // When this module is disabled, the renamed calico gate must not exist.
-    disabledMarker: '"calico_lantern_wick_off"',
+    // When this module is disabled, neither renamed calico gate may exist —
+    // matching either one catches partially patched or transitional bundles.
+    disabledMarker: /"calico_lantern_wick_off"|"calico_vellum_gone_"/,
     describe:
       "usage-limit wrap-up statsig gate names renamed to dead calico gates",
     run: (content: string): string | null => {

@@ -1612,6 +1612,31 @@ function patchDisableUsageWrapUpHints(content) {
     }
   }
 
+  if (patched === 0) {
+    // Pre-feature bundles (< 2.1.238) carry neither gate; that is an expected
+    // no-op, not a matcher failure, so report it as skipped and keep
+    // --assert-all green for older rebuilds. A 2.1.238+ bundle (or one with
+    // unparseable VERSION metadata) without the gates stays a hard failure:
+    // that is how --assert-all catches upstream renaming the gates away.
+    const versionMatch = content.match(
+      /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/
+    );
+    if (versionMatch) {
+      const [major, minor, micro] = versionMatch.slice(1).map(Number);
+      const preFeature =
+        major < 2 || (major === 2 && (minor < 1 || (minor === 1 && micro < 238)));
+      if (preFeature) {
+        return {
+          content: output,
+          candidates,
+          patched,
+          skipped: true,
+          reason: `pre-2.1.238 bundle (${major}.${minor}.${micro}) has no usage wrap-up gates`,
+        };
+      }
+    }
+  }
+
   return {
     content: output,
     candidates,
@@ -3349,8 +3374,11 @@ function main() {
     patchResults.set(module.id, {
       candidates: result.candidates,
       patched: result.patched,
-      skipped: false,
-      reason: null,
+      // A module may report an expected no-op (e.g. the target feature does
+      // not exist in this bundle version) as skipped so --assert-all treats
+      // it like a disabled module instead of a matcher failure.
+      skipped: result.skipped === true,
+      reason: result.skipped === true ? result.reason ?? "not applicable" : null,
     });
   }
 
