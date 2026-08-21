@@ -142,3 +142,27 @@ function hqw(){let k=tLn(),A=prior();let out={model:{id:"sonnet"},...(A.five_hou
   assert.equal(result.candidates, 2);
   assert.equal(result.patched, 0);
 });
+
+test("rejects a guard whose local was re-declared in a deeper block", () => {
+  // The inverse nesting raised on #8 round 3: the projection initializes the
+  // outer `A`, then a deeper block declares its own `A` around the guard. The
+  // bracket depth never goes negative, so the scope walk alone accepts it.
+  const shadowedInner = `
+function hqw(){let k=tLn(),A={...k.five_hour&&{five_hour:{used_percentage:k.five_hour.utilization*100,resets_at:k.five_hour.resets_at}},...k.seven_day&&{seven_day:{used_percentage:k.seven_day.utilization*100,resets_at:k.seven_day.resets_at}}};if(cond){let A=somethingElse();return{model:{id:"sonnet"},...(A.five_hour||A.seven_day)&&{rate_limits:A}}}return A}
+`;
+  const result = patchStatuslineRateLimitWindows(shadowedInner);
+  assert.equal(result.candidates, 2, "both shapes are still found");
+  assert.equal(result.patched, 0, "but the windows and the guard belong to different objects");
+  assert.equal(result.content, shadowedInner);
+});
+
+test("rejects a guard whose local was reassigned after the projection", () => {
+  // Not shadowing, but the same consequence: the projection's result is
+  // discarded before the guard reads the local.
+  const reassigned = `
+function hqw(){let k=tLn(),A={...k.five_hour&&{five_hour:{used_percentage:k.five_hour.utilization*100,resets_at:k.five_hour.resets_at}},...k.seven_day&&{seven_day:{used_percentage:k.seven_day.utilization*100,resets_at:k.seven_day.resets_at}}};A=recompute(A);return{model:{id:"sonnet"},...(A.five_hour||A.seven_day)&&{rate_limits:A}}}
+`;
+  const result = patchStatuslineRateLimitWindows(reassigned);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 0);
+});

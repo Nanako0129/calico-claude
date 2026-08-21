@@ -2376,7 +2376,23 @@ function patchStatuslineRateLimitWindows(content) {
     }
   }
 
-  if (!sharesPayloadBuilder || !projectionAssignsGuardLocal || leftProjectionScope) {
+  // The depth walk still permits the inverse nesting: the projection initializes
+  // an outer `A` and a deeper block declares its own `A` around the guard, which
+  // only increases depth. Rather than resolve bindings (this patcher has no
+  // AST), require that nothing reassigns the guard's local between the two
+  // anchors. A shadowing declaration is one such write, and so is a plain
+  // reassignment — both mean the guard does not read this projection.
+  const between = projectionEnd === -1 ? "" : content.slice(projectionEnd, guardIndex);
+  const guardLocalIsRebound = new RegExp(
+    `[^\\w$.!<>=+\\-*/%&|^]${guardLocal}=(?!=)`
+  ).test(between);
+
+  if (
+    !sharesPayloadBuilder ||
+    !projectionAssignsGuardLocal ||
+    leftProjectionScope ||
+    guardLocalIsRebound
+  ) {
     return { content: original, candidates, patched: 0 };
   }
   const projectionReplacement = `{${[
