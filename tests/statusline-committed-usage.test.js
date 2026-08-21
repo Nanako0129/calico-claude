@@ -54,6 +54,16 @@ function batchCommittedUsageFixture(source = committedUsageFixture) {
     );
 }
 
+function storageV5BatchFixture(source = committedUsageFixture) {
+  // 2.1.238 appends a fifth argument (the storage V5 handle) to the content
+  // builder call inside the batch wrapper:
+  // `ZJr([Zr],n,i.agentId,{...,messageId:wo.id},i.storageV5)`.
+  return batchCommittedUsageFixture(source).replace(
+    ",messageId:wo.id}),n),Kn=",
+    ",messageId:wo.id},i.storageV5),n),Kn="
+  );
+}
+
 const modelsUsedCompletionSignal =
   "function backgroundCompletionSignal(){let ie=BBg(s,e,g),de=Yns(ie,e,{...n,modelsUsed:_},{suppressTelemetry:re});__calicoRefreshAgentUsage(re,ie),Z0u(e,a9r(re),s);return de}";
 
@@ -398,6 +408,27 @@ test("matches the 2.1.236 batch tool-use destructured wrapper", () => {
   const { context, result } = loadCommittedFixture(source);
   const completed = context.query(usage(210, 31), "end_turn");
 
+  assert.match(
+    result.content,
+    /__calicoUsageState:\{committed:!1,usage:null\},\.\.\._&&\{advisorModel:_\},\.\.\.Ie!==void 0&&\{effort:Ie\}/
+  );
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(
+    evaluatePatchModule(
+      "statusline-committed-usage",
+      result.content + modelsUsedCompletionSignal
+    ),
+    null
+  );
+});
+
+test("matches the 2.1.238 batch wrapper with the appended storageV5 argument", () => {
+  const source = storageV5BatchFixture();
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+
+  assert.match(result.content, /messageId:wo\.id\},i\.storageV5\)/);
   assert.match(
     result.content,
     /__calicoUsageState:\{committed:!1,usage:null\},\.\.\._&&\{advisorModel:_\},\.\.\.Ie!==void 0&&\{effort:Ie\}/

@@ -197,6 +197,37 @@ Likely break signs:
 - a later agent turn retains the previous turn's input total instead of the latest one
 - the module reports `0` candidates or the verifier reports a missing refresh seam
 
+### remora client factory (`active-turn-prompt-id`, `compact-request-source`, `compact-body-policy`)
+
+These three remora adapters share one anchor: the async Anthropic client factory ("Zie") whose
+destructured parameter object owns `source` and `agentContext`. Each keys its rewrite on that factory
+so quota checks, token counts, and side queries stay outside the compact/active-turn namespace.
+
+Old bundle shapes we match:
+
+- 2.1.237 factory signature:
+  `async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i}){…}`
+- 2.1.237 header locals inside the factory body:
+  `…,c=<sanitizer>(i)?void 0:i,u=<extraHeaders>(),p={…,"X-Claude-Code-Session-Id":<sid>(),...u,…}`,
+  where `c` is the sanitized agent context, `u` the extra-header object, `p` the header literal, and
+  `...u,` the extra-header spread
+- 2.1.238 appends `,credentials:s` to the parameter object
+  (`…,source:o,agentContext:i,credentials:s}`). Because that consumes the `s` binding, every following
+  minified body local shifts by one letter: `c=…,u=…,p={` becomes `u=…,d=…,f={` and the spread `...u,`
+  becomes `...d,`. The header-object injection at the signature boundary (`compact-body-policy`) is
+  unaffected because it reads only the stable `o`/`n` parameters
+
+What we widened for 2.1.238:
+
+- the factory-signature matcher tolerates any further simple `,key:local` bindings after
+  `agentContext:i`, so appended destructured parameters do not drop the anchor
+- `active-turn-prompt-id` and `compact-request-source` capture the sanitized-context / extra-header /
+  header-object local names (and the extra-header spread name) instead of pinning `c`/`u`/`p`/`...u,`,
+  so a one-letter rename no longer silently skips the site. `compact-request-source` keeps the injected
+  IIFE parameter as the literal `u` because the verifier's wrap-needle matches on `((u)=>…`
+- `scripts/verify-patched-binary.ts` mirrors both widenings in its `compact-request-source` and
+  `compact-body-policy` structural checks so a patched 2.1.238 binary verifies
+
 ### `statusline-committed-usage`
 
 Intent:
@@ -217,6 +248,11 @@ Source of truth:
   is still the one built from a single bracketed block (`ueo([block],…)`) whose message carries no
   inline `usage:` — the two non-streaming fallback sites use `ueo(<var>.content,…)` plus
   `usage:B5e(…)` and stay outside the anchor
+- Claude Code 2.1.238 appends a fifth argument (the storage-V5 handle) to the content builder call:
+  `Gio([Ga],n,i.agentId,{requestId:Te??void 0,messageId:Gr.id},i.storageV5)` (2.1.237 had no fifth
+  argument). The batch-wrapper matcher accepts an optional trailing `,<identifier-or-member>` before
+  the content-builder call closes, so both 2.1.237 and 2.1.238 match and a further appended argument
+  will not break it again
 - production app state shallow-copies the wrapper before the terminal event; the shared object cell
   survives that copy, unlike the old primitive top-level boolean which remained stale `false`
 - the normal terminal `message_delta` mutation loop is the only path that can set `committed:!0`

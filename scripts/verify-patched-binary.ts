@@ -453,8 +453,12 @@ const CHECKS: Check[] = [
       }
       // Sanitize + compact header must be live code inside the Zie factory, not
       // merely present as string/comment text elsewhere in the bundle.
+      // 2.1.238 appends `,credentials:s` to the factory parameter object and
+      // shifts the extra-header local and header-object local by one letter
+      // (`u=…(),p={` → `d=…(),f={`); the signature tail and both locals are
+      // matched generically. The IIFE parameter stays the literal `u`.
       const ownedFactory =
-        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{(?:if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\})?let [\s\S]*?u=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\),p=\{[\s\S]*?"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
+        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{(?:if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\})?let [\s\S]*?[A-Za-z_$][\w$]*=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\),[A-Za-z_$][\w$]*=\{[\s\S]*?"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/;
       if (!ownedFactory.test(content)) {
         return "compact request-source sanitize/header inject is not owned by Zie factory";
       }
@@ -493,8 +497,10 @@ const CHECKS: Check[] = [
         [policyHelper, rewriteHelper, wrapHelper, stripHelper].join("\n") + "\n";
       const wrapInject =
         'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+      // 2.1.238 appends `,credentials:s` to the factory parameter object; the
+      // signature tail after `agentContext:i` is matched generically.
       const ownedFactory =
-        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/;
+        /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/;
       const factoryMatch = ownedFactory.exec(content);
       if (!factoryMatch || factoryMatch.index === undefined) {
         return "compact fetch wrap is not owned by the Zie client factory";
@@ -756,8 +762,11 @@ const CHECKS: Check[] = [
       );
       // 2.1.236+ batch tool-use destructured wrapper; see the matching
       // pattern in patch-claude-display.ts for the canonical/fallback split.
+      // 2.1.238 appends a fifth argument to the content builder call
+      // (`…messageId:Gr.id},i.storageV5)`), matched optionally so the patched
+      // 2.1.237 and 2.1.238 binaries both verify.
       const batchWrapperPattern = new RegExp(
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
         "g"
       );
       const wrapperMatches = [

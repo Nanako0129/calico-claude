@@ -25,6 +25,18 @@ async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agent
 async function Next(){}
 `;
 
+// 2.1.238 appends `,credentials:s` to the Zie parameter object, which consumes
+// the `s` binding and shifts the following minified locals by one letter
+// (`c=…,u=…,p={` → `u=…,d=…,f={`, and the header spread `...u,` → `...d,`).
+const fixture238 = fixture
+  .replace("source:o,agentContext:i}", "source:o,agentContext:i,credentials:cred}")
+  .replace("c=$pe(i)?void 0:i,u=kAi(),p={", "u=$pe(i)?void 0:i,d=kAi(),f={")
+  .replace('"X-Claude-Code-Session-Id":xt(),...u,', '"X-Claude-Code-Session-Id":xt(),...d,')
+  .replace(
+    '...c?.agentId&&{"x-claude-code-agent-id":bhi(c.agentId)},...c?.parentAgentId&&{"x-claude-code-parent-agent-id":bhi(c.parentAgentId)}};return p}',
+    '...u?.agentId&&{"x-claude-code-agent-id":bhi(u.agentId)},...u?.parentAgentId&&{"x-claude-code-parent-agent-id":bhi(u.parentAgentId)}};return f}'
+  );
+
 function runPatched(content, env = { REMORA_ACTIVE: "1" }) {
   const context = { process: { env: { ...env } } };
   vm.createContext(context);
@@ -119,6 +131,31 @@ test("composes with active-turn without dropping either header set", async () =>
   });
   assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
   assert.equal(mainHeaders["x-calico-request-source"], undefined);
+});
+
+test("owns the compact header on the 2.1.238 credentials/shifted-local shape", async () => {
+  const result = patchCompactRequestSource(fixture238);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+
+  const context = runPatched(result.content);
+  context.customHeaders = {
+    "X-Calico-Request-Source": "compact",
+    "x-keep": "1",
+  };
+  const compactHeaders = await context.Zie({
+    source: "compact",
+    agentContext: { agentType: "main" },
+  });
+  assert.equal(compactHeaders["x-calico-request-source"], "compact");
+  assert.equal(compactHeaders["x-keep"], "1");
+
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main" },
+  });
+  assert.equal(mainHeaders["x-calico-request-source"], undefined);
+  assert.equal(mainHeaders["X-Calico-Request-Source"], undefined);
 });
 
 test("fails atomically when the client factory anchor is missing", () => {

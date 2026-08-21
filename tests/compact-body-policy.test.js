@@ -16,6 +16,14 @@ async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agent
 async function Next(){}
 `;
 
+// 2.1.238 appends `,credentials:s` to the Zie parameter object. The body-policy
+// wrap is injected at the signature boundary and reads only `o`/`n`, so the
+// extra destructured binding is all that must be tolerated here.
+const fixture238 = fixture.replace(
+  "source:o,agentContext:i}",
+  "source:o,agentContext:i,credentials:cred}"
+);
+
 function runPatched(content, env = { REMORA_ACTIVE: "1" }) {
   const context = {
     process: { env: { ...env } },
@@ -165,6 +173,21 @@ test("composes with compact-request-source header module", async () => {
   const rewritten = JSON.parse(calls[0].init.body);
   assert.equal(rewritten.output_config.effort, "medium");
   assert.deepEqual(rewritten.thinking, { type: "adaptive" });
+});
+
+test("wraps and rewrites on the 2.1.238 credentials signature shape", async () => {
+  const result = patchCompactBodyPolicy(fixture238);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+
+  const context = runPatched(result.content);
+  const { calls } = await callWrappedFetch(context, "compact", {
+    model: "gpt-5.6-sol",
+    output_config: { effort: "xhigh" },
+    thinking: { type: "adaptive" },
+  });
+  const rewritten = JSON.parse(calls[0].init.body);
+  assert.equal(rewritten.output_config.effort, "medium");
 });
 
 test("fails atomically when Zie anchor is missing", () => {

@@ -27,6 +27,18 @@ async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agent
 async function Next(){}
 `;
 
+// 2.1.238 appends `,credentials:s` to the Zie parameter object, which consumes
+// the `s` binding and shifts the following minified locals by one letter
+// (`c=…,u=…,p={` → `u=…,d=…,f={`, and the header spread `...u,` → `...d,`).
+const fixture238 = fixture
+  .replace("source:o,agentContext:i}", "source:o,agentContext:i,credentials:cred}")
+  .replace("c=$pe(i)?void 0:i,u=kAi(),p={", "u=$pe(i)?void 0:i,d=kAi(),f={")
+  .replace('"X-Claude-Code-Session-Id":xt(),...u,', '"X-Claude-Code-Session-Id":xt(),...d,')
+  .replace(
+    '...c?.agentId&&{"x-claude-code-agent-id":bhi(c.agentId)},...c?.parentAgentId&&{"x-claude-code-parent-agent-id":bhi(c.parentAgentId)}};return p}',
+    '...u?.agentId&&{"x-claude-code-agent-id":bhi(u.agentId)},...u?.parentAgentId&&{"x-claude-code-parent-agent-id":bhi(u.parentAgentId)}};return f}'
+  );
+
 test("freezes an agent prompt id and emits it only for remora", async () => {
   const result = patchActiveTurnPromptIdentity(fixture);
   assert.equal(result.candidates, 2);
@@ -108,6 +120,30 @@ test("plain Calico launch does not mutate agent context", () => {
   const agent = { agentType: "subagent", agentId: "agent-a" };
   context.iK(agent, () => undefined);
   assert.equal(agent.__calicoPromptId, undefined);
+});
+
+test("emits the prompt id on the 2.1.238 credentials/shifted-local shape", async () => {
+  const result = patchActiveTurnPromptIdentity(fixture238);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
+
+  const context = { process: { env: { REMORA_ACTIVE: "1" } } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
+  assert.equal(mainHeaders["x-calico-active-turn-version"], "1");
+
+  const auxHeaders = await context.Zie({
+    source: "quota_check",
+    agentContext: { agentType: "main" },
+  });
+  assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
 });
 
 test("fails atomically when either required anchor is missing", () => {

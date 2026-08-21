@@ -2089,8 +2089,14 @@ function patchStatuslineCommittedUsage(content) {
   // bracketed block (`ueo([ia],…)`) and whose message carries no `usage:`;
   // the two fallback sites use `ueo(<var>.content,…)` plus `usage:B5e(…)`
   // and cannot match this shape.
+  //
+  // 2.1.238 appends a fifth argument to the content builder call
+  // (`Gio([Ga],n,i.agentId,{requestId:Te??void 0,messageId:Gr.id},i.storageV5)`),
+  // so the trailing `,<identifier-or-member>` is matched optionally to keep both
+  // 2.1.237 (no fifth arg) and 2.1.238 (one appended arg) matching, and to
+  // tolerate a further appended argument without another edit.
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
@@ -2890,7 +2896,7 @@ function patchActiveTurnPromptIdentity(content) {
   // Main-session requests use the live prompt id; agent requests prefer the
   // value frozen at their AsyncLocalStorage entry point.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -2908,19 +2914,33 @@ function patchActiveTurnPromptIdentity(content) {
       continue;
     }
 
+    // 2.1.238 appends `,credentials:s` to the parameter object, which consumes
+    // the `s` binding and shifts every following minified local by one letter
+    // (2.1.237 `c=…,u=…,p={` → 2.1.238 `u=…,d=…,f={`, and the header spread
+    // `...u,` → `...d,`). Capture the three local names and the extra-header
+    // spread name instead of pinning `c`/`u`/`p`/`u`, so a future rename does
+    // not silently drop this site.
     const localsPattern =
-      /,c=([A-Za-z_$][\w$]*)\(i\)\?void 0:i,u=([A-Za-z_$][\w$]*)\(\),p=\{/;
+      /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(i\)\?void 0:i,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/;
     const localsMatch = segment.match(localsPattern);
     if (!localsMatch) {
       continue;
     }
+    const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const contextLocal = localsMatch[1];
+    const sanitizer = localsMatch[2];
+    const extraHeadersLocal = localsMatch[3];
+    const extraHeadersFactory = localsMatch[4];
+    const headerObjectLocal = localsMatch[5];
 
     let nextSegment = segment.replace(
       localsPattern,
-      `,c=$1(i)?void 0:i,__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(o),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(c?.__calicoPromptId??${promptGetter}()):void 0,u=$2(),p={`
+      `,${contextLocal}=${sanitizer}(i)?void 0:i,__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(o),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetter}()):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
     );
     nextSegment = nextSegment.replace(
-      /(\"X-Claude-Code-Session-Id\":[A-Za-z_$][\w$]*\(\),)(\.\.\.u,)/,
+      new RegExp(
+        `("X-Claude-Code-Session-Id":[A-Za-z_$][\\w$]*\\(\\),)(\\.\\.\\.${escapeRegExp(extraHeadersLocal)},)`
+      ),
       '$1$2...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},'
     );
     if (nextSegment === segment) {
@@ -2967,7 +2987,7 @@ function patchCompactRequestSource(content) {
 
   // Same Zie-shaped client factory active-turn targets: owns source + agentContext.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -2989,9 +3009,14 @@ function patchCompactRequestSource(content) {
     // request-source header from custom headers so ANTHROPIC_CUSTOM_HEADERS
     // cannot spoof compact. Re-add the lowercase value only for true compact.
     // Single let-binding only — reassignment would be a SyntaxError in `let`.
+    // 2.1.238's `credentials:s` rename shifts the extra-header local and the
+    // header-object local (2.1.237 `u=…(),p={` → 2.1.238 `d=…(),f={`), so both
+    // names are captured. The IIFE parameter stays the literal `u` regardless,
+    // because the wrap-needle lookup below matches on `((u)=>…`.
     let nextSegment = segment.replace(
-      /,u=([A-Za-z_$][\w$]*)\(\),p=\{/,
-      ',u=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)($1()),p={'
+      /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/,
+      (full, extraLocal, factory, headerLocal) =>
+        `,${extraLocal}=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(${factory}()),${headerLocal}={`
     );
     // Inject after Session-Id + custom-header spread (...u,). Works with or
     // without a subsequent active-turn __calicoPromptId spread.
@@ -3060,7 +3085,7 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
 
   // Same Zie-shaped client factory: wrap fetchOverride when this client is for compact.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
