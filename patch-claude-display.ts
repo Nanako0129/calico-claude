@@ -2896,7 +2896,7 @@ function patchActiveTurnPromptIdentity(content) {
   // Main-session requests use the live prompt id; agent requests prefer the
   // value frozen at their AsyncLocalStorage entry point.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -2920,13 +2920,17 @@ function patchActiveTurnPromptIdentity(content) {
     // `...u,` → `...d,`). Capture the three local names and the extra-header
     // spread name instead of pinning `c`/`u`/`p`/`u`, so a future rename does
     // not silently drop this site.
-    const localsPattern =
-      /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(i\)\?void 0:i,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/;
+    const sourceParam = clientStartMatch[2];
+    const contextParam = clientStartMatch[3];
+    const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const contextRe = escapeRegExp(contextParam);
+    const localsPattern = new RegExp(
+      `,([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(${contextRe}\\)\\?void 0:${contextRe},([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(\\),([A-Za-z_$][\\w$]*)=\\{`
+    );
     const localsMatch = segment.match(localsPattern);
     if (!localsMatch) {
       continue;
     }
-    const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const contextLocal = localsMatch[1];
     const sanitizer = localsMatch[2];
     const extraHeadersLocal = localsMatch[3];
@@ -2935,7 +2939,7 @@ function patchActiveTurnPromptIdentity(content) {
 
     let nextSegment = segment.replace(
       localsPattern,
-      `,${contextLocal}=${sanitizer}(i)?void 0:i,__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(o),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetter}()):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
+      `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetter}()):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
     );
     nextSegment = nextSegment.replace(
       new RegExp(
@@ -2987,7 +2991,7 @@ function patchCompactRequestSource(content) {
 
   // Same Zie-shaped client factory active-turn targets: owns source + agentContext.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -3020,9 +3024,10 @@ function patchCompactRequestSource(content) {
     );
     // Inject after Session-Id + custom-header spread (...u,). Works with or
     // without a subsequent active-turn __calicoPromptId spread.
+    const sourceParam = clientStartMatch[2];
     nextSegment = nextSegment.replace(
       /("X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,)/,
-      '$1...process.env.REMORA_ACTIVE==="1"&&o==="compact"&&{"x-calico-request-source":"compact"},'
+      `$1...process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"&&{"x-calico-request-source":"compact"},`
     );
     if (nextSegment === segment) {
       continue;
@@ -3081,11 +3086,12 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
 
   let candidates = 0;
   let patched = 0;
+  let injectedWrap = null;
   let output = content;
 
   // Same Zie-shaped client factory: wrap fetchOverride when this client is for compact.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -3095,14 +3101,16 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     const segment = output.slice(start, end);
     if (
       !segment.includes('"X-Claude-Code-Session-Id"') ||
-      segment.includes("__calicoCompactWrapFetch(n)")
+      segment.includes("__calicoCompactWrapFetch(")
     ) {
       continue;
     }
 
     candidates += 1;
+    const fetchOverrideParam = clientStartMatch[1];
+    const sourceParam = clientStartMatch[2];
     const inject =
-      'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+      `if(process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"){${fetchOverrideParam}=__calicoCompactWrapFetch(${fetchOverrideParam})}`;
     const nextSegment =
       clientStartMatch[0] + inject + segment.slice(clientStartMatch[0].length);
     if (nextSegment === segment) {
@@ -3110,17 +3118,18 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     }
 
     patched += 1;
+    injectedWrap = inject;
     output = output.slice(0, start) + nextSegment + output.slice(end);
     clientStartPattern.lastIndex = start + nextSegment.length;
   }
 
-  if (candidates !== 1 || patched !== 1) {
+  if (candidates !== 1 || patched !== 1 || injectedWrap === null) {
     return { content: original, candidates, patched: 0 };
   }
 
-  // Inject helpers once immediately before the patched Zie factory.
-  const wrapNeedle =
-    'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+  // Inject helpers once immediately before the patched Zie factory. The wrap
+  // needle carries the captured source/fetchOverride locals for this bundle.
+  const wrapNeedle = injectedWrap;
   const wrapIndex = output.indexOf(wrapNeedle);
   if (wrapIndex === -1) {
     return { content: original, candidates, patched: 0 };

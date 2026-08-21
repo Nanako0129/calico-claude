@@ -6,6 +6,7 @@ const {
   patchCompactBodyPolicy,
   patchCompactRequestSource,
 } = require("../patch-claude-display.ts");
+const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
 // Zie shape matches compact-request-source / active-turn anchors (Session-Id is a call).
 // Returns headers plus the (possibly wrapped) fetch for body-rewrite assertions.
@@ -190,10 +191,39 @@ test("wraps and rewrites on the 2.1.238 credentials signature shape", async () =
   assert.equal(rewritten.output_config.effort, "medium");
 });
 
+// linux-arm64 and windows-arm64 builds of 2.1.238 swap the minified locals
+// for model/fetchOverride (`model:n,fetchOverride:r`). The wrap must follow
+// the captured fetchOverride local; a pinned `n` would wrap the model string.
+const fixtureSwapped = fixture238
+  .replace("model:r,fetchOverride:n,", "model:n,fetchOverride:r,")
+  .replace("return{headers:p,fetch:n}", "return{headers:p,fetch:r}");
+
+test("wraps the swapped fetchOverride local on cross-platform builds", async () => {
+  const result = patchCompactBodyPolicy(fixtureSwapped);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("compact-body-policy", result.content), null);
+  assert.match(
+    result.content,
+    /&&o==="compact"\)\{r=__calicoCompactWrapFetch\(r\)\}/
+  );
+
+  const context = runPatched(result.content);
+  const { calls } = await callWrappedFetch(context, "compact", {
+    model: "gpt-5.6-sol",
+    output_config: { effort: "xhigh" },
+  });
+  const rewritten = JSON.parse(calls[0].init.body);
+  assert.equal(rewritten.output_config.effort, "medium");
+  assert.equal(rewritten.model, "gpt-5.6-sol");
+});
+
 test("fails atomically when Zie anchor is missing", () => {
+  // Rename the destructured property itself; renaming only the minified
+  // local must NOT break the anchor (that varies per platform build).
   const broken = fixture.replace(
     "source:o,agentContext:i",
-    "source:querySource,agentContext:i"
+    "src:o,agentContext:i"
   );
   const result = patchCompactBodyPolicy(broken);
   assert.equal(result.patched, 0);

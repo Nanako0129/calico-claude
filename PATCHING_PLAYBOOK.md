@@ -214,8 +214,8 @@ Old bundle shapes we match:
 - 2.1.238 appends `,credentials:s` to the parameter object
   (`…,source:o,agentContext:i,credentials:s}`). Because that consumes the `s` binding, every following
   minified body local shifts by one letter: `c=…,u=…,p={` becomes `u=…,d=…,f={` and the spread `...u,`
-  becomes `...d,`. The header-object injection at the signature boundary (`compact-body-policy`) is
-  unaffected because it reads only the stable `o`/`n` parameters
+  becomes `...d,`. The header-object injection at the signature boundary (`compact-body-policy`)
+  reads the `source`/`fetchOverride` parameter locals — which are NOT stable either; see below
 
 What we widened for 2.1.238:
 
@@ -227,6 +227,27 @@ What we widened for 2.1.238:
   IIFE parameter as the literal `u` because the verifier's wrap-needle matches on `((u)=>…`
 - `scripts/verify-patched-binary.ts` mirrors both widenings in its `compact-request-source` and
   `compact-body-policy` structural checks so a patched 2.1.238 binary verifies
+
+Minified locals differ ACROSS PLATFORMS for the same version — matchers must never pin one:
+
+- the 2.1.238 macos-arm64 bundle destructures the factory as
+  `async function Tme({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i,credentials:s})`,
+  while the linux-arm64 (`_me`) and windows-arm64 (`bme`) bundles of the SAME version swap the
+  `model`/`fetchOverride` locals: `{…,model:n,fetchOverride:r,…}`. The minifier assigns local names
+  per platform build, so a matcher that pins any destructured local (the original `model:r,
+  fetchOverride:n,source:o,agentContext:i` pin) passes CI on macos/linux-x64/windows-x64 and reports
+  0 candidates on the arm64 Linux/Windows builds of the identical upstream release
+- the durable rule: anchor on the destructured PROPERTY names (`apiKey:`, `model:`, `source:`, …),
+  capture every local binding, and reuse captures via backreference. Injected code that must name a
+  local (the `compact-body-policy` fetchOverride wrap, the `active-turn-prompt-id` source-classifier
+  call and sanitized-context rebuild) derives the name from the capture, never from a literal
+- `scripts/verify-patched-binary.ts` applies the same rule: its factory checks capture
+  `fetchOverride`/`source` and backreference them (`\2==="compact"`, `\1=__calicoCompactWrapFetch(\1)`),
+  and the body-policy wrap-inject count matches by shape instead of the exact `o`/`n` string
+- regression coverage: the `model:n,fetchOverride:r` swapped-locals shape is tested in
+  `tests/active-turn-prompt-id.test.js`, `tests/compact-request-source.test.js`, and
+  `tests/compact-body-policy.test.js`, plus a composed renamed-`source` fixture that keeps the
+  verifier's header-order check from re-pinning `o`
 
 ### `statusline-committed-usage`
 

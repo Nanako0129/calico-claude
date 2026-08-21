@@ -146,6 +146,32 @@ test("emits the prompt id on the 2.1.238 credentials/shifted-local shape", async
   assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
 });
 
+// linux-arm64 and windows-arm64 builds of 2.1.238 swap the minified locals
+// for model/fetchOverride (`model:n,fetchOverride:r`) in the same factory;
+// the signature matcher captures locals instead of pinning them.
+const fixtureSwapped = fixture238.replace(
+  "model:r,fetchOverride:n,",
+  "model:n,fetchOverride:r,"
+);
+
+test("emits the prompt id when model/fetchOverride locals are swapped", async () => {
+  const result = patchActiveTurnPromptIdentity(fixtureSwapped);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
+
+  const context = { process: { env: { REMORA_ACTIVE: "1" } } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
+  assert.equal(mainHeaders["x-calico-active-turn-version"], "1");
+});
+
 test("fails atomically when either required anchor is missing", () => {
   const withoutAgentBoundary = fixture.replace(
     'function iK(e,t){return Pkr.run(e,t)}',
