@@ -59,6 +59,31 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 - If you have to match a function body, match the semantic shape of that body, not its symbol names.
 - Only widen a matcher as much as needed to survive bundle churn.
 - When a patch has multiple known upstream shapes, keep them as separate targeted branches instead of one giant regex.
+- **Injected code must never name a minified local literally.** Use a captured group, or a name this
+  repo invents (`__calico*`, `__cc*`). A pinned local in a matcher merely fails to match; a pinned
+  local in an injection is worse, because it can match and then operate on the wrong binding. In
+  2.1.238 `compact-body-policy` injected around a hardcoded `n`, which is `fetchOverride` on
+  macos/linux-x64/windows-x64 and `model` on the arm64 Linux and Windows builds — had the matcher
+  succeeded there, it would have wrapped the model string as if it were a fetch function. The matcher
+  failing was luck, not protection.
+- **A captured identifier must never be interpolated into a replacement string.** `$` sequences
+  expand there — `$1`-`$9` and `$&`/`$$`/`` $` ``/`$'` against a regex searchValue, and `$&`/`$$`/
+  `` $` ``/`$'` even against a plain string one — and this bundle's identifier grammar
+  (`[A-Za-z_$][\w$]*`) admits `$`, so a minified name can carry `$$` or `$1`-`$9`; it cannot carry
+  the others, since `&`, `` ` `` and `'` are not identifier characters. A source local named
+  `$1e` turned an injected classifier call into a reference to the wrong capture group instead of the
+  real parameter. Build the replacement text as usual, then pass it to `.replace` through a callback
+  (`.replace(pattern, () => text)`) so it is emitted verbatim; a callback's return value never goes
+  through `$` substitution.
+- **Minified locals differ across platforms for the same version.** The same rule that protects
+  against upstream rebuilds also has to hold across the five release platforms; a matcher validated
+  on one bundle proves nothing about the others. Verify against every platform's bundle before
+  claiming a module is fixed. Extracting a bundle is static — no need to run the binary — so any
+  platform can be checked from any machine.
+- **A falling candidate count is silent.** `--assert-all` only fails a module at `patched == 0`, so a
+  matcher that quietly stops matching one of its sites still ships. Four separate defects have hidden
+  this way. When a count changes, find out why before assuming the bundle changed rather than the
+  matcher.
 
 ## Native Patching Flow
 
@@ -197,6 +222,79 @@ Likely break signs:
 - a later agent turn retains the previous turn's input total instead of the latest one
 - the module reports `0` candidates or the verifier reports a missing refresh seam
 
+### remora client factory (`active-turn-prompt-id`, `compact-request-source`, `compact-body-policy`)
+
+These three remora adapters share one anchor: the async Anthropic client factory ("Zie") whose
+destructured parameter object owns `source` and `agentContext`. Each keys its rewrite on that factory
+so quota checks, token counts, and side queries stay outside the compact/active-turn namespace.
+
+Old bundle shapes we match:
+
+- 2.1.237 factory signature:
+  `async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i}){…}`
+- 2.1.237 header locals inside the factory body:
+  `…,c=<sanitizer>(i)?void 0:i,u=<extraHeaders>(),p={…,"X-Claude-Code-Session-Id":<sid>(),...u,…}`,
+  where `c` is the sanitized agent context, `u` the extra-header object, `p` the header literal, and
+  `...u,` the extra-header spread
+- 2.1.238 appends `,credentials:s` to the parameter object
+  (`…,source:o,agentContext:i,credentials:s}`). Because that consumes the `s` binding, every following
+  minified body local shifts by one letter: `c=…,u=…,p={` becomes `u=…,d=…,f={` and the spread `...u,`
+  becomes `...d,`. The header-object injection at the signature boundary (`compact-body-policy`)
+  reads the `source`/`fetchOverride` parameter locals — which are NOT stable either; see below
+
+What we widened for 2.1.238:
+
+- the factory-signature matcher tolerates any further simple `,key:local` bindings after
+  `agentContext:i`, so appended destructured parameters do not drop the anchor
+- `active-turn-prompt-id` and `compact-request-source` capture the sanitized-context / extra-header /
+  header-object local names (and the extra-header spread name) instead of pinning `c`/`u`/`p`/`...u,`,
+  so a one-letter rename no longer silently skips the site. `compact-request-source` keeps the injected
+  IIFE parameter as the literal `u` because the verifier's wrap-needle matches on `((u)=>…`
+- `scripts/verify-patched-binary.ts` mirrors both widenings in its `compact-request-source` and
+  `compact-body-policy` structural checks so a patched 2.1.238 binary verifies
+
+Minified locals differ ACROSS PLATFORMS for the same version — matchers must never pin one:
+
+- the 2.1.238 macos-arm64 bundle destructures the factory as
+  `async function Tme({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i,credentials:s})`,
+  while the linux-arm64 (`_me`) and windows-arm64 (`bme`) bundles of the SAME version swap the
+  `model`/`fetchOverride` locals: `{…,model:n,fetchOverride:r,…}`. The minifier assigns local names
+  per platform build, so a matcher that pins any destructured local (the original `model:r,
+  fetchOverride:n,source:o,agentContext:i` pin) passes CI on macos/linux-x64/windows-x64 and reports
+  0 candidates on the arm64 Linux/Windows builds of the identical upstream release
+- the durable rule: anchor on the destructured PROPERTY names (`apiKey:`, `model:`, `source:`, …),
+  capture every local binding, and reuse captures via backreference. Injected code that must name a
+  local (the `compact-body-policy` fetchOverride wrap, the `active-turn-prompt-id` source-classifier
+  call and sanitized-context rebuild) derives the name from the capture, never from a literal
+- `scripts/verify-patched-binary.ts` applies the same rule: its factory checks capture
+  `fetchOverride`/`source` and backreference them (`\2==="compact"`, `\1=__calicoCompactWrapFetch(\1)`),
+  and the body-policy wrap-inject count matches by shape instead of the exact `o`/`n` string
+- regression coverage: the `model:n,fetchOverride:r` swapped-locals shape is tested in
+  `tests/active-turn-prompt-id.test.js`, `tests/compact-request-source.test.js`, and
+  `tests/compact-body-policy.test.js`, plus a composed renamed-`source` fixture that keeps the
+  verifier's header-order check from re-pinning `o`
+
+The same cross-platform local swap also hit `custom-context-window`, and there the
+`scripts/verify-patched-binary.ts` MARKER — not just the patcher — embedded a minified local:
+
+- the effective-window function is `function NAME(e,t){let A=Math.min(F(e),G),B=H()?t:void 0,{window:C}=I(e,B);return C-A}`.
+  On macos-arm64/linux-x64/windows-x64 the reserve local A is `r` and the ctx local B is `n`
+  (`return o-r`); on linux-arm64 and windows-arm64 they are swapped (A=`n`, B=`r`, `return o-n`).
+  The patcher pinned `let r=Math.min(...),n=...;return o-r`, so it matched 4/4 candidates on the
+  three non-arm64 platforms but only 3/4 on the two arm64 builds. Because `patched === candidates`,
+  `--assert-all` did NOT catch it — a silent candidate-count drop, the same failure shape that hid
+  the thinking-streaming regression. The patcher now captures the reserve/ctx/window locals and
+  backreferences the ctx local inside `I(e,B)`
+- the verifier's `custom-context-window` check listed the literal marker `CALICO_MODEL_CONTEXT_WINDOWS?o:o-r`.
+  After the patcher fix, arm64 emits `?o:o-n`, so the pinned marker failed verification (this is
+  where CI actually broke — on the verifier, not the patcher). A verifier marker is a matcher too:
+  it must anchor on structure, never on a minified local. The check now uses
+  `/CALICO_MODEL_CONTEXT_WINDOWS\?([A-Za-z_$][\w$]*):\1-[A-Za-z_$][\w$]*/`, backreferencing the
+  window local and accepting any reserve local
+- regression coverage: the swapped `let n=Math.min(...),r=...;return w-n` shape (window local also
+  renamed to `w`) is tested in `tests/statusline-committed-usage.test.js`, asserting patched 4/4,
+  the `?w:w-n` gate, and verifier acceptance
+
 ### `statusline-committed-usage`
 
 Intent:
@@ -217,6 +315,11 @@ Source of truth:
   is still the one built from a single bracketed block (`ueo([block],…)`) whose message carries no
   inline `usage:` — the two non-streaming fallback sites use `ueo(<var>.content,…)` plus
   `usage:B5e(…)` and stay outside the anchor
+- Claude Code 2.1.238 appends a fifth argument (the storage-V5 handle) to the content builder call:
+  `Gio([Ga],n,i.agentId,{requestId:Te??void 0,messageId:Gr.id},i.storageV5)` (2.1.237 had no fifth
+  argument). The batch-wrapper matcher accepts an optional trailing `,<identifier-or-member>` before
+  the content-builder call closes, so both 2.1.237 and 2.1.238 match and a further appended argument
+  will not break it again
 - production app state shallow-copies the wrapper before the terminal event; the shared object cell
   survives that copy, unlike the old primitive top-level boolean which remained stale `false`
 - the normal terminal `message_delta` mutation loop is the only path that can set `committed:!0`

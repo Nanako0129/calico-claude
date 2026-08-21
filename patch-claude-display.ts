@@ -256,7 +256,12 @@ function patchWriteCreateDiffColors(content) {
       continue;
     }
 
-    const nextCreateSegment = createSegment.replace(before, after);
+    // `after` interpolates captured minified locals (fileVar, contentVar,
+    // styleVar, …), which may themselves contain `$`. A callback return value
+    // is emitted verbatim; passing `after` as a plain string here would let
+    // String.replace's `$&`/`$$` expansion corrupt it if a captured name ever
+    // contains one of those sequences.
+    const nextCreateSegment = createSegment.replace(before, () => after);
     if (nextCreateSegment !== createSegment) {
       patched += 1;
       output = output.slice(0, createStart) + nextCreateSegment + output.slice(updateStart);
@@ -942,8 +947,11 @@ function patchThinkingStreaming(content) {
       };
     }
 
+    // `after` interpolates captured event/setter/helper locals, so it must
+    // reach the string engine only through a callback — a plain-string 2nd
+    // argument would let `$$`/`$&` in a captured name expand.
     return {
-      segment: segment.replace(before, after),
+      segment: segment.replace(before, () => after),
       changed: true,
     };
   };
@@ -1406,7 +1414,9 @@ function patchThinkingStreaming(content) {
           for (const [before, after] of wg6Replacements) {
             if (nextWg6Segment.includes(before)) {
               candidates += 1;
-              nextWg6Segment = nextWg6Segment.replace(before, after);
+              // `after` interpolates captured wg6 locals; go through a
+              // callback so `$$`/`$&` inside a captured name is not expanded.
+              nextWg6Segment = nextWg6Segment.replace(before, () => after);
               if (nextWg6Segment.includes(after)) {
                 patched += 1;
               }
@@ -1940,14 +1950,18 @@ function patchCustomContextWindows(content) {
   // Claude's stock pipeline subtracts an output reserve and may precompute at
   // a separate buffer fraction. In opt-in Calico mode, use the raw mapped
   // window and the explicit percentage as the single compact boundary.
+  // The reserve local (Math.min result) and the ctx local are swapped on some
+  // platform builds of the same version (arm64: `let n=Math.min(...),r=...`
+  // → `return o-n`; elsewhere `let r=Math.min(...),n=...` → `return o-r`), so
+  // capture the window and reserve locals instead of pinning `o`/`r`.
   const effectiveWindowPattern =
-    /(function [A-Za-z_$][\w$]*\(e,t\)\{let r=Math\.min\([A-Za-z_$][\w$]*\(e\),[A-Za-z_$][\w$]*\),n=[A-Za-z_$][\w$]*\(\)\?t:void 0,\{window:o\}=[A-Za-z_$][\w$]*\(e,n\);return )(o-r)(\})/g;
+    /(function [A-Za-z_$][\w$]*\(e,t\)\{let ([A-Za-z_$][\w$]*)=Math\.min\([A-Za-z_$][\w$]*\(e\),[A-Za-z_$][\w$]*\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\)\?t:void 0,\{window:([A-Za-z_$][\w$]*)\}=[A-Za-z_$][\w$]*\(e,\3\);return )(\4-\2)(\})/g;
   output = output.replace(
     effectiveWindowPattern,
-    (full, prefix, originalReturn, suffix) => {
+    (full, prefix, reserveLocal, ctxLocal, windowLocal, originalReturn, suffix) => {
       candidates += 1;
       patched += 1;
-      return `${prefix}process.env.CALICO_MODEL_CONTEXT_WINDOWS?o:${originalReturn}${suffix}`;
+      return `${prefix}process.env.CALICO_MODEL_CONTEXT_WINDOWS?${windowLocal}:${originalReturn}${suffix}`;
     }
   );
 
@@ -2121,12 +2135,16 @@ function patchBackgroundAgentUsage(content) {
   const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),__calicoRefreshAgentUsage(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
   const completionRefresh = `__calicoRefreshAgentUsage(${progressMatch[1]},${completionResult}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
 
-  let output = original.replace(trackerPattern, trackerReplacement);
-  output = output.replace(accountingPattern, eventReplacement);
-  output = output.replace(progressPattern, progressReplacement);
+  // Every *Replacement string below interpolates captured minified locals
+  // (trackerName, eventVar, usageVar, progressMatch[...], …), so each must
+  // reach .replace only via a callback — a plain-string 2nd argument would
+  // let `$$`/`$&`/`$1`-`$9` in a captured name expand against these regexes.
+  let output = original.replace(trackerPattern, () => trackerReplacement);
+  output = output.replace(accountingPattern, () => eventReplacement);
+  output = output.replace(progressPattern, () => progressReplacement);
   output = output.replace(
     completionMatch.match[0],
-    completionMatch.match[0] + completionRefresh
+    () => completionMatch.match[0] + completionRefresh
   );
 
   if (
@@ -2164,8 +2182,14 @@ function patchStatuslineCommittedUsage(content) {
   // bracketed block (`ueo([ia],…)`) and whose message carries no `usage:`;
   // the two fallback sites use `ueo(<var>.content,…)` plus `usage:B5e(…)`
   // and cannot match this shape.
+  //
+  // 2.1.238 appends a fifth argument to the content builder call
+  // (`Gio([Ga],n,i.agentId,{requestId:Te??void 0,messageId:Gr.id},i.storageV5)`),
+  // so the trailing `,<identifier-or-member>` is matched optionally to keep both
+  // 2.1.237 (no fifth arg) and 2.1.238 (one appended arg) matching, and to
+  // tolerate a further appended argument without another edit.
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
@@ -2397,11 +2421,14 @@ function patchStatuslineCommittedUsage(content) {
   const selectorMatch = selectorMatches[0];
   const selectorReplacement = `${selectorMatch[1]}=${reducerName}(__calicoStatuslineMessages(${selectorMatch[2]})),${selectorMatch[3]}=${selectorMatch[4]}(${selectorMatch[5]},${selectorMatch[6]}())`;
 
-  let output = original.replace(wrapperMatch.match[0], wrapperReplacement);
-  output = output.replace(terminalPattern, terminalReplacement);
+  // wrapperReplacement/terminalReplacement/cloneSyncReplacement interpolate
+  // captured minified locals (terminalItem, terminalArray, cloneSyncSource,
+  // …); route them through callbacks so a captured `$$`/`$&` cannot expand.
+  let output = original.replace(wrapperMatch.match[0], () => wrapperReplacement);
+  output = output.replace(terminalPattern, () => terminalReplacement);
   let cloneIndex = 0;
   output = output.replace(cloneRegistrationPattern, () => cloneReplacements[cloneIndex++]);
-  output = output.replace(cloneSyncPattern, cloneSyncReplacement);
+  output = output.replace(cloneSyncPattern, () => cloneSyncReplacement);
 
   const selectorOutputMatch = [...output.matchAll(selectorPattern)][0];
   const selectorIndex = selectorOutputMatch?.index ?? -1;
@@ -2412,7 +2439,7 @@ function patchStatuslineCommittedUsage(content) {
 
   output =
     output.slice(0, functionStart) + accountingHelper + output.slice(functionStart);
-  output = output.replace(selectorPattern, selectorReplacement);
+  output = output.replace(selectorPattern, () => selectorReplacement);
 
   if (
     output.split(wrapperReplacement).length - 1 !== 1 ||
@@ -2550,8 +2577,11 @@ function patchStatuslineRateLimitWindows(content) {
     .join(",")}}`;
   const guardReplacement = `...Object.keys(${guardLocal}).length>0&&{rate_limits:${guardLocal}}`;
 
-  let output = original.replace(projectionPattern, projectionReplacement);
-  output = output.replace(guardPattern, guardReplacement);
+  // projectionReplacement/guardReplacement interpolate the captured
+  // projectionLocal/guardLocal names; use callbacks so a captured `$1`-style
+  // name cannot be read back as a backreference against these regexes.
+  let output = original.replace(projectionPattern, () => projectionReplacement);
+  output = output.replace(guardPattern, () => guardReplacement);
 
   if (
     output.split(projectionReplacement).length - 1 !== 1 ||
@@ -2965,7 +2995,7 @@ function patchActiveTurnPromptIdentity(content) {
   // Main-session requests use the live prompt id; agent requests prefer the
   // value frozen at their AsyncLocalStorage entry point.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -2983,19 +3013,44 @@ function patchActiveTurnPromptIdentity(content) {
       continue;
     }
 
-    const localsPattern =
-      /,c=([A-Za-z_$][\w$]*)\(i\)\?void 0:i,u=([A-Za-z_$][\w$]*)\(\),p=\{/;
+    // 2.1.238 appends `,credentials:s` to the parameter object, which consumes
+    // the `s` binding and shifts every following minified local by one letter
+    // (2.1.237 `c=…,u=…,p={` → 2.1.238 `u=…,d=…,f={`, and the header spread
+    // `...u,` → `...d,`). Capture the three local names and the extra-header
+    // spread name instead of pinning `c`/`u`/`p`/`u`, so a future rename does
+    // not silently drop this site.
+    const sourceParam = clientStartMatch[2];
+    const contextParam = clientStartMatch[3];
+    const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const contextRe = escapeRegExp(contextParam);
+    const localsPattern = new RegExp(
+      `,([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(${contextRe}\\)\\?void 0:${contextRe},([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(\\),([A-Za-z_$][\\w$]*)=\\{`
+    );
     const localsMatch = segment.match(localsPattern);
     if (!localsMatch) {
       continue;
     }
+    const contextLocal = localsMatch[1];
+    const sanitizer = localsMatch[2];
+    const extraHeadersLocal = localsMatch[3];
+    const extraHeadersFactory = localsMatch[4];
+    const headerObjectLocal = localsMatch[5];
 
+    // This replacement interpolates sourceParam, contextParam, contextLocal,
+    // sourceClassifier, promptGetter, and the other captured locals above —
+    // all minified names that may legally contain `$`. localsPattern is a
+    // regex with 5 capture groups, so a captured name like `$1e` would be
+    // read back as a backreference if passed as a plain string; go through a
+    // callback so it is emitted verbatim instead.
     let nextSegment = segment.replace(
       localsPattern,
-      `,c=$1(i)?void 0:i,__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(o),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(c?.__calicoPromptId??${promptGetter}()):void 0,u=$2(),p={`
+      () =>
+        `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetter}()):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
     );
     nextSegment = nextSegment.replace(
-      /(\"X-Claude-Code-Session-Id\":[A-Za-z_$][\w$]*\(\),)(\.\.\.u,)/,
+      new RegExp(
+        `("X-Claude-Code-Session-Id":[A-Za-z_$][\\w$]*\\(\\),)(\\.\\.\\.${escapeRegExp(extraHeadersLocal)},)`
+      ),
       '$1$2...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},'
     );
     if (nextSegment === segment) {
@@ -3042,7 +3097,7 @@ function patchCompactRequestSource(content) {
 
   // Same Zie-shaped client factory active-turn targets: owns source + agentContext.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -3064,15 +3119,28 @@ function patchCompactRequestSource(content) {
     // request-source header from custom headers so ANTHROPIC_CUSTOM_HEADERS
     // cannot spoof compact. Re-add the lowercase value only for true compact.
     // Single let-binding only — reassignment would be a SyntaxError in `let`.
+    // 2.1.238's `credentials:s` rename shifts the extra-header local and the
+    // header-object local (2.1.237 `u=…(),p={` → 2.1.238 `d=…(),f={`), so both
+    // names are captured. The IIFE parameter stays the literal `u` regardless,
+    // because the wrap-needle lookup below matches on `((u)=>…`.
     let nextSegment = segment.replace(
-      /,u=([A-Za-z_$][\w$]*)\(\),p=\{/,
-      ',u=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)($1()),p={'
+      /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/,
+      (full, extraLocal, factory, headerLocal) =>
+        `,${extraLocal}=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(${factory}()),${headerLocal}={`
     );
     // Inject after Session-Id + custom-header spread (...u,). Works with or
     // without a subsequent active-turn __calicoPromptId spread.
+    const sourceParam = clientStartMatch[2];
+    // sourceParam is a captured minified local, so it may itself begin with
+    // `$1` (or contain any `$` sequence). This regex has one capture group,
+    // so a plain-string replacement would let `$1`-in-sourceParam expand as
+    // a backreference to the entire matched header prefix instead of naming
+    // the source param — go through a callback so the capture is threaded
+    // explicitly and sourceParam is emitted verbatim.
     nextSegment = nextSegment.replace(
       /("X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,)/,
-      '$1...process.env.REMORA_ACTIVE==="1"&&o==="compact"&&{"x-calico-request-source":"compact"},'
+      (_full, headerPrefix) =>
+        `${headerPrefix}...process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"&&{"x-calico-request-source":"compact"},`
     );
     if (nextSegment === segment) {
       continue;
@@ -3131,11 +3199,12 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
 
   let candidates = 0;
   let patched = 0;
+  let injectedWrap = null;
   let output = content;
 
   // Same Zie-shaped client factory: wrap fetchOverride when this client is for compact.
   const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i\}\)\{/g;
+    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -3145,14 +3214,16 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     const segment = output.slice(start, end);
     if (
       !segment.includes('"X-Claude-Code-Session-Id"') ||
-      segment.includes("__calicoCompactWrapFetch(n)")
+      segment.includes("__calicoCompactWrapFetch(")
     ) {
       continue;
     }
 
     candidates += 1;
+    const fetchOverrideParam = clientStartMatch[1];
+    const sourceParam = clientStartMatch[2];
     const inject =
-      'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+      `if(process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"){${fetchOverrideParam}=__calicoCompactWrapFetch(${fetchOverrideParam})}`;
     const nextSegment =
       clientStartMatch[0] + inject + segment.slice(clientStartMatch[0].length);
     if (nextSegment === segment) {
@@ -3160,17 +3231,18 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     }
 
     patched += 1;
+    injectedWrap = inject;
     output = output.slice(0, start) + nextSegment + output.slice(end);
     clientStartPattern.lastIndex = start + nextSegment.length;
   }
 
-  if (candidates !== 1 || patched !== 1) {
+  if (candidates !== 1 || patched !== 1 || injectedWrap === null) {
     return { content: original, candidates, patched: 0 };
   }
 
-  // Inject helpers once immediately before the patched Zie factory.
-  const wrapNeedle =
-    'if(process.env.REMORA_ACTIVE==="1"&&o==="compact"){n=__calicoCompactWrapFetch(n)}';
+  // Inject helpers once immediately before the patched Zie factory. The wrap
+  // needle carries the captured source/fetchOverride locals for this bundle.
+  const wrapNeedle = injectedWrap;
   const wrapIndex = output.indexOf(wrapNeedle);
   if (wrapIndex === -1) {
     return { content: original, candidates, patched: 0 };

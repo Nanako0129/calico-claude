@@ -54,6 +54,16 @@ function batchCommittedUsageFixture(source = committedUsageFixture) {
     );
 }
 
+function storageV5BatchFixture(source = committedUsageFixture) {
+  // 2.1.238 appends a fifth argument (the storage V5 handle) to the content
+  // builder call inside the batch wrapper:
+  // `ZJr([Zr],n,i.agentId,{...,messageId:wo.id},i.storageV5)`.
+  return batchCommittedUsageFixture(source).replace(
+    ",messageId:wo.id}),n),Kn=",
+    ",messageId:wo.id},i.storageV5),n),Kn="
+  );
+}
+
 const modelsUsedCompletionSignal =
   "function backgroundCompletionSignal(){let ie=BBg(s,e,g),de=Yns(ie,e,{...n,modelsUsed:_},{suppressTelemetry:re});__calicoRefreshAgentUsage(re,ie),Z0u(e,a9r(re),s);return de}";
 
@@ -360,6 +370,41 @@ test("custom context window display percentage composes with statusline payload"
   );
 });
 
+// arm64 builds of the same version swap the effective-window body locals:
+// `let n=Math.min(...),r=...;return o-n` instead of `let r=...,n=...;return o-r`.
+// The matcher must capture the window/reserve locals, and the verifier marker
+// must not pin `?o:o-r`. Renamed the window local to `w` too, so nothing can
+// re-pin `o` in either the patcher or the verifier.
+const customContextFixtureArm = customContextFixture.replace(
+  "function effective(e,t){let r=Math.min(resolve(e),t),n=precomputeGate()?t:void 0,{window:o}=derive(e,n);return o-r}",
+  "function effective(e,t){let n=Math.min(resolve(e),t),r=precomputeGate()?t:void 0,{window:w}=derive(e,r);return w-n}"
+);
+
+test("custom context window matches swapped arm64 effective-window locals", () => {
+  const result = patchCustomContextWindows(customContextFixtureArm);
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  assert.match(result.content, /CALICO_MODEL_CONTEXT_WINDOWS\?w:w-n/);
+
+  assert.equal(evaluatePatchModule("custom-context-window", result.content), null);
+
+  const context = {
+    process: {
+      env: {
+        CALICO_MODEL_CONTEXT_WINDOWS: JSON.stringify({ "gpt-5.6-sol": 372000 }),
+        CALICO_CONTEXT_DISPLAY_PERCENT: "95",
+      },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+  assert.equal(context.resolve("gpt-5.6-sol", []), 372000);
+  assert.equal(
+    context.status((_usage, windowValue) => windowValue, {}, 372000).context_window,
+    353400
+  );
+});
+
 test("matches renamed wrapper, terminal, selector, and clone locals", () => {
   const renamed = renamedCommittedUsageFixture();
   const { context, result } = loadCommittedFixture(renamed);
@@ -398,6 +443,27 @@ test("matches the 2.1.236 batch tool-use destructured wrapper", () => {
   const { context, result } = loadCommittedFixture(source);
   const completed = context.query(usage(210, 31), "end_turn");
 
+  assert.match(
+    result.content,
+    /__calicoUsageState:\{committed:!1,usage:null\},\.\.\._&&\{advisorModel:_\},\.\.\.Ie!==void 0&&\{effort:Ie\}/
+  );
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(
+    evaluatePatchModule(
+      "statusline-committed-usage",
+      result.content + modelsUsedCompletionSignal
+    ),
+    null
+  );
+});
+
+test("matches the 2.1.238 batch wrapper with the appended storageV5 argument", () => {
+  const source = storageV5BatchFixture();
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+
+  assert.match(result.content, /messageId:wo\.id\},i\.storageV5\)/);
   assert.match(
     result.content,
     /__calicoUsageState:\{committed:!1,usage:null\},\.\.\._&&\{advisorModel:_\},\.\.\.Ie!==void 0&&\{effort:Ie\}/

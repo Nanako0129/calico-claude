@@ -6,6 +6,7 @@ const {
   patchCompactBodyPolicy,
   patchCompactRequestSource,
 } = require("../patch-claude-display.ts");
+const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
 // Zie shape matches compact-request-source / active-turn anchors (Session-Id is a call).
 // Returns headers plus the (possibly wrapped) fetch for body-rewrite assertions.
@@ -15,6 +16,14 @@ function kAi(){return{}}
 async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i}){let s=process.env.CLAUDE_CODE_CONTAINER_ID,a=process.env.CLAUDE_CODE_REMOTE_SESSION_ID,l=process.env.CLAUDE_AGENT_SDK_CLIENT_APP,c=i,u=kAi(),p={"x-app":"cli","User-Agent":"fixture","X-Claude-Code-Session-Id":xt(),...u,...s&&{"x-claude-remote-container-id":s},...a&&{"x-claude-remote-session-id":a},...l&&{"x-client-app":l}};return{headers:p,fetch:n}}
 async function Next(){}
 `;
+
+// 2.1.238 appends `,credentials:s` to the Zie parameter object. The body-policy
+// wrap is injected at the signature boundary and reads only `o`/`n`, so the
+// extra destructured binding is all that must be tolerated here.
+const fixture238 = fixture.replace(
+  "source:o,agentContext:i}",
+  "source:o,agentContext:i,credentials:cred}"
+);
 
 function runPatched(content, env = { REMORA_ACTIVE: "1" }) {
   const context = {
@@ -167,10 +176,54 @@ test("composes with compact-request-source header module", async () => {
   assert.deepEqual(rewritten.thinking, { type: "adaptive" });
 });
 
+test("wraps and rewrites on the 2.1.238 credentials signature shape", async () => {
+  const result = patchCompactBodyPolicy(fixture238);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+
+  const context = runPatched(result.content);
+  const { calls } = await callWrappedFetch(context, "compact", {
+    model: "gpt-5.6-sol",
+    output_config: { effort: "xhigh" },
+    thinking: { type: "adaptive" },
+  });
+  const rewritten = JSON.parse(calls[0].init.body);
+  assert.equal(rewritten.output_config.effort, "medium");
+});
+
+// linux-arm64 and windows-arm64 builds of 2.1.238 swap the minified locals
+// for model/fetchOverride (`model:n,fetchOverride:r`). The wrap must follow
+// the captured fetchOverride local; a pinned `n` would wrap the model string.
+const fixtureSwapped = fixture238
+  .replace("model:r,fetchOverride:n,", "model:n,fetchOverride:r,")
+  .replace("return{headers:p,fetch:n}", "return{headers:p,fetch:r}");
+
+test("wraps the swapped fetchOverride local on cross-platform builds", async () => {
+  const result = patchCompactBodyPolicy(fixtureSwapped);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("compact-body-policy", result.content), null);
+  assert.match(
+    result.content,
+    /&&o==="compact"\)\{r=__calicoCompactWrapFetch\(r\)\}/
+  );
+
+  const context = runPatched(result.content);
+  const { calls } = await callWrappedFetch(context, "compact", {
+    model: "gpt-5.6-sol",
+    output_config: { effort: "xhigh" },
+  });
+  const rewritten = JSON.parse(calls[0].init.body);
+  assert.equal(rewritten.output_config.effort, "medium");
+  assert.equal(rewritten.model, "gpt-5.6-sol");
+});
+
 test("fails atomically when Zie anchor is missing", () => {
+  // Rename the destructured property itself; renaming only the minified
+  // local must NOT break the anchor (that varies per platform build).
   const broken = fixture.replace(
     "source:o,agentContext:i",
-    "source:querySource,agentContext:i"
+    "src:o,agentContext:i"
   );
   const result = patchCompactBodyPolicy(broken);
   assert.equal(result.patched, 0);
