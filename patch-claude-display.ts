@@ -2343,9 +2343,13 @@ function patchStatuslineRateLimitWindows(content) {
     guardIndex === -1 ? -1 : content.lastIndexOf("function ", guardIndex);
   const sharesPayloadBuilder =
     projectionFunctionStart !== -1 && projectionFunctionStart === guardFunctionStart;
+  // `.` is excluded from the boundary class deliberately: without it,
+  // `x.A={...projection...}` reads as an assignment to a local named `A`, and
+  // the windows would be added to a property while an unrelated local drives
+  // the guard. Same boundary as the occurrence test below.
   const projectionAssignsGuardLocal =
     projectionIndex !== -1 &&
-    new RegExp(`(?:^|[^\\w$])${guardLocal}=$`).test(
+    new RegExp(`(?:^|[^\\w$.])${guardLocal}=$`).test(
       content.slice(Math.max(0, projectionIndex - 40), projectionIndex)
     );
 

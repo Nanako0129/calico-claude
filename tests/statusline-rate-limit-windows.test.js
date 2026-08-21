@@ -185,3 +185,13 @@ function hqw(){let k=tLn(),A={...k.five_hour&&{five_hour:{used_percentage:k.five
     assert.equal(result.content, source);
   });
 }
+
+test("rejects a projection assigned to a property rather than the guard's local", () => {
+  const propertyAssigned = `
+function hqw(){let k=tLn(),A=elsewhere();x.A={...k.five_hour&&{five_hour:{used_percentage:k.five_hour.utilization*100,resets_at:k.five_hour.resets_at}},...k.seven_day&&{seven_day:{used_percentage:k.seven_day.utilization*100,resets_at:k.seven_day.resets_at}}};return{model:{id:"sonnet"},...(A.five_hour||A.seven_day)&&{rate_limits:A}}}
+`;
+  const result = patchStatuslineRateLimitWindows(propertyAssigned);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, propertyAssigned);
+});
