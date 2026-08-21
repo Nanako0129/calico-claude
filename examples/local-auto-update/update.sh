@@ -611,12 +611,25 @@ perform_update() {
   # on top of a newer one, after which a later rebuild reads as already current
   # and becomes unreachable even with --force. Written before the swap: a
   # failure here is caught while the launcher is still untouched.
+  local previous_tag
+  previous_tag="$(cat "$INSTALLED_TAG_FILE" 2>/dev/null || true)"
   if ! printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null; then
     log "Cannot write ${INSTALLED_TAG_FILE}; leaving ${BIN_LINK} unchanged so the record and the launcher stay consistent."
     exit 0
   fi
 
-  swap_symlink "$dest"
+  # The swap can still fail — an unwritable launcher directory, or a leftover
+  # .calico-tmp path defeating `ln`. The record already names the new build at
+  # this point, and leaving it there would make a later same-version rebuild
+  # compare equal and exit as up to date. Put the old record back before failing.
+  if ! swap_symlink "$dest"; then
+    if [[ -n "$previous_tag" ]]; then
+      printf '%s\n' "$previous_tag" > "$INSTALLED_TAG_FILE" 2>/dev/null || true
+    else
+      rm -f "$INSTALLED_TAG_FILE" 2>/dev/null || true
+    fi
+    fail "Failed to point ${BIN_LINK} at ${dest}; the release record was restored."
+  fi
   log "Symlink ${BIN_LINK} -> ${dest}"
   log "Update to ${LATEST_TAG} complete."
 

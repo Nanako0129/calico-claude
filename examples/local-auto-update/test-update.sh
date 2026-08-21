@@ -557,14 +557,20 @@ else ok "e2e: no launcher is created when the build fails its check"; fi
 e2e_reset "${SANDBOX}/asset-good"
 cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
 ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
-printf 'v9.9.8-linux-x64\n' > "$E2E/state/installed-tag"
-chmod 400 "$E2E/state/installed-tag"
+# The record is made unwritable by replacing it with a DIRECTORY rather than by
+# clearing its mode bits: root ignores mode bits, so a chmod-based fixture would
+# quietly let the write succeed and assert nothing. A redirect onto a directory
+# fails for every user.
+rm -f "$E2E/state/installed-tag"
+mkdir -p "$E2E/state/installed-tag"
 out="$(e2e_run --run)"
 rc=$?
-chmod 600 "$E2E/state/installed-tag"
+rmdir "$E2E/state/installed-tag"
 check "e2e: a failed tag-record write does not fail the run" "0" "$rc"
 check "e2e: the launcher is not advanced when the tag write fails" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
-check "e2e: the stale record is left intact" "v9.9.8-linux-x64" "$(cat "$E2E/state/installed-tag")"
+if [[ ! -e "$E2E/state/installed-tag" ]]; then
+  ok "e2e: the unwritable record is left as it was"
+else bad "e2e: the unwritable record is left as it was"; fi
 
 # --- 8f. a launcher we do not manage is refused --------------------------------
 # swap_symlink would mv over a regular file, and nothing could put it back.
