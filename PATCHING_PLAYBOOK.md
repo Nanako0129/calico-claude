@@ -69,7 +69,8 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 - **A captured identifier must never be interpolated into a replacement string.** `$` sequences
   expand there — `$1`-`$9` and `$&`/`$$`/`` $` ``/`$'` against a regex searchValue, and `$&`/`$$`/
   `` $` ``/`$'` even against a plain string one — and this bundle's identifier grammar
-  (`[A-Za-z_$][\w$]*`) lets a minifier hand back a name containing any of them. A source local named
+  (`[A-Za-z_$][\w$]*`) admits `$`, so a minified name can carry `$$` or `$1`-`$9`; it cannot carry
+  the others, since `&`, `` ` `` and `'` are not identifier characters. A source local named
   `$1e` turned an injected classifier call into a reference to the wrong capture group instead of the
   real parameter. Build the replacement text as usual, then pass it to `.replace` through a callback
   (`.replace(pattern, () => text)`) so it is emitted verbatim; a callback's return value never goes
