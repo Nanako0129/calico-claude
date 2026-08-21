@@ -608,16 +608,25 @@ if [[ -d "$E2E/state/.commit-lock" ]]; then
   ok "e2e: another run's commit lock is not removed"
 else bad "e2e: another run's commit lock is not removed"; fi
 
-# An abandoned commit lock must be taken over, or updates stop for good.
+# An expired commit lock is NOT reclaimed. Every delete-and-reacquire protocol
+# tried here let two runs enter the section the lock serializes; stopping is the
+# safe direction, and unlike the run lock this one cannot be stranded by an
+# ordinary kill since it spans two syscalls.
 e2e_reset "${SANDBOX}/asset-good"
 mkdir -p "$E2E/state/.commit-lock"
 python3 -c "import os,sys; t=float(sys.argv[2]); os.utime(sys.argv[1],(t,t))" \
   "$E2E/state/.commit-lock" "$(( $(date +%s) - 3600 ))"
-out="$(e2e_run --run)"
-check "e2e: an abandoned commit lock is taken over" "0" "$?"
-if [[ -L "$E2E/bin/calico-claude" ]]; then
-  ok "e2e: the launcher is updated after taking over a stale commit lock"
-else bad "e2e: the launcher is updated after taking over a stale commit lock"; fi
+out="$(CALICO_COMMIT_WAIT=2 e2e_run --run)"
+check "e2e: an expired commit lock does not fail the run" "0" "$?"
+if [[ -d "$E2E/state/.commit-lock" ]]; then
+  ok "e2e: an expired commit lock is left in place, not reclaimed"
+else bad "e2e: an expired commit lock is left in place, not reclaimed"; fi
+if [[ -e "$E2E/bin/calico-claude" || -L "$E2E/bin/calico-claude" ]]; then
+  bad "e2e: the launcher is not moved while a commit lock is held"
+else ok "e2e: the launcher is not moved while a commit lock is held"; fi
+if printf '%s' "$out" | grep -q "remove it by hand"; then
+  ok "e2e: an expired commit lock tells the user how to clear it"
+else bad "e2e: an expired commit lock tells the user how to clear it (got: ${out})"; fi
 
 # Same version, newer rebuild: comparing X.Y.Z alone would call these equal and
 # let a stale base-tag run replace the rebuild.

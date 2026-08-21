@@ -50,6 +50,7 @@ a script and not a one-line `curl | bash` in a cron job:
 | The build is verified **before** the swap | It is checked directly, never through the launcher symlink. Reading it through the link is unsound once runs can overlap — another updater may have repointed it — and verifying first removes the need to undo a swap at all. |
 | A launcher that is not a symlink is **refused** | Replacing a regular file would destroy something this updater did not create and cannot restore. |
 | Pruning is gated by **age**, not by the lock | An entry younger than `PRUNE_MIN_AGE_SECONDS` may belong to a run that has not swapped its link yet, so it is left alone. Gating on the lock instead would have been worse: an abandoned lock is never removed, so pruning would stop for good. |
+| An expired commit lock is **not reclaimed** | Every delete-and-reacquire protocol tried here let two runs enter the section the lock serializes. Unlike the run lock, this one spans two syscalls and cannot be stranded by an ordinary kill, so a stranded one means something needs a human — and stopping is the safe direction. The message names the directory to remove. |
 | The launcher update is **serialized** | Downloading and installing need no exclusion because they are append-only, but reading the current target, deciding, and swapping is a read-modify-write on shared state. A short commit lock covers only those steps; failing to take it leaves the launcher unchanged and the build in place for a later run. |
 | Downgrades compare the **whole release identity** | Version alone would treat a base tag and its `-2` rebuild as equal and let a stale run replace the newer one. |
 | The lock is an **efficiency device**, not a correctness one | Because installs never overwrite, two concurrent updaters cost a duplicate download, never a broken install. So the lock has no claim protocol: a lock younger than an hour means another run is working and this one exits; an older (or unmeasurable) one is *ignored* — never deleted, moved, or taken over, and a run that ignored a lock leaves it in place on exit. A run only ever removes a lock it created itself. |
@@ -151,7 +152,7 @@ asset; the attestation proves the release asset came out of this repo's CI.
 bash examples/local-auto-update/test-update.sh
 ```
 
-87 assertions, offline: platform detection, the checksum gate (tampered, absent,
+89 assertions, offline: platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
 throttling, lock behaviour (a young lock blocks; an aged one is ignored but

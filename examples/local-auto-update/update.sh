@@ -454,14 +454,24 @@ allocate_dest() {
 acquire_commit_lock() {
   local deadline=$(( $(date +%s) + COMMIT_LOCK_WAIT_SECONDS ))
   while ! mkdir "$COMMIT_LOCK_DIR" 2>/dev/null; do
-    local age
-    if age="$(path_age_seconds "$COMMIT_LOCK_DIR")" &&
-      (( age > COMMIT_LOCK_MAX_AGE_SECONDS )); then
-      log "Commit lock is ${age}s old; a run died holding it. Taking it over."
-      rm -rf "$COMMIT_LOCK_DIR"
-      continue
-    fi
     if (( $(date +%s) >= deadline )); then
+      local age
+      age="$(path_age_seconds "$COMMIT_LOCK_DIR" || true)"
+      if [[ "$age" =~ ^[0-9]+$ ]] && (( age > COMMIT_LOCK_MAX_AGE_SECONDS )); then
+        # Deliberately NOT reclaimed. Every delete-and-reacquire protocol tried
+        # here had the same hole: two runs both see the lock expired, one
+        # removes and recreates it, the second removes that new lock and takes
+        # it, and both enter the section the lock exists to serialize. There is
+        # no way to fix that without an atomic primitive this script does not
+        # have — so it is not attempted.
+        #
+        # Unlike the run lock, an abandoned commit lock cannot be left behind by
+        # an ordinary kill: it is held across two syscalls. If one is somehow
+        # stranded it needs a human, and stopping is the safe direction — the
+        # build is installed and nothing is corrupted, only the launcher stays
+        # where it was.
+        log "Commit lock ${COMMIT_LOCK_DIR} has been held for ${age}s. It is not reclaimed automatically; remove it by hand if no update is running."
+      fi
       return 1
     fi
     sleep 1
