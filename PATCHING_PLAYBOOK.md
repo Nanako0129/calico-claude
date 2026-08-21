@@ -59,6 +59,22 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 - If you have to match a function body, match the semantic shape of that body, not its symbol names.
 - Only widen a matcher as much as needed to survive bundle churn.
 - When a patch has multiple known upstream shapes, keep them as separate targeted branches instead of one giant regex.
+- **Injected code must never name a minified local literally.** Use a captured group, or a name this
+  repo invents (`__calico*`, `__cc*`). A pinned local in a matcher merely fails to match; a pinned
+  local in an injection is worse, because it can match and then operate on the wrong binding. In
+  2.1.238 `compact-body-policy` injected around a hardcoded `n`, which is `fetchOverride` on
+  macos/linux-x64/windows-x64 and `model` on the arm64 Linux and Windows builds — had the matcher
+  succeeded there, it would have wrapped the model string as if it were a fetch function. The matcher
+  failing was luck, not protection.
+- **Minified locals differ across platforms for the same version.** The same rule that protects
+  against upstream rebuilds also has to hold across the five release platforms; a matcher validated
+  on one bundle proves nothing about the others. Verify against every platform's bundle before
+  claiming a module is fixed. Extracting a bundle is static — no need to run the binary — so any
+  platform can be checked from any machine.
+- **A falling candidate count is silent.** `--assert-all` only fails a module at `patched == 0`, so a
+  matcher that quietly stops matching one of its sites still ships. Four separate defects have hidden
+  this way. When a count changes, find out why before assuming the bundle changed rather than the
+  matcher.
 
 ## Native Patching Flow
 
