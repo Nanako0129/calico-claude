@@ -1584,6 +1584,41 @@ function patchSubagentPromptVisibility(content, ctx = {}) {
   };
 }
 
+function patchDisableUsageWrapUpHints(content) {
+  // 2.1.238+ injects meta wrap-up prompts near the usage limit ("Checkpoint
+  // now: finish the current step, then list up to 3 short bullets ...") plus a
+  // matching TUI notice. Both injection paths are gated on statsig flags read
+  // by name with disabled defaults ("off" / !1), so renaming the gate name
+  // literals makes every lookup miss and fall back to disabled. Replacements
+  // are the same length as the originals, so no preserveLength branch is
+  // needed. Anchoring on the gate-name string literals (not minified locals)
+  // keeps this stable across bundle rebuilds.
+  const gateRenames = [
+    // grace-window wrap-up injection ("off" | "basic" | "next-steps")
+    ['"tengu_lantern_wick_mode"', '"calico_lantern_wick_off"'],
+    // 95% near-limit "checkpoint now" injection + notice (boolean)
+    ['"tengu_vellum_anchor"', '"calico_vellum_gone_"'],
+  ];
+
+  let candidates = 0;
+  let patched = 0;
+  let output = content;
+  for (const [from, to] of gateRenames) {
+    const count = output.split(from).length - 1;
+    candidates += count;
+    if (count > 0) {
+      output = output.split(from).join(to);
+      patched += count;
+    }
+  }
+
+  return {
+    content: output,
+    candidates,
+    patched,
+  };
+}
+
 function patchDisableSpinnerTips(content, ctx = {}) {
   const disabledGuardPattern = /if\([A-Za-z_$][\w$]*\(\)\.spinnerTipsEnabled===!1\)return;/g;
   const enabledExpressionPattern = /[A-Za-z_$][\w$]*\.spinnerTipsEnabled!==!1/g;
@@ -3203,6 +3238,11 @@ const PATCH_MODULES = [
     apply: patchDisableSpinnerTips,
   },
   {
+    id: "disable-usage-wrapup",
+    description: "Disable near-limit / grace-window wrap-up prompt injection",
+    apply: patchDisableUsageWrapUpHints,
+  },
+  {
     id: "version-output",
     description: "Append (patched) to plain --version output",
     apply: patchVersionOutput,
@@ -3371,6 +3411,7 @@ function main() {
 }
 
 module.exports = {
+  patchDisableUsageWrapUpHints,
   patchGatewayFastMode,
   patchActiveTurnPromptIdentity,
   patchCompactRequestSource,

@@ -1178,6 +1178,27 @@ const CHECKS: Check[] = [
     describe: "original spinner-tips disabled guard must be gone",
   },
   {
+    id: "disable-usage-wrapup",
+    kind: "custom",
+    // When this module is disabled, the renamed calico gate must not exist.
+    disabledMarker: '"calico_lantern_wick_off"',
+    describe:
+      "usage-limit wrap-up statsig gate names renamed to dead calico gates",
+    run: (content: string): string | null => {
+      // Bundles older than the feature carry neither the original gates nor
+      // the renames; that is a pass (nothing to neutralize). If upstream
+      // reintroduces or renames the gates, --assert-all on the patch module
+      // is the guard that catches zero candidates.
+      const problems: string[] = [];
+      for (const gate of ["tengu_lantern_wick_mode", "tengu_vellum_anchor"]) {
+        if (content.includes(`"${gate}"`)) {
+          problems.push(`found residual usage wrap-up gate "${gate}"`);
+        }
+      }
+      return problems.length > 0 ? problems.join("; ") : null;
+    },
+  },
+  {
     id: "version-output",
     kind: "presence",
     // The literal marker; \n here is a backslash + n (two chars) inside the bundle's
