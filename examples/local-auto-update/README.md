@@ -25,10 +25,14 @@ SessionStart hook ──► update.sh --hook ──► throttled? ──► exit
                                                      │
    run the downloaded file in place: exact version + `(patched)` (fail-hard)
                                                      │
-   install versions/<X.Y.Z> ─► atomic symlink swap ─► re-check through the link
+   install versions/<X.Y.Z> — or a unique sibling <X.Y.Z>.<pid> when that path
+   already exists; an install NEVER writes over an existing file
                                                      │
-                              mismatch ─► restore the previous target, or remove
-                                          the link when there is no previous one
+   atomic symlink swap ─► re-check through the link
+                                                     │
+                              mismatch ─► point the link back at the previous
+                                          target (never touched), or remove it
+                                          when there is no previous one
                                                      │
                                             prune to the newest 3 versions
 ```
@@ -39,10 +43,10 @@ a script and not a one-line `curl | bash` in a cron job:
 | Property | Why |
 | --- | --- |
 | Verification happens **before** install | A failed checksum, attestation, or version check must never reach `versions/`, let alone the symlink. |
-| The artifact is run **where it was downloaded** | `--force` and the self-heal path both write to a destination that already exists. Checking only after that write would destroy the very build the rollback needs to restore. |
-| Versions are compared as **whole tokens** | `2.1.24` is a substring of `2.1.240`; a substring test would accept a mislabeled release at the one gate meant to catch it. |
-| Post-install verify can **roll back** | If the installed binary does not report both the expected version and `(patched)`, the symlink returns to its previous target — or is removed outright when this was a first install, since a link to a binary that just failed its check is worse than no link. |
-| A lock records its **owner pid** | A run killed by SIGKILL or a reboot leaves the lock behind. Without a liveness check, every later run would treat that corpse as contention and exit 0 forever, silently ending all updates. A lock with no owner *yet* is treated as a run still starting up, not as a corpse — deleting it would let two installers proceed at once. |
+| Installs **never overwrite** | If the destination exists (`--force`, the self-heal, a same-version rebuild), the new build goes to a unique sibling `<X.Y.Z>.<pid>` instead. No intermediate state where the working binary is gone can exist, so no preserve/restore/recover machinery is needed — rollback is only ever a symlink swap back to a file that was never touched. |
+| Versions are compared as **whole tokens** | `2.1.24` is a substring of `2.1.240`; a substring test would accept a mislabeled release at the one gate meant to catch it. The installed version is the leading `X.Y.Z` of the symlink target's basename, so a pid-suffixed install still reads as its bare version. |
+| Post-install verify can **roll back** | If the installed binary does not report both the expected version and `(patched)`, the symlink returns to its previous target — or is removed outright when this was a first install, since a link to a binary that just failed its check is worse than no link. The failed build stays in `versions/` and is pruned like any other old one. |
+| The lock is an **efficiency device**, not a correctness one | Because installs never overwrite, two concurrent updaters cost a duplicate download, never a broken install. So the lock has no claim protocol: a lock younger than an hour means another run is working and this one exits; an older (or unmeasurable) one is *ignored* — never deleted, moved, or taken over, and a run that ignored a lock leaves it in place on exit. A run only ever removes a lock it created itself. |
 | Rebuilds are tracked by **release tag**, not version | A corrected build is republished as `-2` at the same version. Comparing versions alone would report "up to date" and no unattended user would ever receive it. |
 
 It also self-heals one specific failure: if the installed version already matches
@@ -141,21 +145,24 @@ asset; the attestation proves the release asset came out of this repo's CI.
 bash examples/local-auto-update/test-update.sh
 ```
 
-52 assertions, offline: platform detection, the checksum gate (tampered, absent,
+63 assertions, offline: platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
-throttling, lock ownership across live / stale / not-yet-written owners, log
-rotation, release selection, and end-to-end `--run` cases driven through stubbed
-`curl` and `gh`:
+throttling, lock behaviour (a young lock blocks; an aged one is ignored but
+never removed), log rotation, release selection, and end-to-end `--run` cases
+driven through stubbed `curl` and `gh`:
 
 | Case | Expected |
 |---|---|
 | A good artifact | Installs; symlink points at it |
-| A bad artifact under `--force` | Run fails; the existing same-version build survives byte-for-byte |
+| A bad artifact under `--force` | Run fails before install; the existing same-version build survives byte-for-byte |
+| A `--force` reinstall over an existing build | New build lands on a **new suffixed path**; the existing file is byte-identical afterwards |
+| Passes pre-install, fails once installed | Run fails; symlink returns to the untouched previous target |
 | A version that merely *contains* the expected one | Rejected; nothing installed |
 | Passes pre-install, fails afterwards, no previous target | Run fails; no symlink left behind |
 | A `-2` rebuild of the installed version | Installed; the tag is recorded |
 | A rebuild already installed, or no tag recorded | Left alone |
+| A suffixed symlink target | Reads as its bare version; pruning never deletes it |
 
 Two of those cases run under `/bin/bash` specifically rather than whatever `bash`
 is on `PATH`. Stock macOS ships bash 3.2, where `"${empty_array[@]}"` is an

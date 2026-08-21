@@ -205,9 +205,9 @@ CALICO_THROTTLE_SECONDS=3600 bash "$UPDATE_SH" --hook < /dev/null >/dev/null 2>&
 check "hook tolerates a corrupt last-check" "0" "$?"
 
 # --- 5. lock ------------------------------------------------------------------
-# A live owner means real contention; a dead one means the previous run was
-# killed before its EXIT trap ran, and the lock must be reclaimed rather than
-# obeyed forever.
+# The lock is an efficiency device: a young lock means another run is on it and
+# this one skips the duplicate work; an aged lock is assumed abandoned and is
+# ignored but NEVER removed — a run only ever deletes a lock it created itself.
 #
 # These cases get their own state directory. The hook cases above necessarily
 # spawn detached `--run` children, and one still finishing could otherwise
@@ -218,82 +218,21 @@ mkdir -p "$LOCK_STATE"
 run_locked() { CALICO_PLATFORM=linux-x64 CALICO_STATE_DIR="$LOCK_STATE" bash "$UPDATE_SH" --run 2>&1; }
 
 mkdir -p "${LOCK_STATE}/.lock"
-printf '%s\n' "$$" > "${LOCK_STATE}/.lock/pid"
 out="$(run_locked)"
 rc=$?
-check "run exits 0 when a live owner holds the lock" "0" "$rc"
-if [[ "$out" == *"already in progress (pid $$)"* ]]; then ok "run reports the live lock owner"; else bad "run reports the live lock owner (got: ${out})"; fi
+check "run exits 0 when a young lock exists (live owner)" "0" "$rc"
+if [[ "$out" == *"already in progress"* ]]; then ok "run reports the contention"; else bad "run reports the contention (got: ${out})"; fi
 if [[ -d "${LOCK_STATE}/.lock" ]]; then ok "a live owner's lock survives"; else bad "a live owner's lock survives"; fi
 rm -rf "${LOCK_STATE}/.lock"
 
-# Find a pid that is definitely not running, so the lock reads as abandoned.
-dead_pid=999999
-while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid - 1)); done
-mkdir -p "${LOCK_STATE}/.lock"
-printf '%s\n' "$dead_pid" > "${LOCK_STATE}/.lock/pid"
-out="$(run_locked)"
-if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "a stale lock is reclaimed instead of obeyed"; else bad "a stale lock is reclaimed instead of obeyed (got: ${out})"; fi
-if [[ ! -d "${LOCK_STATE}/.lock" ]]; then ok "the reclaimed lock is released on exit"; else bad "the reclaimed lock is released on exit"; fi
-rm -rf "${LOCK_STATE}/.lock"
-
-# A pid-less lock is ambiguous: a run killed between mkdir and the write, or one
-# that is about to write it. Deleting the second would let two installers run at
-# once, so a fresh one counts as contention and only an aged one is reclaimed.
-mkdir -p "${LOCK_STATE}/.lock"
-out="$(run_locked)"
-if [[ "$out" == *"starting up"* ]]; then ok "a freshly pid-less lock is treated as contention"; else bad "a freshly pid-less lock is treated as contention (got: ${out})"; fi
-if [[ -d "${LOCK_STATE}/.lock" ]]; then ok "a freshly pid-less lock is not deleted"; else bad "a freshly pid-less lock is not deleted"; fi
-rm -rf "${LOCK_STATE}/.lock"
-
+# An aged lock (SIGKILL, power loss, reboot: no EXIT trap ever ran) must not
+# end updates forever — but it also must not be removed: it is not ours.
 mkdir -p "${LOCK_STATE}/.lock"
 touch -t 202601010000 "${LOCK_STATE}/.lock"
 out="$(run_locked)"
-if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "an aged pid-less lock is reclaimed"; else bad "an aged pid-less lock is reclaimed (got: ${out})"; fi
+if [[ "$out" == *"Ignoring lock"* ]]; then ok "an aged lock is ignored, not obeyed"; else bad "an aged lock is ignored, not obeyed (got: ${out})"; fi
+if [[ -d "${LOCK_STATE}/.lock" ]]; then ok "a run that ignored a lock leaves it in place on exit"; else bad "a run that ignored a lock leaves it in place on exit"; fi
 rm -rf "${LOCK_STATE}/.lock"
-
-# --- 5a. stale-lock reclaim race ----------------------------------------------
-# Two runs can both pass the dead-owner check. Reclaiming by deleting the
-# shared path lets the second run destroy the lock the first had just
-# re-acquired, and both install concurrently. The claim must be atomic: only
-# one rename of the stale directory can succeed, and the loser must exit
-# rather than fall through into installing.
-#
-# The race window is deterministic here: `log` is overridden in a sourced copy
-# of the script so that, at the message printed immediately before the reclaim
-# step, the other reclaimer "wins" in exactly that window. PROCEEDED printing
-# means acquire_lock returned — i.e. this run went on to install.
-RACE_STATE="${SANDBOX}/race-state"
-run_reclaim_race() { # <winner-state: claimed|completed>
-  CALICO_STATE_DIR="$RACE_STATE" CALICO_PLATFORM=linux-x64 bash -c '
-    stub="$1"; mode="$2"; live_pid="$3"; source "$stub"
-    log() {
-      if [[ "$*" == Reclaiming* ]]; then
-        if [[ "$mode" == claimed ]]; then
-          # Winner has renamed the stale lock away but not yet re-created it.
-          mv "$LOCK_DIR" "${LOCK_DIR}.stale.winner"
-        else
-          # Winner has finished: fresh lock, live owner.
-          rm -rf "$LOCK_DIR"; mkdir "$LOCK_DIR"
-          printf "%s\n" "$live_pid" > "${LOCK_DIR}/pid"
-        fi
-      fi
-      printf "%s\n" "$*"
-    }
-    acquire_lock
-    echo PROCEEDED
-  ' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH") "$1" "$$" 2>&1
-}
-
-mkdir -p "${RACE_STATE}/.lock"; printf '%s\n' "$dead_pid" > "${RACE_STATE}/.lock/pid"
-out="$(run_reclaim_race claimed)"
-if [[ "$out" != *PROCEEDED* ]]; then ok "losing the reclaim race mid-claim exits instead of installing"; else bad "losing the reclaim race mid-claim exits instead of installing (got: ${out})"; fi
-rm -rf "${RACE_STATE}/.lock" "${RACE_STATE}/.lock.stale.winner"
-
-mkdir -p "${RACE_STATE}/.lock"; printf '%s\n' "$dead_pid" > "${RACE_STATE}/.lock/pid"
-out="$(run_reclaim_race completed)"
-if [[ "$out" != *PROCEEDED* ]]; then ok "losing the reclaim race post-claim exits instead of installing"; else bad "losing the reclaim race post-claim exits instead of installing (got: ${out})"; fi
-check "the winner keeps its freshly acquired lock" "$$" "$(cat "${RACE_STATE}/.lock/pid" 2>/dev/null)"
-rm -rf "${RACE_STATE}/.lock"
 
 # --- 5b. lock age ---------------------------------------------------------------
 # `stat` formatting differs between GNU and BSD, and the GNU spelling of the BSD
@@ -483,12 +422,37 @@ e2e_installed "v9.9.9-linux-x64"; rm -f "$E2E/state/installed-tag"
 out="$(e2e_run --run)"
 if [[ "$out" == *"up to date"* ]]; then ok "a missing tag record does not force a reinstall"; else bad "a missing tag record does not force a reinstall (got: ${out})"; fi
 
-# --- 8c. same-version install must survive a late failure ---------------------
-# The pre-install check runs the artifact from the temp directory. An artifact
-# that passes there and fails from its installed location would, without a
-# preserved copy, leave `dest` holding the failed replacement — and `old_target`
-# names that same path, so rolling the symlink back would restore nothing.
+# --- 8c. installs are append-only ---------------------------------------------
+# The load-bearing property: install never writes over a file that exists. A
+# same-version reinstall lands on a unique suffixed sibling, so no preserve,
+# restore, or interrupted-run recovery is ever needed — there is no intermediate
+# state to recover from.
 
+# A --force reinstall over an existing same-version file: the new build goes to
+# a NEW path and the existing file is untouched byte for byte. Compared with
+# cmp, never by executing a fixture.
+e2e_reset "${SANDBOX}/asset-good"
+printf 'PRE-EXISTING BYTES\n' > "$E2E/versions/9.9.9"
+cp "$E2E/versions/9.9.9" "${SANDBOX}/pre-existing-copy"
+ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
+printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
+out="$(e2e_run --force)"
+rc=$?
+check "e2e: a forced same-version reinstall succeeds" "0" "$rc"
+if cmp -s "$E2E/versions/9.9.9" "${SANDBOX}/pre-existing-copy"; then
+  ok "e2e: the pre-existing file is byte-identical after the reinstall"
+else bad "e2e: the pre-existing file is byte-identical after the reinstall"; fi
+new_target="$(readlink "$E2E/bin/calico-claude")"
+if [[ "$new_target" != "$E2E/versions/9.9.9" && "$new_target" == "$E2E/versions/9.9.9."* && -f "$new_target" ]]; then
+  ok "e2e: the reinstall landed on a new suffixed path ($(basename "$new_target"))"
+else bad "e2e: the reinstall landed on a new suffixed path (got: ${new_target})"; fi
+if cmp -s "$new_target" "${SANDBOX}/asset-good"; then
+  ok "e2e: the suffixed path holds the downloaded build"
+else bad "e2e: the suffixed path holds the downloaded build"; fi
+
+# A late failure (passes pre-install, fails once installed) on a same-version
+# rebuild: the previous target was never touched, so rollback is just the
+# symlink pointing back at it.
 e2e_reset "${SANDBOX}/asset-flips"; e2e_rebuild_releases "v9.9.9-linux-x64-2"
 cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
 ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
@@ -496,57 +460,31 @@ printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
 out="$(e2e_run --run)"
 rc=$?
 check "e2e: a late failure on a same-version install fails the run" "1" "$rc"
+check "e2e: the symlink is rolled back to the previous target" "$E2E/versions/9.9.9" "$(readlink "$E2E/bin/calico-claude")"
 # Compared by content, not by running it: the flipping fixture keys its output
-# off a counter file, so executing it here would reset that and report the good
-# version either way — the assertion would pass whether or not the restore ran.
+# off a counter file, so executing it would report the good version either way.
 if cmp -s "$E2E/versions/9.9.9" "${SANDBOX}/asset-good"; then
-  ok "e2e: the replaced same-version build is restored"
-else bad "e2e: the replaced same-version build is restored"; fi
-check "e2e: the symlink still resolves to the restored build" "$E2E/versions/9.9.9" "$(readlink "$E2E/bin/calico-claude")"
-if [[ -z "$(find "$E2E/versions" -name '*.preserved.*' 2>/dev/null)" ]]; then
-  ok "e2e: no preserved copy is left behind"
-else bad "e2e: no preserved copy is left behind"; fi
+  ok "e2e: the previous build is untouched after the rollback"
+else bad "e2e: the previous build is untouched after the rollback"; fi
 
-# --- 8c2. interrupted reinstall recovery --------------------------------------
-# SIGKILL or power loss between "move the old build aside" and "install the new
-# one" runs no EXIT trap: the launcher points at nothing and the working binary
-# is stranded under a .preserved.<pid> name. The next run must put it back.
+# A suffixed symlink target still reads as its bare version, so the next run
+# reports "up to date" instead of reinstalling forever.
+suffix_probe="${SANDBOX}/suffix-probe"
+rm -rf "$suffix_probe"; mkdir -p "$suffix_probe/versions" "$suffix_probe/bin"
+printf 'x\n' > "$suffix_probe/versions/9.9.9.4242"
+ln -sf "$suffix_probe/versions/9.9.9.4242" "$suffix_probe/bin/calico-claude"
+out="$(CALICO_BIN_LINK="$suffix_probe/bin/calico-claude" bash -c '
+  stub="$1"; source "$stub"; get_installed_version; printf "%s" "$INSTALLED_VERSION"
+' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH"))"
+check "get_installed_version reports the bare version for a suffixed target" "9.9.9" "$out"
 
-e2e_reset "${SANDBOX}/asset-good"
-cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9.preserved.4242"; chmod +x "$E2E/versions/9.9.9.preserved.4242"
-ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"   # dangling, as after a kill
-printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
-out="$(e2e_run --run)"
-if cmp -s "$E2E/versions/9.9.9" "${SANDBOX}/asset-good"; then
-  ok "e2e: an interrupted reinstall is recovered on the next run"
-else bad "e2e: an interrupted reinstall is recovered on the next run"; fi
-if [[ -z "$(find "$E2E/versions" -name '*.preserved.*' 2>/dev/null)" ]]; then
-  ok "e2e: the stranded copy is cleared after recovery"
-else bad "e2e: the stranded copy is cleared after recovery"; fi
-
-# A preserved copy alongside a present destination is NOT leftover: every
-# completed transaction removes its preserved copy (post-verify success deletes
-# it, failure moves it back), so both existing at once means the run died after
-# `install` wrote the replacement but before post-verification. The destination
-# is therefore unverified and the preserved copy is the only known-good build —
-# it must win. (An earlier revision deleted the preserved copy here, which
-# permanently destroyed the binary the mechanism exists to rescue.)
-# Compared by content, never by executing the fixture. The unverified
-# destination must still report itself as the patched 9.9.9 — otherwise the
-# unpatched-binary self-heal reinstalls over it and the assertion passes
-# whether or not the restore ran.
-e2e_reset "${SANDBOX}/asset-good"
-printf '#!/bin/sh\n# unverified replacement\necho "9.9.9 (Claude Code)"\necho "(patched)"\n' > "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
-cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9.preserved.4242"; chmod +x "$E2E/versions/9.9.9.preserved.4242"
-ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
-printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
-out="$(e2e_run --run)"
-if cmp -s "$E2E/versions/9.9.9" "${SANDBOX}/asset-good"; then
-  ok "e2e: a preserved copy wins over an unverified present destination"
-else bad "e2e: a preserved copy wins over an unverified present destination"; fi
-if [[ -z "$(find "$E2E/versions" -name '*.preserved.*' 2>/dev/null)" ]]; then
-  ok "e2e: the winning preserved copy is consumed, not duplicated"
-else bad "e2e: the winning preserved copy is consumed, not duplicated"; fi
+# Pruning must recognise a suffixed current target and never delete it, even
+# when it is older than everything else.
+seed_versions "" 2.1.1 2.1.2 2.1.3 2.1.4 2.1.5
+printf 'binary suffixed\n' > "${CALICO_VERSIONS_DIR}/2.1.0.4242"
+touch -t 202601010500 "${CALICO_VERSIONS_DIR}/2.1.0.4242"
+ln -sf "${CALICO_VERSIONS_DIR}/2.1.0.4242" "$CALICO_BIN_LINK"
+check "prune never deletes a suffixed current target" "2.1.0.4242 2.1.3 2.1.4 2.1.5" "$(prune_with 3)"
 
 # --- 8d. --check must agree with --run ----------------------------------------
 # A read-only check that reports "up to date" while --run would immediately

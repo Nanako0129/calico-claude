@@ -54,9 +54,9 @@ API_URL="https://api.github.com/repos/${REPO}/releases?per_page=100"
 # Populated by cleanup trap.
 TMP_DIR=""
 
-# Set while a reinstall has moved the existing build aside; cleanup restores it.
-PRESERVED_PATH=""
-PRESERVED_DEST=""
+# 1 only when THIS run created LOCK_DIR. A run that proceeds past someone
+# else's aged lock must not remove that lock on exit.
+LOCK_CREATED=0
 
 # Set to 1 by the --force mode. When forcing, perform_update skips the
 # "already up to date" version gate (but still runs checksum, attestation and
@@ -74,20 +74,12 @@ fail() {
 }
 
 cleanup() {
-  # Set while a reinstall has the previous build moved aside. Restoring it here
-  # covers every exit that runs a trap; recover_preserved covers the ones that
-  # do not.
-  if [[ -n "$PRESERVED_PATH" && -e "$PRESERVED_PATH" ]]; then
-    if [[ -e "$PRESERVED_DEST" ]]; then
-      rm -f "$PRESERVED_PATH" 2>/dev/null || true
-    else
-      mv -f "$PRESERVED_PATH" "$PRESERVED_DEST" 2>/dev/null || true
-    fi
-  fi
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
   fi
-  if [[ -d "$LOCK_DIR" ]]; then
+  # Only ever remove a lock this run created. Removing another run's lock is
+  # where every past lock defect came from.
+  if [[ "$LOCK_CREATED" == "1" && -d "$LOCK_DIR" ]]; then
     rm -rf "$LOCK_DIR" 2>/dev/null || true
   fi
 }
@@ -195,9 +187,9 @@ sha256_check() {
   fi
 }
 
-# Seconds a pid-less lock is treated as a run still starting up rather than as
-# a corpse to reclaim. Only needs to exceed the mkdir-to-write window.
-LOCK_STARTUP_GRACE=60
+# A lock older than this is assumed abandoned (SIGKILL, power loss, reboot) and
+# is IGNORED, never removed. Any real run finishes far inside an hour.
+LOCK_MAX_AGE_SECONDS=3600
 
 # Age of the lock directory in seconds, or empty when it cannot be determined.
 #
@@ -215,70 +207,32 @@ lock_age_seconds() {
   printf '%s\n' "$(( $(date +%s) - mtime ))"
 }
 
-# The lock records its owner pid. A run killed by SIGKILL, a power loss, or a
-# reboot leaves the directory behind with no EXIT trap to remove it; without a
-# liveness check every later run would treat that corpse as contention and exit
-# 0 forever, silently ending all updates.
+# The lock is an efficiency device, not a correctness one: installs are
+# append-only, so two concurrent updaters waste a download rather than break an
+# installation. That is why there is no claim protocol here — this run NEVER
+# deletes, moves, or takes over a lock it did not create (deleting another
+# process's lock is where every past lock defect came from). A young foreign
+# lock means someone else is on it, so skip the duplicate work; an aged or
+# unmeasurable one is assumed abandoned and simply ignored.
 acquire_lock() {
   mkdir -p "$STATE_DIR"
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    local owner
-    owner="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
-    if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
-      log "Another update is already in progress (pid ${owner}); exiting."
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    LOCK_CREATED=1
+  else
+    local age
+    if age="$(lock_age_seconds)" && (( age < LOCK_MAX_AGE_SECONDS )); then
+      log "Another update is already in progress (lock is ${age}s old); exiting."
       exit 0
     fi
-    # No readable owner yet. That is either a run killed between mkdir and the
-    # write, or a run that is about to write it — and deleting the latter would
-    # let two installers proceed at once and then remove each other's lock.
-    # Concurrent SessionStart hooks make this reachable, since their throttle
-    # check is not synchronized either. Age is what separates the two.
-    if [[ ! -s "${LOCK_DIR}/pid" ]]; then
-      local age
-      if ! age="$(lock_age_seconds)"; then
-        # Unknown age. Reclaiming could let two installers run at once, which is
-        # worse than waiting; a genuinely abandoned lock is then cleared by hand.
-        log "Lock has no owner and its age cannot be determined; leaving it alone. Remove ${LOCK_DIR} manually if no update is running."
-        exit 0
-      fi
-      if (( age < LOCK_STARTUP_GRACE )); then
-        log "Another update is starting up (lock has no owner yet); exiting."
-        exit 0
-      fi
-    fi
-    log "Reclaiming stale lock (owner ${owner:-unknown} is no longer running)."
-    # Two runs can both see the same dead owner. `rm -rf` on the shared path
-    # would let the second run delete the lock the first had just re-acquired
-    # and both would install concurrently — so the claim must be one atomic
-    # step. Renaming to a per-pid name is that step: only one rename of the
-    # stale directory can succeed, and the loser exits instead of installing.
-    local claimed="${LOCK_DIR}.stale.$$"
-    if ! mv "$LOCK_DIR" "$claimed" 2>/dev/null; then
-      log "Lost the race to reclaim the stale lock; exiting."
-      exit 0
-    fi
-    # The rename can still land on a FRESH lock: another reclaimer may have
-    # finished swapping the stale directory for its own between our staleness
-    # check and the mv. Re-check the owner of what was actually grabbed; a
-    # live one gets its lock back and this run bows out.
-    local grabbed
-    grabbed="$(cat "${claimed}/pid" 2>/dev/null || true)"
-    if [[ "$grabbed" =~ ^[0-9]+$ ]] && kill -0 "$grabbed" 2>/dev/null; then
-      mv "$claimed" "$LOCK_DIR" 2>/dev/null || rm -rf "$claimed"
-      log "Lost the race to reclaim the stale lock; exiting."
-      exit 0
-    fi
-    rm -rf "$claimed"
-    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-      log "Lost the race to reclaim the stale lock; exiting."
-      exit 0
-    fi
+    log "Ignoring lock ${LOCK_DIR} (age ${age:-unknown}s, older than ${LOCK_MAX_AGE_SECONDS}s or unmeasurable); proceeding without holding it."
   fi
-  printf '%s\n' "$$" > "${LOCK_DIR}/pid"
   trap cleanup EXIT
 }
 
-# Installed version = basename of the symlink target. Does NOT launch the binary.
+# Installed version = leading X.Y.Z of the symlink target's basename. Installs
+# are append-only, so a reinstall of a present version lands on a suffixed
+# sibling (e.g. "2.1.240.4242") — the whole basename is not always a bare
+# version. Does NOT launch the binary.
 get_installed_version() {
   local target
   if [[ ! -L "$BIN_LINK" ]]; then
@@ -290,7 +244,7 @@ get_installed_version() {
     return
   fi
   target="$(readlink "$BIN_LINK")"
-  INSTALLED_VERSION="$(basename "$target")"
+  INSTALLED_VERSION="$(basename "$target" | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
 }
 
 # True if the currently installed binary carries the Calico "(patched)"
@@ -466,7 +420,9 @@ swap_symlink() {
 # all of them, in which case it is retained on top of the newest KEEP_VERSIONS.
 # KEEP_VERSIONS=0 (or a non-numeric value) disables pruning entirely.
 # Entries are ordered by mtime (newest first) so hand-made names such as
-# "2.1.223.pre-something" are handled without a semver parse.
+# "2.1.223.pre-something" are handled without a semver parse. The current
+# target is matched by its literal basename, so a pid-suffixed append-only
+# install ("2.1.240.4242") is protected exactly like a bare one.
 prune_old_versions() {
   [[ "$KEEP_VERSIONS" =~ ^[0-9]+$ ]] || return 0
   (( KEEP_VERSIONS > 0 )) || return 0
@@ -514,32 +470,9 @@ rotate_log() {
   rm -f "$tmp" 2>/dev/null || true
 }
 
-# A reinstall moves the existing build aside before installing over it. If the
-# run is killed between those two points, EXIT traps do not run (SIGKILL, power
-# loss), and the launcher is left pointing at nothing while the working binary
-# sits under a .preserved.<pid> name. Put it back on the next run.
-recover_preserved() {
-  [[ -d "$VERSIONS_DIR" ]] || return 0
-  local preserved base
-  for preserved in "$VERSIONS_DIR"/*.preserved.*; do
-    [[ -e "$preserved" ]] || continue
-    base="${preserved%.preserved.*}"
-    # Restore unconditionally, even over a present $base. Every completed
-    # transaction removes its preserved copy (post-verify success deletes it,
-    # failure moves it back), so one still on disk means the previous run died
-    # mid-install — and a $base present alongside it is the replacement that
-    # was never post-verified. Preferring that $base would delete the only
-    # known-good build and keep an unverified one.
-    if mv -f "$preserved" "$base"; then
-      log "Recovered ${base} left behind by an interrupted reinstall."
-    fi
-  done
-}
-
 perform_update() {
   acquire_lock
   detect_platform
-  recover_preserved
 
   get_installed_version
   log "Installed version: ${INSTALLED_VERSION:-<unknown>} (${RELEASE_SUFFIX})"
@@ -596,9 +529,8 @@ perform_update() {
   verify_attestation "$asset_path"
 
   # --- Pre-install artifact check -------------------------------------------
-  # Run the downloaded file where it sits. Installing first would overwrite an
-  # existing same-version build (the --force and self-heal paths both do this),
-  # destroying the very file the post-install rollback would need to restore.
+  # Run the downloaded file where it sits. Cheap, and it keeps a bad artifact
+  # out of VERSIONS_DIR entirely instead of leaving it there for pruning.
   chmod +x "$asset_path" || fail "Failed to make ${ASSET} executable"
   if (( IS_MACOS )); then
     xattr -d com.apple.quarantine "$asset_path" 2>/dev/null || true
@@ -613,19 +545,14 @@ perform_update() {
   # --- Install --------------------------------------------------------------
   mkdir -p "$VERSIONS_DIR"
   local dest="${VERSIONS_DIR}/${LATEST_VERSION}"
-  # --force, the unpatched self-heal, and a rebuild all install over a
-  # destination that is also the current symlink target. The pre-install check
-  # cannot cover the case where an artifact passes from the temp directory and
-  # then fails from its installed location: the old binary would already be
-  # gone, and `old_target` would name the file the failed replacement now
-  # occupies, so rolling the symlink back would restore nothing. Move the
-  # existing build aside first; it is put back if post-verify fails.
-  local preserved=""
+  # Installs are append-only: never write over a file that exists. --force, the
+  # unpatched self-heal, and a same-version rebuild would otherwise install
+  # over the current symlink target, and every preserve/restore/recover
+  # mechanism this script ever needed existed to undo exactly that. A suffixed
+  # sibling makes the intermediate state impossible; pruning cleans it up like
+  # any other old build. The pid is unique among concurrent runs on one machine.
   if [[ -e "$dest" ]]; then
-    preserved="${dest}.preserved.$$"
-    PRESERVED_DEST="$dest"
-    mv -f "$dest" "$preserved" || fail "Failed to preserve the existing ${dest}"
-    PRESERVED_PATH="$preserved"
+    dest="${dest}.$$"
   fi
   if ! install -m 0755 "$asset_path" "$dest"; then
     fail "Failed to install binary to ${dest}"
@@ -647,19 +574,15 @@ perform_update() {
   version_output="$("$BIN_LINK" --version 2>&1 || true)"
   if version_output_matches "$version_output" "$LATEST_VERSION"; then
     log "Post-verify OK: ${version_output//$'\n'/ | }"
-    PRESERVED_PATH=""
-    [[ -n "$preserved" ]] && rm -f "$preserved"
     printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
       log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."
     log "Update to ${LATEST_TAG} complete."
     prune_old_versions
   else
     log "ERROR: Post-verify FAILED. Expected version ${LATEST_VERSION} and (patched). Got: ${version_output//$'\n'/ | }"
-    if [[ -n "$preserved" ]]; then
-      mv -f "$preserved" "$dest"
-      PRESERVED_PATH=""
-      log "Restored the previous ${dest} that this install had replaced."
-    fi
+    # Nothing was overwritten, so rollback is just the symlink: the previous
+    # target was never touched. The failed install stays in VERSIONS_DIR and is
+    # pruned later like any other old build.
     if [[ -n "$old_target" ]]; then
       swap_symlink "$old_target"
       log "Rolled back symlink ${BIN_LINK} -> ${old_target}"
