@@ -177,6 +177,22 @@ seed_versions "" 2.1.1 2.1.2 2.1.3 2.1.4
 rm -f "$CALICO_BIN_LINK"
 check "prune tolerates a missing symlink" "2.1.2 2.1.3 2.1.4" "$(prune_with 3)"
 
+# A build young enough to belong to an overlapping run is left alone even when
+# the retention count says it should go: that run may not have swapped its link
+# yet, and deleting its destination would strand it.
+#
+# The young build must fall OUTSIDE the retention count for this to test
+# anything. `ls -t` puts the newest first, so it has to sit behind a current
+# target that is newer still — otherwise it survives on its retention slot and
+# the age check is never consulted.
+rm -rf "$CALICO_VERSIONS_DIR" "${SANDBOX}/bin"; mkdir -p "$CALICO_VERSIONS_DIR" "${SANDBOX}/bin"
+printf 'old\n' > "${CALICO_VERSIONS_DIR}/2.1.1"
+touch -t 202601011000 "${CALICO_VERSIONS_DIR}/2.1.1"
+printf 'in flight\n' > "${CALICO_VERSIONS_DIR}/2.1.8"
+printf 'current\n' > "${CALICO_VERSIONS_DIR}/2.1.9"
+ln -sf "${CALICO_VERSIONS_DIR}/2.1.9" "$CALICO_BIN_LINK"
+check "prune leaves a just-created build alone" "2.1.8 2.1.9" "$(prune_with 1)"
+
 # --- 4. hook throttling -------------------------------------------------------
 # --hook must never block and must not spawn --run while inside the window.
 # CALICO_REPO points at a nonexistent repo so any spawned --run fails fast
@@ -248,7 +264,7 @@ age_of() { # <seconds-ago> ; echoes what lock_age_seconds reports
   python3 -c "import os,sys; t=float(sys.argv[2]); os.utime(sys.argv[1],(t,t))" \
     "$probe/.lock" "$(( $(date +%s) - $1 ))"
   CALICO_STATE_DIR="$probe" bash -c '
-    stub="$1"; source "$stub"; lock_age_seconds || echo UNKNOWN
+    stub="$1"; source "$stub"; path_age_seconds "$LOCK_DIR" || echo UNKNOWN
   ' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH")
 }
 
@@ -265,14 +281,6 @@ if [[ "$reported" =~ ^[0-9]+$ ]] && (( reported < 60 )); then
 else
   bad "a freshly created lock measures under the startup grace (got: ${reported})"
 fi
-
-# A run that proceeded past an ignored lock may be overlapping another updater,
-# which could be mid-install or holding a rollback target this run cannot see.
-seed_versions "2.1.5" 2.1.1 2.1.2 2.1.3 2.1.4 2.1.5
-kept="$(CALICO_KEEP_VERSIONS=3 bash -c '
-  stub="$1"; source "$stub"; LOCK_CREATED=0; prune_old_versions >/dev/null 2>&1
-' _ <(sed 's/^main "\$@"$/:/' "$UPDATE_SH"); ls "$CALICO_VERSIONS_DIR" | sort | tr '\n' ' ' | sed 's/ $//')"
-check "a run that does not hold the lock prunes nothing" "2.1.1 2.1.2 2.1.3 2.1.4 2.1.5" "$kept"
 
 # --- 5c. install path allocation ----------------------------------------------
 # The suffix must come from an exclusive create, not from the pid: pids are
@@ -537,6 +545,39 @@ printf 'binary suffixed\n' > "${CALICO_VERSIONS_DIR}/2.1.0.4242"
 touch -t 202601010500 "${CALICO_VERSIONS_DIR}/2.1.0.4242"
 ln -sf "${CALICO_VERSIONS_DIR}/2.1.0.4242" "$CALICO_BIN_LINK"
 check "prune never deletes a suffixed current target" "2.1.0.4242 2.1.3 2.1.4 2.1.5" "$(prune_with 3)"
+
+# --- 8e. verification happens before the swap ---------------------------------
+# The build is checked directly, not through BIN_LINK. Nothing is undone on
+# failure because nothing was changed yet — so the launcher must be untouched.
+
+e2e_reset "${SANDBOX}/asset-flips"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
+ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
+out="$(e2e_run --run)"
+check "e2e: a build failing its check fails the run" "1" "$?"
+check "e2e: the launcher still points at the previous build" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
+if printf '%s' "$out" | grep -q "Leaving .* untouched"; then
+  ok "e2e: the failure is reported as leaving the launcher alone"
+else bad "e2e: the failure is reported as leaving the launcher alone"; fi
+
+# First install: there is no previous target, and the link must not be created.
+e2e_reset "${SANDBOX}/asset-flips"
+out="$(e2e_run --run)"
+if [[ -e "$E2E/bin/calico-claude" || -L "$E2E/bin/calico-claude" ]]; then
+  bad "e2e: no launcher is created when the build fails its check"
+else ok "e2e: no launcher is created when the build fails its check"; fi
+
+# --- 8f. a launcher we do not manage is refused --------------------------------
+# swap_symlink would mv over a regular file, and nothing could put it back.
+
+e2e_reset "${SANDBOX}/asset-good"
+printf 'USER OWNED\n' > "$E2E/bin/calico-claude"
+out="$(e2e_run --run)"
+check "e2e: a non-symlink launcher fails the run" "1" "$?"
+check "e2e: the user's file is left exactly as it was" "USER OWNED" "$(cat "$E2E/bin/calico-claude")"
+if printf '%s' "$out" | grep -q "not a symlink"; then
+  ok "e2e: the refusal says why"
+else bad "e2e: the refusal says why (got: ${out})"; fi
 
 # --- 8d. --check must agree with --run ----------------------------------------
 # A read-only check that reports "up to date" while --run would immediately

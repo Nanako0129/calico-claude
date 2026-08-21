@@ -191,17 +191,21 @@ sha256_check() {
 # is IGNORED, never removed. Any real run finishes far inside an hour.
 LOCK_MAX_AGE_SECONDS=3600
 
-# Age of the lock directory in seconds, or empty when it cannot be determined.
+# Seconds a freshly installed build is treated as possibly in flight.
+PRUNE_MIN_AGE_SECONDS=300
+
+# Age of a path in seconds, or non-zero when it cannot be determined.
 #
 # Exit status cannot drive the fallback here: GNU `stat -f` means
 # --file-system, so on Linux it SUCCEEDS with unrelated multi-line output and a
 # `-f || -c` chain never reaches the second form. Try the GNU spelling first and
 # validate the output instead.
-lock_age_seconds() {
+path_age_seconds() {
+  local target="$1"
   local mtime
-  mtime="$(stat -c %Y "$LOCK_DIR" 2>/dev/null || true)"
+  mtime="$(stat -c %Y "$target" 2>/dev/null || true)"
   if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
-    mtime="$(stat -f %m "$LOCK_DIR" 2>/dev/null || true)"
+    mtime="$(stat -f %m "$target" 2>/dev/null || true)"
   fi
   [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$(( $(date +%s) - mtime ))"
@@ -220,7 +224,7 @@ acquire_lock() {
     LOCK_CREATED=1
   else
     local age
-    if age="$(lock_age_seconds)" && (( age < LOCK_MAX_AGE_SECONDS )); then
+    if age="$(path_age_seconds "$LOCK_DIR")" && (( age < LOCK_MAX_AGE_SECONDS )); then
       log "Another update is already in progress (lock is ${age}s old); exiting."
       exit 0
     fi
@@ -450,12 +454,6 @@ swap_symlink() {
 # target is matched by its literal basename, so a pid-suffixed append-only
 # install ("2.1.240.4242") is protected exactly like a bare one.
 prune_old_versions() {
-  # Only the lock holder prunes. A lock old enough to be ignored lets runs
-  # overlap by design, and an overlapping run may have installed its destination
-  # without having swapped the symlink yet, or be holding a rollback target that
-  # this run's symlink does not name. Deleting either would strand it. Skipping
-  # a cleanup pass costs nothing; the next run that does hold the lock prunes.
-  [[ "$LOCK_CREATED" == "1" ]] || return 0
   [[ "$KEEP_VERSIONS" =~ ^[0-9]+$ ]] || return 0
   (( KEEP_VERSIONS > 0 )) || return 0
   [[ -d "$VERSIONS_DIR" ]] || return 0
@@ -486,6 +484,16 @@ prune_old_versions() {
     if (( kept <= KEEP_VERSIONS )); then
       continue
     fi
+    # A build young enough to belong to an overlapping run is left alone: it may
+    # have been installed moments ago by an updater that has not swapped its
+    # link yet, and deleting it would strand that run. Gating this on holding
+    # the lock instead would be worse — an abandoned lock is never removed, so
+    # pruning would stop for good and old builds would accumulate forever.
+    local age
+    if age="$(path_age_seconds "${VERSIONS_DIR}/${name}")" &&
+      (( age < PRUNE_MIN_AGE_SECONDS )); then
+      continue
+    fi
     rm -f "${VERSIONS_DIR}/${name}" && log "Pruned old version ${name}"
   done
 }
@@ -507,6 +515,11 @@ perform_update() {
   detect_platform
 
   get_installed_version
+  # A launcher that is not a symlink is not ours to replace. swap_symlink would
+  # mv over it, and nothing here could put a user's own executable back.
+  if [[ -e "$BIN_LINK" && ! -L "$BIN_LINK" ]]; then
+    fail "${BIN_LINK} exists but is not a symlink; refusing to replace it. Move it aside if it should be managed by this updater."
+  fi
   log "Installed version: ${INSTALLED_VERSION:-<unknown>} (${RELEASE_SUFFIX})"
 
   if ! query_latest_release; then
@@ -587,38 +600,30 @@ perform_update() {
   fi
   log "Installed patched binary to ${dest}"
 
-  # --- Atomic symlink swap --------------------------------------------------
+  # --- Verify the build before it becomes the launcher ----------------------
+  # Checked directly, not through BIN_LINK. Reading it through the symlink is
+  # unsound once runs can overlap: another updater may have pointed the link at
+  # its own build between our swap and our check, and we would then judge -- and
+  # roll back -- someone else's successful install. Verifying first also removes
+  # the need to undo a swap at all.
+  local version_output
+  version_output="$("$dest" --version 2>&1 || true)"
+  if ! version_output_matches "$version_output" "$LATEST_VERSION"; then
+    log "ERROR: the installed build reports '${version_output//$'\n'/ | }', expected ${LATEST_VERSION} and (patched). Leaving ${BIN_LINK} untouched."
+    # $dest stays in VERSIONS_DIR and is pruned later like any other old build.
+    exit 1
+  fi
+  log "Verified before swap: ${version_output//$'\n'/ | }"
+
+  # --- Point the launcher at it ---------------------------------------------
   mkdir -p "$(dirname "$BIN_LINK")"
-  local old_target=""
-  [[ -L "$BIN_LINK" ]] && old_target="$(readlink "$BIN_LINK")"
   swap_symlink "$dest"
   log "Symlink ${BIN_LINK} -> ${dest}"
 
-  # --- Post-verify with rollback --------------------------------------------
-  local version_output
-  version_output="$("$BIN_LINK" --version 2>&1 || true)"
-  if version_output_matches "$version_output" "$LATEST_VERSION"; then
-    log "Post-verify OK: ${version_output//$'\n'/ | }"
-    printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
-      log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."
-    log "Update to ${LATEST_TAG} complete."
-    prune_old_versions
-  else
-    log "ERROR: Post-verify FAILED. Expected version ${LATEST_VERSION} and (patched). Got: ${version_output//$'\n'/ | }"
-    # Nothing was overwritten, so rollback is just the symlink: the previous
-    # target was never touched. The failed install stays in VERSIONS_DIR and is
-    # pruned later like any other old build.
-    if [[ -n "$old_target" ]]; then
-      swap_symlink "$old_target"
-      log "Rolled back symlink ${BIN_LINK} -> ${old_target}"
-    else
-      # First install: there is nothing to roll back to, but leaving the link
-      # pointing at a binary that just failed its check is worse than no link.
-      rm -f "$BIN_LINK"
-      log "Removed ${BIN_LINK}; it pointed at a binary that failed post-verify and there was no previous target."
-    fi
-    exit 1
-  fi
+  printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
+    log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."
+  log "Update to ${LATEST_TAG} complete."
+  prune_old_versions
 }
 
 do_check() {
