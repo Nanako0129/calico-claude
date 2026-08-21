@@ -25,16 +25,18 @@ SessionStart hook ──► update.sh --hook ──► throttled? ──► exit
                                                      │
    run the downloaded file in place: exact version + `(patched)` (fail-hard)
                                                      │
-   install versions/<X.Y.Z> — or a unique sibling <X.Y.Z>.<pid> when that path
-   already exists; an install NEVER writes over an existing file
+   install versions/<X.Y.Z>, or a uniquely named sibling when that path is
+   taken; the path is reserved exclusively and never written over
                                                      │
-   atomic symlink swap ─► re-check through the link
+   verify the installed file DIRECTLY: exact version + `(patched)` (fail-hard)
                                                      │
-                              mismatch ─► point the link back at the previous
-                                          target (never touched), or remove it
-                                          when there is no previous one
+                              mismatch ─► leave the launcher untouched and exit;
+                                          the rejected build is pruned later
                                                      │
-                                            prune to the newest 3 versions
+   atomic symlink swap, unless the launcher already points at a newer version
+                                                     │
+                                            prune, skipping builds young enough
+                                            to belong to an overlapping run
 ```
 
 Two properties are worth stating explicitly, because they are the reason this is
@@ -147,7 +149,7 @@ asset; the attestation proves the release asset came out of this repo's CI.
 bash examples/local-auto-update/test-update.sh
 ```
 
-77 assertions, offline: platform detection, the checksum gate (tampered, absent,
+80 assertions, offline: platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
 throttling, lock behaviour (a young lock blocks; an aged one is ignored but

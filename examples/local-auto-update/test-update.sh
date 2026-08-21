@@ -51,7 +51,10 @@ done
 case "$url" in
   *checksums.txt) [ -n "$FAKE_CHECKSUMS" ] && cat "$FAKE_CHECKSUMS" > "$out" || exit 1 ;;
   *api.github.com*) cat "$FAKE_RELEASES" > "$out" ;;
-  *) [ -n "$FAKE_ASSET" ] && cat "$FAKE_ASSET" > "$out" || exit 1 ;;
+  *) # A competing updater finishing mid-download is simulated here rather than
+     # by timing: the hook runs at the moment this run is fetching the asset.
+     [ -n "$RACE_HOOK" ] && sh -c "$RACE_HOOK"
+     [ -n "$FAKE_ASSET" ] && cat "$FAKE_ASSET" > "$out" || exit 1 ;;
 esac
 STUB
 chmod +x "${STUB_BIN}/curl"
@@ -399,7 +402,7 @@ e2e_run() { # <mode>
       FAKE_RELEASES="$E2E/releases.json" FAKE_ASSET="$E2E/asset" FAKE_CHECKSUMS="$E2E/checksums.txt" \
       CALICO_PLATFORM=linux-x64 CALICO_REPO="calico-test/stubbed" \
       CALICO_VERSIONS_DIR="$E2E/versions" CALICO_BIN_LINK="$E2E/bin/calico-claude" \
-      CALICO_STATE_DIR="$E2E/state" E2E_COUNTER="$E2E/calls" \
+      CALICO_STATE_DIR="$E2E/state" E2E_COUNTER="$E2E/calls" RACE_HOOK="${RACE_HOOK:-}" \
       bash "$UPDATE_SH" "$1" 2>&1
 }
 
@@ -566,6 +569,26 @@ out="$(e2e_run --run)"
 if [[ -e "$E2E/bin/calico-claude" || -L "$E2E/bin/calico-claude" ]]; then
   bad "e2e: no launcher is created when the build fails its check"
 else ok "e2e: no launcher is created when the build fails its check"; fi
+
+# --- 8e2. a slower run must not downgrade the launcher --------------------------
+# Overlapping runs can be looking at different releases. If the newer one swaps
+# first, an unconditional swap here would move the launcher backwards, and the
+# tag record would then describe a build it no longer points at.
+
+e2e_reset "${SANDBOX}/asset-good"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
+ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
+printf '#!/bin/sh\necho "9.9.10 (Claude Code)"\necho "(patched)"\n' > "$E2E/versions/9.9.10"
+chmod +x "$E2E/versions/9.9.10"
+out="$(RACE_HOOK="ln -sf $E2E/versions/9.9.10 $E2E/bin/calico-claude" e2e_run --run)"
+check "e2e: the launcher keeps the newer build another run installed" "$E2E/versions/9.9.10" "$(readlink "$E2E/bin/calico-claude")"
+if printf '%s' "$out" | grep -q "newer than"; then
+  ok "e2e: the skipped swap says why"
+else bad "e2e: the skipped swap says why (got: ${out})"; fi
+# The build it downloaded is still on disk; only the launcher was left alone.
+if [[ -e "$E2E/versions/9.9.9" ]]; then
+  ok "e2e: the downloaded build is kept for pruning"
+else bad "e2e: the downloaded build is kept for pruning"; fi
 
 # --- 8f. a launcher we do not manage is refused --------------------------------
 # swap_symlink would mv over a regular file, and nothing could put it back.

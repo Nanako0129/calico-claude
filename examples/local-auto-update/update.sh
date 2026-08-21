@@ -616,7 +616,23 @@ perform_update() {
   log "Verified before swap: ${version_output//$'\n'/ | }"
 
   # --- Point the launcher at it ---------------------------------------------
+  # Overlapping runs (possible once an aged lock is ignored) can be looking at
+  # different releases: one queried the API before a rebuild was published and
+  # the other after. If the newer run swaps first, an unconditional swap here
+  # would downgrade the launcher, and the tag record written below would then
+  # describe a build it no longer points at — every later run would read that
+  # pairing and treat the older build as current.
   mkdir -p "$(dirname "$BIN_LINK")"
+  if [[ -L "$BIN_LINK" ]]; then
+    local live_version
+    live_version="$(basename "$(readlink "$BIN_LINK")")"
+    live_version="$(printf '%s' "$live_version" | sed -n 's/^\([0-9][0-9.]*[0-9]\).*/\1/p')"
+    if [[ -n "$live_version" ]] &&
+      [[ "$(semver_relation "$live_version" "$LATEST_VERSION")" == "newer" ]]; then
+      log "${BIN_LINK} already points at ${live_version}, newer than ${LATEST_VERSION}; leaving it alone. The build stays in ${VERSIONS_DIR}."
+      exit 0
+    fi
+  fi
   swap_symlink "$dest"
   log "Symlink ${BIN_LINK} -> ${dest}"
 
