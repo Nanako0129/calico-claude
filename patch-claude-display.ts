@@ -2349,7 +2349,34 @@ function patchStatuslineRateLimitWindows(content) {
       content.slice(Math.max(0, projectionIndex - 40), projectionIndex)
     );
 
-  if (!sharesPayloadBuilder || !projectionAssignsGuardLocal) {
+  // `function ` does not bound a lexical scope on its own. An arrow callback can
+  // hold the projection while the guard sits in the enclosing function with a
+  // shadowed local of the same name:
+  //   items.map(()=>{let A={...projection...}}); let A=other; return {...guard...}
+  // Both lastIndexOf calls land on the enclosing function and the initializer
+  // test sees the callback's `A=`, so neither check above rejects it. Walk the
+  // text between the anchors instead and require that reaching the guard never
+  // closes a bracket it did not open — that is, the guard is reached without
+  // leaving the block the projection lives in.
+  const projectionEnd =
+    projectionIndex === -1 ? -1 : projectionIndex + projectionMatches[0][0].length;
+  let leftProjectionScope = projectionEnd === -1 || guardIndex < projectionEnd;
+  if (!leftProjectionScope) {
+    let depth = 0;
+    for (const ch of content.slice(projectionEnd, guardIndex)) {
+      if (ch === "{" || ch === "(" || ch === "[") {
+        depth += 1;
+      } else if (ch === "}" || ch === ")" || ch === "]") {
+        depth -= 1;
+        if (depth < 0) {
+          leftProjectionScope = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!sharesPayloadBuilder || !projectionAssignsGuardLocal || leftProjectionScope) {
     return { content: original, candidates, patched: 0 };
   }
   const projectionReplacement = `{${[

@@ -119,3 +119,26 @@ function hqw(){let k=tLn(),B={...k.five_hour&&{five_hour:{used_percentage:k.five
   assert.equal(result.patched, 0);
   assert.equal(result.content, unrelated);
 });
+
+test("rejects a projection trapped inside an arrow callback", () => {
+  // The shape Codex raised on #8: same enclosing function, and the guard's local
+  // name is even initialized by a projection — but that projection belongs to a
+  // callback scope and a shadowed binding, so widening the guard would not see
+  // the added windows. `lastIndexOf("function ")` cannot tell these apart.
+  const shadowed = `
+function hqw(){let k=tLn();items.map(()=>{let A={...k.five_hour&&{five_hour:{used_percentage:k.five_hour.utilization*100,resets_at:k.five_hour.resets_at}},...k.seven_day&&{seven_day:{used_percentage:k.seven_day.utilization*100,resets_at:k.seven_day.resets_at}}};return A});let A=somethingElse();return{model:{id:"sonnet"},...(A.five_hour||A.seven_day)&&{rate_limits:A}}}
+`;
+  const result = patchStatuslineRateLimitWindows(shadowed);
+  assert.equal(result.candidates, 2, "both shapes are still found");
+  assert.equal(result.patched, 0, "but the guard must not be widened");
+  assert.equal(result.content, shadowed);
+});
+
+test("rejects a guard that precedes the projection it would have to consume", () => {
+  const reversed = `
+function hqw(){let k=tLn(),A=prior();let out={model:{id:"sonnet"},...(A.five_hour||A.seven_day)&&{rate_limits:A}};A={...k.five_hour&&{five_hour:{used_percentage:k.five_hour.utilization*100,resets_at:k.five_hour.resets_at}},...k.seven_day&&{seven_day:{used_percentage:k.seven_day.utilization*100,resets_at:k.seven_day.resets_at}}};return out}
+`;
+  const result = patchStatuslineRateLimitWindows(reversed);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 0);
+});
