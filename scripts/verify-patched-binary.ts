@@ -1099,8 +1099,27 @@ const CHECKS: Check[] = [
         (version[0] === 2 &&
           (version[1] > 1 || (version[1] === 1 && version[2] >= 234)));
       if (requiresRendererThreading) {
-        if (!content.includes("streamingThinking:__cc_streamingThinking")) {
-          return "expected renderer-side streamingThinking threading (signature or store snapshot)";
+        // The renderer must declare the streamingThinking parameter…
+        const rendererSignaturePattern =
+          /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:[A-Za-z_$][\w$]*,/;
+        if (!rendererSignaturePattern.test(content)) {
+          return "expected renderer signature to declare a streamingThinking parameter";
+        }
+        // …and exactly one call site must actually pass it. The signature also
+        // matches the `screen:…,streamingToolUses:…,streamingThinking:` shape,
+        // so exclude its own __cc_streamingThinking param; the 2.1.236+ store
+        // destructure has no preceding `screen:` and cannot match. A marker
+        // existing (signature injected, store local declared) is not proof the
+        // renderer receives the value — broken-2.1.235-class bundles carry the
+        // signature and the inline extras with no caller prop, and must fail
+        // here.
+        const rendererCallSitePattern =
+          /screen:[^,}]+,streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*)[,}]/g;
+        const rendererCallSites = [...content.matchAll(rendererCallSitePattern)].filter(
+          (match) => match[1] !== "__cc_streamingThinking"
+        );
+        if (rendererCallSites.length !== 1) {
+          return `expected 1 renderer call-site streamingThinking prop, found ${rendererCallSites.length}`;
         }
         if (!content.includes("__cc_streamingThinkingExtras")) {
           return "expected inline streaming-thinking transcript extras";
