@@ -208,41 +208,48 @@ check "hook tolerates a corrupt last-check" "0" "$?"
 # A live owner means real contention; a dead one means the previous run was
 # killed before its EXIT trap ran, and the lock must be reclaimed rather than
 # obeyed forever.
-run_locked() { CALICO_PLATFORM=linux-x64 bash "$UPDATE_SH" --run 2>&1; }
+#
+# These cases get their own state directory. The hook cases above necessarily
+# spawn detached `--run` children, and one still finishing could otherwise
+# acquire or release a lock belonging to an assertion here — the assertions
+# would then pass or fail on timing rather than on behaviour.
+LOCK_STATE="${SANDBOX}/lock-state"
+mkdir -p "$LOCK_STATE"
+run_locked() { CALICO_PLATFORM=linux-x64 CALICO_STATE_DIR="$LOCK_STATE" bash "$UPDATE_SH" --run 2>&1; }
 
-mkdir -p "${CALICO_STATE_DIR}/.lock"
-printf '%s\n' "$$" > "${CALICO_STATE_DIR}/.lock/pid"
+mkdir -p "${LOCK_STATE}/.lock"
+printf '%s\n' "$$" > "${LOCK_STATE}/.lock/pid"
 out="$(run_locked)"
 rc=$?
 check "run exits 0 when a live owner holds the lock" "0" "$rc"
 if [[ "$out" == *"already in progress (pid $$)"* ]]; then ok "run reports the live lock owner"; else bad "run reports the live lock owner (got: ${out})"; fi
-if [[ -d "${CALICO_STATE_DIR}/.lock" ]]; then ok "a live owner's lock survives"; else bad "a live owner's lock survives"; fi
-rm -rf "${CALICO_STATE_DIR}/.lock"
+if [[ -d "${LOCK_STATE}/.lock" ]]; then ok "a live owner's lock survives"; else bad "a live owner's lock survives"; fi
+rm -rf "${LOCK_STATE}/.lock"
 
 # Find a pid that is definitely not running, so the lock reads as abandoned.
 dead_pid=999999
 while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid - 1)); done
-mkdir -p "${CALICO_STATE_DIR}/.lock"
-printf '%s\n' "$dead_pid" > "${CALICO_STATE_DIR}/.lock/pid"
+mkdir -p "${LOCK_STATE}/.lock"
+printf '%s\n' "$dead_pid" > "${LOCK_STATE}/.lock/pid"
 out="$(run_locked)"
 if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "a stale lock is reclaimed instead of obeyed"; else bad "a stale lock is reclaimed instead of obeyed (got: ${out})"; fi
-if [[ ! -d "${CALICO_STATE_DIR}/.lock" ]]; then ok "the reclaimed lock is released on exit"; else bad "the reclaimed lock is released on exit"; fi
-rm -rf "${CALICO_STATE_DIR}/.lock"
+if [[ ! -d "${LOCK_STATE}/.lock" ]]; then ok "the reclaimed lock is released on exit"; else bad "the reclaimed lock is released on exit"; fi
+rm -rf "${LOCK_STATE}/.lock"
 
 # A pid-less lock is ambiguous: a run killed between mkdir and the write, or one
 # that is about to write it. Deleting the second would let two installers run at
 # once, so a fresh one counts as contention and only an aged one is reclaimed.
-mkdir -p "${CALICO_STATE_DIR}/.lock"
+mkdir -p "${LOCK_STATE}/.lock"
 out="$(run_locked)"
 if [[ "$out" == *"starting up"* ]]; then ok "a freshly pid-less lock is treated as contention"; else bad "a freshly pid-less lock is treated as contention (got: ${out})"; fi
-if [[ -d "${CALICO_STATE_DIR}/.lock" ]]; then ok "a freshly pid-less lock is not deleted"; else bad "a freshly pid-less lock is not deleted"; fi
-rm -rf "${CALICO_STATE_DIR}/.lock"
+if [[ -d "${LOCK_STATE}/.lock" ]]; then ok "a freshly pid-less lock is not deleted"; else bad "a freshly pid-less lock is not deleted"; fi
+rm -rf "${LOCK_STATE}/.lock"
 
-mkdir -p "${CALICO_STATE_DIR}/.lock"
-touch -t 202601010000 "${CALICO_STATE_DIR}/.lock"
+mkdir -p "${LOCK_STATE}/.lock"
+touch -t 202601010000 "${LOCK_STATE}/.lock"
 out="$(run_locked)"
 if [[ "$out" == *"Reclaiming stale lock"* ]]; then ok "an aged pid-less lock is reclaimed"; else bad "an aged pid-less lock is reclaimed (got: ${out})"; fi
-rm -rf "${CALICO_STATE_DIR}/.lock"
+rm -rf "${LOCK_STATE}/.lock"
 
 # --- 6. log rotation ----------------------------------------------------------
 LOG="${CALICO_STATE_DIR}/update.log"
@@ -401,6 +408,52 @@ e2e_reset "${SANDBOX}/asset-good"
 e2e_installed "v9.9.9-linux-x64"; rm -f "$E2E/state/installed-tag"
 out="$(e2e_run --run)"
 if [[ "$out" == *"up to date"* ]]; then ok "a missing tag record does not force a reinstall"; else bad "a missing tag record does not force a reinstall (got: ${out})"; fi
+
+# --- 8c. same-version install must survive a late failure ---------------------
+# The pre-install check runs the artifact from the temp directory. An artifact
+# that passes there and fails from its installed location would, without a
+# preserved copy, leave `dest` holding the failed replacement — and `old_target`
+# names that same path, so rolling the symlink back would restore nothing.
+
+e2e_reset "${SANDBOX}/asset-flips"; e2e_rebuild_releases "v9.9.9-linux-x64-2"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
+ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
+printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
+out="$(e2e_run --run)"
+rc=$?
+check "e2e: a late failure on a same-version install fails the run" "1" "$rc"
+# Compared by content, not by running it: the flipping fixture keys its output
+# off a counter file, so executing it here would reset that and report the good
+# version either way — the assertion would pass whether or not the restore ran.
+if cmp -s "$E2E/versions/9.9.9" "${SANDBOX}/asset-good"; then
+  ok "e2e: the replaced same-version build is restored"
+else bad "e2e: the replaced same-version build is restored"; fi
+check "e2e: the symlink still resolves to the restored build" "$E2E/versions/9.9.9" "$(readlink "$E2E/bin/calico-claude")"
+if [[ -z "$(find "$E2E/versions" -name '*.preserved.*' 2>/dev/null)" ]]; then
+  ok "e2e: no preserved copy is left behind"
+else bad "e2e: no preserved copy is left behind"; fi
+
+# --- 8d. --check must agree with --run ----------------------------------------
+# A read-only check that reports "up to date" while --run would immediately
+# install tells the user the opposite of what is about to happen.
+
+e2e_reset "${SANDBOX}/asset-good"; e2e_rebuild_releases "v9.9.9-linux-x64-2"
+e2e_installed "v9.9.9-linux-x64"
+out="$(e2e_run --check)"
+if [[ "$out" == *"rebuild available (v9.9.9-linux-x64-2)"* ]]; then ok "--check reports an available rebuild"; else bad "--check reports an available rebuild (got: ${out})"; fi
+
+e2e_reset "${SANDBOX}/asset-good"; e2e_rebuild_releases "v9.9.9-linux-x64-2"
+e2e_installed "v9.9.9-linux-x64-2"
+out="$(e2e_run --check)"
+if [[ "$out" == *"up to date"* ]]; then ok "--check reports up to date once the rebuild is installed"; else bad "--check reports up to date once the rebuild is installed (got: ${out})"; fi
+
+# The official updater replacing the patched binary keeps the version identical.
+e2e_reset "${SANDBOX}/asset-good"
+printf '#!/bin/sh\necho "9.9.9 (Claude Code)"\n' > "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
+ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
+printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
+out="$(e2e_run --check)"
+if [[ "$out" == *"reinstall needed"* ]]; then ok "--check reports an unpatched binary as needing reinstall"; else bad "--check reports an unpatched binary as needing reinstall (got: ${out})"; fi
 
 # --- 9. usage -----------------------------------------------------------------
 bash "$UPDATE_SH" >/dev/null 2>&1

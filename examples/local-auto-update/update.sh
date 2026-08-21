@@ -542,7 +542,22 @@ perform_update() {
   # --- Install --------------------------------------------------------------
   mkdir -p "$VERSIONS_DIR"
   local dest="${VERSIONS_DIR}/${LATEST_VERSION}"
-  install -m 0755 "$asset_path" "$dest" || fail "Failed to install binary to ${dest}"
+  # --force, the unpatched self-heal, and a rebuild all install over a
+  # destination that is also the current symlink target. The pre-install check
+  # cannot cover the case where an artifact passes from the temp directory and
+  # then fails from its installed location: the old binary would already be
+  # gone, and `old_target` would name the file the failed replacement now
+  # occupies, so rolling the symlink back would restore nothing. Move the
+  # existing build aside first; it is put back if post-verify fails.
+  local preserved=""
+  if [[ -e "$dest" ]]; then
+    preserved="${dest}.preserved.$$"
+    mv -f "$dest" "$preserved" || fail "Failed to preserve the existing ${dest}"
+  fi
+  if ! install -m 0755 "$asset_path" "$dest"; then
+    [[ -n "$preserved" ]] && mv -f "$preserved" "$dest"
+    fail "Failed to install binary to ${dest}"
+  fi
   if (( IS_MACOS )); then
     xattr -d com.apple.quarantine "$dest" 2>/dev/null || true
   fi
@@ -560,12 +575,17 @@ perform_update() {
   version_output="$("$BIN_LINK" --version 2>&1 || true)"
   if version_output_matches "$version_output" "$LATEST_VERSION"; then
     log "Post-verify OK: ${version_output//$'\n'/ | }"
+    [[ -n "$preserved" ]] && rm -f "$preserved"
     printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
       log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."
     log "Update to ${LATEST_TAG} complete."
     prune_old_versions
   else
     log "ERROR: Post-verify FAILED. Expected version ${LATEST_VERSION} and (patched). Got: ${version_output//$'\n'/ | }"
+    if [[ -n "$preserved" ]]; then
+      mv -f "$preserved" "$dest"
+      log "Restored the previous ${dest} that this install had replaced."
+    fi
     if [[ -n "$old_target" ]]; then
       swap_symlink "$old_target"
       log "Rolled back symlink ${BIN_LINK} -> ${old_target}"
@@ -590,8 +610,20 @@ do_check() {
     if [[ -n "$INSTALLED_VERSION" ]]; then
       case "$(semver_relation "$LATEST_VERSION" "$INSTALLED_VERSION")" in
         newer) printf 'Status:         update available\n' ;;
-        same)  printf 'Status:         up to date\n' ;;
         older) printf 'Status:         installed is newer than latest release\n' ;;
+        same)
+          # Same version is not the same as nothing to do: --run also reinstalls
+          # for a newer rebuild of this version, or when the official updater
+          # has replaced the patched binary. Reporting "up to date" in either
+          # case would tell the user the opposite of what --run is about to do.
+          if (( $(tag_rebuild_rank "$LATEST_TAG") > $(installed_rebuild_rank) )); then
+            printf 'Status:         rebuild available (%s)\n' "$LATEST_TAG"
+          elif ! installed_is_patched; then
+            printf 'Status:         reinstall needed (installed binary is not patched)\n'
+          else
+            printf 'Status:         up to date\n'
+          fi
+          ;;
       esac
     fi
   else
