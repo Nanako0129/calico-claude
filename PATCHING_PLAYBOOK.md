@@ -249,6 +249,27 @@ Minified locals differ ACROSS PLATFORMS for the same version — matchers must n
   `tests/compact-body-policy.test.js`, plus a composed renamed-`source` fixture that keeps the
   verifier's header-order check from re-pinning `o`
 
+The same cross-platform local swap also hit `custom-context-window`, and there the
+`scripts/verify-patched-binary.ts` MARKER — not just the patcher — embedded a minified local:
+
+- the effective-window function is `function NAME(e,t){let A=Math.min(F(e),G),B=H()?t:void 0,{window:C}=I(e,B);return C-A}`.
+  On macos-arm64/linux-x64/windows-x64 the reserve local A is `r` and the ctx local B is `n`
+  (`return o-r`); on linux-arm64 and windows-arm64 they are swapped (A=`n`, B=`r`, `return o-n`).
+  The patcher pinned `let r=Math.min(...),n=...;return o-r`, so it matched 4/4 candidates on the
+  three non-arm64 platforms but only 3/4 on the two arm64 builds. Because `patched === candidates`,
+  `--assert-all` did NOT catch it — a silent candidate-count drop, the same failure shape that hid
+  the thinking-streaming regression. The patcher now captures the reserve/ctx/window locals and
+  backreferences the ctx local inside `I(e,B)`
+- the verifier's `custom-context-window` check listed the literal marker `CALICO_MODEL_CONTEXT_WINDOWS?o:o-r`.
+  After the patcher fix, arm64 emits `?o:o-n`, so the pinned marker failed verification (this is
+  where CI actually broke — on the verifier, not the patcher). A verifier marker is a matcher too:
+  it must anchor on structure, never on a minified local. The check now uses
+  `/CALICO_MODEL_CONTEXT_WINDOWS\?([A-Za-z_$][\w$]*):\1-[A-Za-z_$][\w$]*/`, backreferencing the
+  window local and accepting any reserve local
+- regression coverage: the swapped `let n=Math.min(...),r=...;return w-n` shape (window local also
+  renamed to `w`) is tested in `tests/statusline-committed-usage.test.js`, asserting patched 4/4,
+  the `?w:w-n` gate, and verifier acceptance
+
 ### `statusline-committed-usage`
 
 Intent:

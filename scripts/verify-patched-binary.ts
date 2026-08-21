@@ -1067,11 +1067,22 @@ const CHECKS: Check[] = [
         "CALICO_CONTEXT_DISPLAY_PERCENT",
         "__calico_context_window",
         "__calico_display_window",
-        "CALICO_MODEL_CONTEXT_WINDOWS?o:o-r",
         "if(process.env.CALICO_MODEL_CONTEXT_WINDOWS)return",
       ];
       const missing = required.filter((marker) => !content.includes(marker));
-      return missing.length > 0 ? `missing marker(s): ${missing.join(", ")}` : null;
+      if (missing.length > 0) {
+        return `missing marker(s): ${missing.join(", ")}`;
+      }
+      // The effective-window gate reads `CALICO_MODEL_CONTEXT_WINDOWS?<window>:<window>-<reserve>`,
+      // where both are minified locals that differ per platform build of the
+      // same version (arm64 swaps the reserve/ctx bindings, yielding `?o:o-n`
+      // instead of `?o:o-r`). Match the shape with the window local
+      // backreferenced instead of pinning `o`/`r`.
+      const effectiveGate =
+        /CALICO_MODEL_CONTEXT_WINDOWS\?([A-Za-z_$][\w$]*):\1-[A-Za-z_$][\w$]*/;
+      return effectiveGate.test(content)
+        ? null
+        : "missing effective-window gate (CALICO_MODEL_CONTEXT_WINDOWS?<window>:<window>-<reserve>)";
     },
   },
   {

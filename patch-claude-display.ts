@@ -1865,14 +1865,18 @@ function patchCustomContextWindows(content) {
   // Claude's stock pipeline subtracts an output reserve and may precompute at
   // a separate buffer fraction. In opt-in Calico mode, use the raw mapped
   // window and the explicit percentage as the single compact boundary.
+  // The reserve local (Math.min result) and the ctx local are swapped on some
+  // platform builds of the same version (arm64: `let n=Math.min(...),r=...`
+  // → `return o-n`; elsewhere `let r=Math.min(...),n=...` → `return o-r`), so
+  // capture the window and reserve locals instead of pinning `o`/`r`.
   const effectiveWindowPattern =
-    /(function [A-Za-z_$][\w$]*\(e,t\)\{let r=Math\.min\([A-Za-z_$][\w$]*\(e\),[A-Za-z_$][\w$]*\),n=[A-Za-z_$][\w$]*\(\)\?t:void 0,\{window:o\}=[A-Za-z_$][\w$]*\(e,n\);return )(o-r)(\})/g;
+    /(function [A-Za-z_$][\w$]*\(e,t\)\{let ([A-Za-z_$][\w$]*)=Math\.min\([A-Za-z_$][\w$]*\(e\),[A-Za-z_$][\w$]*\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\)\?t:void 0,\{window:([A-Za-z_$][\w$]*)\}=[A-Za-z_$][\w$]*\(e,\3\);return )(\4-\2)(\})/g;
   output = output.replace(
     effectiveWindowPattern,
-    (full, prefix, originalReturn, suffix) => {
+    (full, prefix, reserveLocal, ctxLocal, windowLocal, originalReturn, suffix) => {
       candidates += 1;
       patched += 1;
-      return `${prefix}process.env.CALICO_MODEL_CONTEXT_WINDOWS?o:${originalReturn}${suffix}`;
+      return `${prefix}process.env.CALICO_MODEL_CONTEXT_WINDOWS?${windowLocal}:${originalReturn}${suffix}`;
     }
   );
 
