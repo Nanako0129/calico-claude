@@ -49,6 +49,8 @@ a script and not a one-line `curl | bash` in a cron job:
 | Versions are compared as **whole tokens** | `2.1.24` is a substring of `2.1.240`; a substring test would accept a mislabeled release at the one gate meant to catch it. The installed version is the leading `X.Y.Z` of the symlink target's basename, so a pid-suffixed install still reads as its bare version. |
 | The build is verified **before** the swap | It is checked directly, never through the launcher symlink. Reading it through the link is unsound once runs can overlap — another updater may have repointed it — and verifying first removes the need to undo a swap at all. |
 | A launcher that is not a symlink is **refused** | Replacing a regular file would destroy something this updater did not create and cannot restore. |
+| Pruning runs **inside the commit lock** | Pruning snapshots the current target and then deletes. If another run swaps in between, the snapshot names a build that is no longer current and the live one can be deleted, leaving the launcher dangling. Inside the lock the target cannot move. |
+| The tag record and the launcher **advance together** | They describe one fact between them. The record is written to a temporary file before the swap, so a failure is caught while the launcher is still untouched; what remains after the swap is a rename. |
 | The destination is **re-checked under the commit lock** | Age-based in-flight protection assumes a run reaches the swap soon after installing; a suspended machine breaks that. One stat inside the lock is the only point where the answer cannot change underneath. |
 | Pruning is gated by **age**, not by the lock | An entry younger than `PRUNE_MIN_AGE_SECONDS` may belong to a run that has not swapped its link yet, so it is left alone. Gating on the lock instead would have been worse: an abandoned lock is never removed, so pruning would stop for good. |
 | An expired commit lock is **not reclaimed** | Every delete-and-reacquire protocol tried here let two runs enter the section the lock serializes. Unlike the run lock, this one spans two syscalls and cannot be stranded by an ordinary kill, so a stranded one means something needs a human — and stopping is the safe direction. The message names the directory to remove. |
@@ -153,7 +155,7 @@ asset; the attestation proves the release asset came out of this repo's CI.
 bash examples/local-auto-update/test-update.sh
 ```
 
-92 assertions, offline: platform detection, the checksum gate (tampered, absent,
+95 assertions, offline: platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
 throttling, lock behaviour (a young lock blocks; an aged one is ignored but

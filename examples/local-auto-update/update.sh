@@ -618,7 +618,13 @@ perform_update() {
       log "Installed version ${INSTALLED_VERSION} is up to date (latest ${LATEST_VERSION}), but --force given; reinstalling."
     else
       log "Installed version ${INSTALLED_VERSION} is up to date (latest ${LATEST_VERSION}); nothing to do. Exiting."
-      prune_old_versions
+      # Same reasoning as the post-swap prune: the current target must not move
+      # while this decides what to delete. Skipping the pass when the lock is
+      # busy costs nothing.
+      if acquire_commit_lock; then
+        prune_old_versions
+        release_commit_lock
+      fi
       exit 0
     fi
   fi
@@ -720,13 +726,32 @@ perform_update() {
     exit 0
   fi
 
+  # The tag record and the symlink describe one fact between them, so a failure
+  # to write the record must not leave the launcher advanced. Treating that write
+  # as merely "degraded" could strand a high rebuild rank from an older version
+  # on top of a newer one, after which a later rebuild reads as already current
+  # and becomes unreachable even with --force. Write it to a temporary file
+  # first: a failure there is caught while the launcher is still untouched, and
+  # what remains after the swap is a rename.
+  local tag_tmp="${INSTALLED_TAG_FILE}.tmp.$$"
+  if ! printf '%s\n' "$LATEST_TAG" > "$tag_tmp" 2>/dev/null; then
+    rm -f "$tag_tmp" 2>/dev/null || true
+    log "Cannot write ${INSTALLED_TAG_FILE}; leaving ${BIN_LINK} unchanged so the record and the launcher stay consistent."
+    release_commit_lock
+    exit 0
+  fi
+
   swap_symlink "$dest"
-  printf '%s\n' "$LATEST_TAG" > "$INSTALLED_TAG_FILE" 2>/dev/null ||
-    log "WARNING: could not record ${INSTALLED_TAG_FILE}; rebuild tracking is degraded."
-  release_commit_lock
+  mv -f "$tag_tmp" "$INSTALLED_TAG_FILE"
   log "Symlink ${BIN_LINK} -> ${dest}"
   log "Update to ${LATEST_TAG} complete."
+
+  # Pruned while still holding the commit lock. Pruning snapshots the current
+  # target and then deletes; if another run swaps in between, the snapshot names
+  # a build that is no longer current and the live one can be deleted, leaving
+  # the launcher dangling. Inside the lock the target cannot move.
   prune_old_versions
+  release_commit_lock
 }
 
 do_check() {

@@ -658,6 +658,29 @@ if [[ -L "$E2E/bin/calico-claude" && -e "$E2E/bin/calico-claude" ]]; then
   ok "e2e: the launcher still resolves to a real file"
 else bad "e2e: the launcher still resolves to a real file"; fi
 
+# --- 8e5. the launcher never advances past its record ---------------------------
+# The tag record and the symlink describe one fact between them. A stale high
+# rebuild rank left on top of a newer version makes later rebuilds read as
+# already current — unreachable even with --force — so the launcher must not
+# move when the record cannot be updated with it.
+#
+# A read-only state directory blocks both the commit lock and the tag write.
+# Both paths must produce the same outcome, which is what this asserts: the
+# launcher stays put and the record is untouched. CALICO_COMMIT_WAIT keeps the
+# lock retry from stretching the suite.
+
+e2e_reset "${SANDBOX}/asset-good"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.8"; chmod +x "$E2E/versions/9.9.8"
+ln -sf "$E2E/versions/9.9.8" "$E2E/bin/calico-claude"
+printf 'v9.9.8-linux-x64-5\n' > "$E2E/state/installed-tag"
+chmod 500 "$E2E/state"
+out="$(CALICO_COMMIT_WAIT=1 e2e_run --run)"
+rc=$?
+chmod 700 "$E2E/state"
+check "e2e: an unwritable state directory does not fail the run" "0" "$rc"
+check "e2e: the launcher is not advanced past its record" "$E2E/versions/9.9.8" "$(readlink "$E2E/bin/calico-claude")"
+check "e2e: the stale record is left intact" "v9.9.8-linux-x64-5" "$(cat "$E2E/state/installed-tag")"
+
 # --- 8f. a launcher we do not manage is refused --------------------------------
 # swap_symlink would mv over a regular file, and nothing could put it back.
 
