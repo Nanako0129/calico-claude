@@ -702,8 +702,10 @@ practice this document recommends — found no behavioral change to anything doc
 >   --output /tmp/claude-240 --manifest-out /tmp/manifest-240.json
 > ```
 >
-> Redirect the manifest as well as the binary — its default destination is `work/manifest.json`,
-> which describes whatever binary is already in `work/`.
+> Redirect the manifest as well as the binary. The downloader fetches the *requested* release's
+> manifest and writes it to `work/manifest.json` independently of `--output`, so without
+> `--manifest-out` it overwrites the manifest that currently pairs with the binary already in
+> `work/`, leaving a `2.1.240` manifest beside an older executable.
 
 | Measure | 2.1.239 | 2.1.240 |
 |---|---|---|
@@ -811,8 +813,10 @@ jq -r '.platforms["darwin-arm64"].checksum' work/manifest.json
 shasum -a 256 work/claude.native.original | cut -d' ' -f1   # must be identical
 ```
 
-When downloading a second release to compare against, redirect **both** outputs, or the manifest
-lands on top of the one describing the binary already in `work/`:
+When downloading a second release to compare against, redirect **both** outputs. The requested
+release's manifest is fetched regardless of where the binary goes, so without `--manifest-out` it
+overwrites the manifest that currently pairs with the binary in `work/` — and the pairing check
+above then compares a new manifest against an old executable:
 
 ```bash
 bash scripts/download-native-from-installer.sh \
