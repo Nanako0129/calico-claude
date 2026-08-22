@@ -322,9 +322,11 @@ pursue. If you are weighing a choice, give a recommendation, not an exhaustive s
 | Off (default) | `You are an interactive agent that helps users with software engineering tasks.` |
 | On | `You are an agent working with the user toward their goals, using your own judgment along the way.` |
 
-`THISTLE_GREBE` is the only variable in this group whose environment value wins at the very top of
-the chain in both directions, ahead of client data, GrowthBook, and the model floor. It is latched
-once per session on first read.
+`THISTLE_GREBE` has the longest fallback chain of the three — environment, then client data, then
+GrowthBook, then a model floor — and the environment value is consulted ahead of all of them. It is
+the only one of the nine that can override a model-level decision: setting it to `default`
+explicitly defeats the `no_nudges` floor that some model bundles apply. The resolved value is
+latched once per session on first read.
 
 | Value | Effect |
 |---|---|
@@ -435,11 +437,10 @@ Only you see that command's output — the user's terminal shows at most a few l
 user needs to read any of it, put it in your reply.
 ```
 
-### An arbitrary injection channel
+### Arbitrary injection channels
 
-`TOASTY_THIMBLE` is the only variable in the entire hidden set that injects text of your choosing
-into the conversation. Whatever string it holds is wrapped and delivered after a tool-result turn,
-once per model per conversation:
+Two variables in the hidden set put text of your choosing into the conversation. Both reach the
+identical renderer, `(e) => [An({content: Ov(e.text), isMeta: !0})]`, which wraps the string as:
 
 ```text
 <system-reminder>
@@ -447,9 +448,23 @@ once per model per conversation:
 </system-reminder>
 ```
 
-It is skipped when the preceding tool results contain a rejection or interruption, and any
-boolean-like value — `1`, `true`, `on` as well as `0`, `false`, `off` — resolves to "no custom
-reminder" rather than to a literal string.
+They differ in what carries the text there:
+
+| | `TOASTY_THIMBLE` | `SILENT_TURN_REMINDER_TEXT` |
+|---|---|---|
+| Purpose | Exists only to carry your text; no built-in default | Replaces the wording of a reminder that has its own default |
+| Fires | After a tool-result turn, once per model per conversation | Whenever the silent-turn reminder fires, up to three times per stretch |
+| Validation | Boolean-like values — `1`, `true`, `on`, `0`, `false`, `off` — all resolve to "no custom reminder" | None: `Eoh()` returns the environment string as-is, with no trim or emptiness check |
+| Needs a companion flag | No | Only useful while `SILENT_TURN_REMINDER` is on |
+
+`TOASTY_THIMBLE` is additionally skipped when the preceding tool results contain a rejection or
+interruption. Both names are stripped from project and local settings scopes, so neither can be set
+by a repository.
+
+> ⚠️ **Treat these as a prompt-injection surface when auditing.** Anything that can write to user or
+> managed settings, or to the environment of a launching process, can place arbitrary text into
+> every conversation inside `<system-reminder>` tags, which the model is trained to treat as
+> harness-authored.
 
 > **Note:** four of these names are stripped from project and local settings and must live in user
 > or managed settings: `TOASTY_THIMBLE` and all three `SILENT_TURN_REMINDER*` variables. The binary
