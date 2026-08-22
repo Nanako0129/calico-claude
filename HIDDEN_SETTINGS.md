@@ -691,14 +691,30 @@ unknown.
 `2.1.240` was released the day after this analysis. Re-running the differential against it — the
 practice this document recommends — found no behavioral change to anything documented here.
 
+> **Second pinned artifact:** Claude Code `2.1.240` for **macOS arm64** (`darwin-arm64`), SHA-256
+> `8917e01c99ea0ce6ed887a1729a4cda693c758fe542747be71756987b145c772`, size `325055632`. Both sides
+> of every comparison below are that platform, so a difference is a release change and not a
+> platform difference. Obtain the same artifact with:
+>
+> ```bash
+> bash scripts/download-native-from-installer.sh \
+>   --platform darwin-arm64 --version 2.1.240 --output /tmp/claude-240
+> ```
+
 | Measure | 2.1.239 | 2.1.240 |
 |---|---|---|
 | `CLAUDE_CODE_*` in the typed schema | 452 | 453 |
 | With a direct runtime read | 405 | 406 |
 | Documented variables still present | — | 37 of 37, no parser type changed |
 | Documented settings keys still present | — | 21 of 21 |
-| Root settings keys carrying `.describe()` | 643 | 643 |
+| Root settings keys, narrow scalar pattern[^keys] | 152 | 152 |
+| All schema properties carrying `.describe()`[^broad] | 643 | 643 |
 | Quoted prompt and description text | — | all present |
+
+[^broad]: A deliberately wider probe than the row above it: constructor-agnostic and counting every
+described property in every schema in the bundle, nested fields included, not only root
+`settings.json` keys. It is here as a stability signal across the whole schema surface — do not
+compare it against the root-key counts in [Inventory](#inventory), which use the narrow pattern.
 
 Nothing was removed. The three gates this document leans on are structurally identical and only
 their minified symbols moved, which is why the code quotes above are labeled as `2.1.239` shapes:
