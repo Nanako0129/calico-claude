@@ -128,7 +128,12 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 > 名單本身被凍結時才可重現。兩份名單以 2026-08-22 的快照與本文一起提交：
 > [`HIDDEN_SETTINGS.public-env-2026-08-22.txt`](./HIDDEN_SETTINGS.public-env-2026-08-22.txt)（178 個名稱）與
 > [`HIDDEN_SETTINGS.public-settings-2026-08-22.txt`](./HIDDEN_SETTINGS.public-settings-2026-08-22.txt)（145 個鍵）。
-> 沒有它們的話，日後官方文件的異動會與 binary 本身的異動無法區分。
+> 沒有它們的話，日後官方文件的異動會與 binary 本身的異動無法區分。兩份都以 `LC_ALL=C` 排序，因此可以直接餵給
+> `comm` 與 `join`——這兩個工具依呼叫端的 collation 比較，遇到以 locale 排序的檔案會出錯或給出錯誤結果：
+>
+> ```bash
+> grep -v '^#' HIDDEN_SETTINGS.public-env-2026-08-22.txt | LC_ALL=C sort -c
+> ```
 
 | 量測項目 | 數量 |
 |---|---|

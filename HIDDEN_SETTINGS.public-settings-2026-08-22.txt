@@ -12,17 +12,20 @@
 # https://code.claude.com/docs/en/settings-reference.md at sitemap lastmod
 # 2026-08-22 03:28:33.639 UTC.
 #
-# 145 canonical root keys, sorted. Lines beginning with # are comments.
+# 145 canonical root keys, sorted under LC_ALL=C so the file can be fed to comm
+# and join directly. Verify with:
+#   grep -v "^#" FILE | LC_ALL=C sort -c
+#
 advisorModel
 agent
 agentPushNotifEnabled
 allowAllClaudeAiMcps
-allowedChannelPlugins
-allowedHttpHookUrls
-allowedMcpServers
 allowManagedHooksOnly
 allowManagedMcpServersOnly
 allowManagedPermissionRulesOnly
+allowedChannelPlugins
+allowedHttpHookUrls
+allowedMcpServers
 alwaysThinkingEnabled
 apiKeyHelper
 askUserQuestionTimeout
@@ -59,20 +62,20 @@ disableBundledSkills
 disableClaudeAiConnectors
 disableCommandPluginSources
 disableDeepLinkRegistration
-disabledMcpjsonServers
 disableMobileSimulatorTools
 disableRemoteControl
 disableSideloadFlags
 disableSkillShellExecution
 disableWorkflows
+disabledMcpjsonServers
 editorMode
 effortLevel
 emojiCompletionEnabled
 enableAllProjectMcpServers
 enableArtifact
+enableWorkflows
 enabledMcpjsonServers
 enabledPlugins
-enableWorkflows
 enforceAvailableModels
 env
 extraKnownMarketplaces
@@ -108,11 +111,11 @@ pluginConfigs
 pluginSuggestionMarketplaces
 pluginTrustMessage
 policyHelper
+prUrlTemplate
 preferredNotifChannel
 prefersReducedMotion
 processWrapper
 promptSuggestionEnabled
-prUrlTemplate
 remoteControlAtStartup
 requiredMaximumVersion
 requiredMinimumVersion

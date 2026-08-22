@@ -144,7 +144,12 @@ Counts below are from the pinned bundle, measured independently of any prior ana
 > (178 names) and
 > [`HIDDEN_SETTINGS.public-settings-2026-08-22.txt`](./HIDDEN_SETTINGS.public-settings-2026-08-22.txt)
 > (145 keys). Without them, a later documentation change would be indistinguishable from a change in
-> the binary.
+> the binary. Both are sorted under `LC_ALL=C` so they can be fed straight to `comm` and `join`,
+> which compare under the caller's collation and will misbehave on a locale-sorted file:
+>
+> ```bash
+> grep -v '^#' HIDDEN_SETTINGS.public-env-2026-08-22.txt | LC_ALL=C sort -c
+> ```
 
 | Measure | Count |
 |---|---|
