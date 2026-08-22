@@ -11,10 +11,12 @@
 
 This is a behavioral map of the environment variables and `settings.json` keys that the native
 Claude Code binary accepts but the public reference does not describe. The two populations are
-admitted on different terms: an environment variable is listed only when the binary both declares
-it in a typed schema and reads it at runtime, whereas a settings key is listed when the schema
-accepts it — a weaker bar, and two of the twenty-one turn out to have no runtime consumer at all,
-which the [dead-key section](#two-keys-are-declared-but-dead) identifies. It exists
+admitted on different terms. In the `2.1.239` inventory an environment variable is listed only when
+the binary both declares it in a typed schema and reads it at runtime, whereas a settings key is
+listed when the schema accepts it — a weaker bar, and two of the twenty-one turn out to have no
+runtime consumer at all, which the [dead-key section](#two-keys-are-declared-but-dead) identifies.
+The `2.1.240` differential relaxes the first rule once, admitting `CLAUDE_CODE_SABLE_THRUSH`, which
+is read directly without a typed-schema entry and is labeled as such where it appears. It exists
 because a patched-binary project needs to know which behavior is already switchable from the
 outside before deciding what is worth patching: a flag that flips a prompt section is cheaper and
 more upgrade-proof than a byte patch that has to be re-applied on every release. The findings come
@@ -518,9 +520,11 @@ interruption. Both names are stripped from project and local settings scopes, so
 by a repository.
 
 > ⚠️ **Treat these as a prompt-injection surface when auditing.** Anything that can write to user or
-> managed settings, or to the environment of a launching process, can place arbitrary text into
-> every conversation inside `<system-reminder>` tags, which the model is trained to treat as
-> harness-authored.
+> managed settings, or to the environment of a launching process, can place arbitrary text inside
+> `<system-reminder>` tags, which the model is trained to treat as harness-authored. Delivery is not
+> unconditional — it needs a conversation that reaches the triggers in the table above, a tool-result
+> turn for `TOASTY_THIMBLE` or a silent stretch for `SILENT_TURN_REMINDER_TEXT` — but any working
+> session reaches them routinely.
 
 > **Note:** four of these names are stripped from project and local settings and must live in user
 > or managed settings: `TOASTY_THIMBLE` and all three `SILENT_TURN_REMINDER*` variables. The binary

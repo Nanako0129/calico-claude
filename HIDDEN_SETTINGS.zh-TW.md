@@ -11,9 +11,10 @@
 ## 文件目的
 
 這份文件描述原生 Claude Code binary 接受、但官方文件沒有說明的環境變數與 `settings.json` 鍵。兩類名單的收錄標準
-並不相同：環境變數必須同時「宣告在 typed schema 裡」且「runtime 真的會讀取」才列入；settings 鍵只要 schema 接受
-就列入，這是比較寬鬆的門檻，而二十一個裡面有兩個實際上根本沒有任何 runtime 消費者，詳見
-[宣告了但沒人讀的鍵](#兩個宣告了但沒人讀的鍵)。
+並不相同。在 `2.1.239` 的清點中，環境變數必須同時「宣告在 typed schema 裡」且「runtime 真的會讀取」才列入；
+settings 鍵只要 schema 接受就列入，這是比較寬鬆的門檻，而二十一個裡面有兩個實際上根本沒有任何 runtime 消費者，
+詳見[宣告了但沒人讀的鍵](#兩個宣告了但沒人讀的鍵)。`2.1.240` 的差異比對把第一條規則放寬了一次，收錄了
+`CLAUDE_CODE_SABLE_THRUSH`——它是直接讀取、沒有 typed schema 條目的，在出現處也如此標註。
 
 之所以做這份研究，是因為一個 patch binary 的專案必須先知道哪些行為本來就能從外部開關，再決定什麼值得動手改：
 一個能翻掉整段 prompt 的旗標，遠比每次改版都要重新套用的 byte patch 便宜、也更耐得住升級。所有發現來自對抽取出的
@@ -477,8 +478,9 @@ user needs to read any of it, put it in your reply.
 剝除，所以 repo 無法設定它們。
 
 > ⚠️ **稽核時請把這兩個當成 prompt injection 面來看。** 任何能寫入 user 或 managed settings、或能寫入啟動程序
-> 環境變數的東西，都能把任意文字放進**每一次**對話的 `<system-reminder>` 標籤裡，而模型被訓練成把該標籤內容
-> 視為 harness 所撰寫。
+> 環境變數的東西，都能把任意文字放進 `<system-reminder>` 標籤裡，而模型被訓練成把該標籤內容視為 harness 所撰寫。
+> 送達並非無條件——必須是達到上表觸發條件的對話，`TOASTY_THIMBLE` 需要一個工具結果輪次，
+> `SILENT_TURN_REMINDER_TEXT` 需要一段沉默區間——但任何實際在工作的 session 都會例行達到這些條件。
 
 > **注意：** 這組裡有四個名稱會被 project 與 local settings 剝除，必須放在 user 或 managed settings：
 > `TOASTY_THIMBLE` 以及三個 `SILENT_TURN_REMINDER*`。binary 剝除時會發出警告：
