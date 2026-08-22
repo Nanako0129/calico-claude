@@ -116,6 +116,10 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 > ⚠️ **警告：** 每一個走 `F3r` 的代號都是單向 force-on 開關。設 `CLAUDE_CODE_BISON_CAIRN=0` 並不會移除它控制的
 > 那段文字，model bundle 可以獨立把它打開。只有 `triBool` 與 enum 型的控制項才是真正的 kill switch。
 
+> **注意：** 底下所有「關不掉」的說法，指的都是**針對性**的控制。有一個已文件化的變數能整批壓掉這些段落：
+> `CLAUDE_CODE_SIMPLE` 會讓段落組裝在任何一個被求值之前就 early-return，只留下 `CWD:` 與 `Date:`。那不是關掉
+> 某一段的方法——它移除的是整個 system prompt 主體。
+
 ## 清點
 
 以下數字都是從釘住的那顆 bundle 獨立量測的，沒有沿用任何既有分析的結果。
@@ -309,7 +313,7 @@ jq -r '.clientDataCacheSlots | to_entries[]
 ### 三個真的關得掉的
 
 `ACT_DONT_REDERIVE` 的解析是 `env ?? it("tengu_cedar_lantern", true)`——GrowthBook 的預設值是**開**，所以 `0`
-是唯一能移除這段文字的方法：
+是唯一能針對性移除這段文字的方法：
 
 ```text
 When you have enough information to act, act. Do not re-derive facts already established in the
@@ -644,7 +648,7 @@ settings schema 會自我說明：每個鍵都帶著 `.describe()` 字串，供�
 `proxyAuthHelper` 所有範圍都接受，但來源若是 project 或 local，必須先通過工作區信任確認；它同時也在「會產生
 子程序的設定」清單中，會被納入信任對話框的指紋計算。
 
-> ⚠️ **有兩個鍵帶有實質後果。** `autoUploadSessions` 會把本地 session 內容鏡像到 claude.ai，而 `proxyAuthHelper`
+> ⚠️ **有三個鍵帶有實質後果。** `autoUploadSessions` 會把本地 session 內容鏡像到 claude.ai，而 `proxyAuthHelper`
 > 與 `policyHelpers` 會執行 shell 指令。這三個都應該當成涉及憑證或隱私的設定看待，而不是便利性開關。
 
 ### 兩個宣告了但沒人讀的鍵

@@ -128,6 +128,11 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 > `CLAUDE_CODE_BISON_CAIRN=0` does not remove the section it controls; the model bundle can enable
 > it independently. Only `triBool` and enum controls are genuine kill switches.
 
+> **Note:** every "cannot be turned off" statement below means *targeted* control. One documented
+> variable suppresses these sections wholesale: `CLAUDE_CODE_SIMPLE` makes the section assembly
+> early-return before any of them is evaluated, leaving only `CWD:` and `Date:`. That is not a way
+> to disable one section — it removes the entire system prompt body.
+
 ## Inventory
 
 Counts below are from the pinned bundle, measured independently of any prior analysis.
@@ -341,7 +346,7 @@ remove, or swap.
 ### The three with real off switches
 
 `ACT_DONT_REDERIVE` resolves as `env ?? it("tengu_cedar_lantern", true)` — the GrowthBook default is
-**on**, so `0` is the only way to remove this text:
+**on**, so `0` is the only targeted way to remove this text:
 
 ```text
 When you have enough information to act, act. Do not re-derive facts already established in the
@@ -698,7 +703,7 @@ Not every key is accepted from every settings file. Three consent-affecting keys
 workspace trust first, and it is a member of the process-spawning settings list that gets
 fingerprinted for the trust dialog.
 
-> ⚠️ **Two keys carry real consequences.** `autoUploadSessions` mirrors local session content to
+> ⚠️ **Three keys carry real consequences.** `autoUploadSessions` mirrors local session content to
 > claude.ai, and `proxyAuthHelper` and `policyHelpers` execute shell commands. Treat all three as
 > credential- or privacy-bearing configuration rather than convenience toggles.
 
