@@ -124,6 +124,12 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 
 以下數字都是從釘住的那顆 bundle 獨立量測的，沒有沿用任何既有分析的結果。
 
+> **比較的另一邊也釘住了。** Anthropic 的官方文件沒有版本號，所以「不在官方文件中」這類數字，唯有在被比對的
+> 名單本身被凍結時才可重現。兩份名單以 2026-08-22 的快照與本文一起提交：
+> [`HIDDEN_SETTINGS.public-env-2026-08-22.txt`](./HIDDEN_SETTINGS.public-env-2026-08-22.txt)（178 個名稱）與
+> [`HIDDEN_SETTINGS.public-settings-2026-08-22.txt`](./HIDDEN_SETTINGS.public-settings-2026-08-22.txt)（145 個鍵）。
+> 沒有它們的話，日後官方文件的異動會與 binary 本身的異動無法區分。
+
 | 量測項目 | 數量 |
 |---|---|
 | typed env schema 中的 `CLAUDE_CODE_*` | 452 |

@@ -137,6 +137,15 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 
 Counts below are from the pinned bundle, measured independently of any prior analysis.
 
+> **The comparison input is pinned too.** Anthropic's public documentation carries no version, so a
+> figure like "absent from the public reference" is only reproducible if the list it was compared
+> against is frozen. Both lists are committed beside this document at their 2026-08-22 snapshot:
+> [`HIDDEN_SETTINGS.public-env-2026-08-22.txt`](./HIDDEN_SETTINGS.public-env-2026-08-22.txt)
+> (178 names) and
+> [`HIDDEN_SETTINGS.public-settings-2026-08-22.txt`](./HIDDEN_SETTINGS.public-settings-2026-08-22.txt)
+> (145 keys). Without them, a later documentation change would be indistinguishable from a change in
+> the binary.
+
 | Measure | Count |
 |---|---|
 | `CLAUDE_CODE_*` names in the typed env schema | 452 |
