@@ -1,8 +1,9 @@
 # Hidden settings in native Claude Code
 
-> **Pinned artifact:** Claude Code `2.1.239`, SHA-256 `2b4f7aafdaa65bcc2335f56a4b276317837203f2c5587b1f2a17ca78ad14e36f`,
-> embedded build revision `9bf8e9521fe06414183309865310e27c9b8db3dd`. Every offset, gate name, and
-> behavior claim below applies to that binary only. Re-run the method after each update.
+> **Pinned artifact:** Claude Code `2.1.239` for **macOS arm64** (`darwin-arm64`), SHA-256
+> `2b4f7aafdaa65bcc2335f56a4b276317837203f2c5587b1f2a17ca78ad14e36f`, size `324973552`, embedded
+> build revision `9bf8e9521fe06414183309865310e27c9b8db3dd`. Every offset, gate name, and behavior
+> claim below applies to that binary only. Re-run the method after each update.
 
 ## Document purpose
 
@@ -33,12 +34,20 @@ from static tracing of the extracted JS bundle, cross-checked against live sessi
 ## Method and what "hidden" means
 
 The native binary is a Bun single-file executable with the application JS embedded in it. This repo
-already carries the extraction machinery, so the bundle can be pulled out without running anything:
+already carries the extraction machinery, so the bundle can be pulled out without running anything.
+Confirm you are pointing at the same artifact before comparing results — the installer resolves a
+distinct binary and checksum per platform, and the bundle contains platform-conditional code, so a
+`2.1.239` from another target is not the artifact analyzed here:
 
 ```bash
+# from the repository root, so ./scripts resolves
+export BIN="$HOME/.local/share/claude/versions/2.1.239"
+file "$BIN"            # expect: Mach-O 64-bit executable arm64
+shasum -a 256 "$BIN"   # expect: 2b4f7aaf...ad14e36f
+
 bun -e '
 const {readNativeContent} = require("./scripts/native-content.ts");
-const h = await readNativeContent(process.env.HOME + "/.local/share/claude/versions/2.1.239");
+const h = await readNativeContent(process.env.BIN);
 await Bun.write("content-239.js", h.content);
 '
 ```
