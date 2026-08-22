@@ -146,12 +146,18 @@ Counts below are from the pinned bundle, measured independently of any prior ana
 | Of the hidden set: `bool` (force-on shape) | 111 |
 | Of the hidden set: `triBool` (two-way) | 28 |
 | Of the hidden set: `str` / `int` / `enum` | 70 / 27 / 3 |
-| Root `settings.json` keys carrying a `.describe()` string | 152 measured[^keys] |
-| Of those, absent from the public settings index | 21 |
+| Root `settings.json` keys matched by a narrow scalar probe | 152[^keys] |
+| Undocumented root keys, enumerated separately | 21[^hidden] |
 
-[^keys]: Counted with a narrow pattern that matches scalar keys only; keys declared with object or
-array schema shapes are missed, so the true accepted-key total is slightly higher. Prior work
-reports 159.
+[^keys]: A lower bound, not a total. The probe matches only scalar keys of the form
+`X:Bt().optional().describe(…)` and misses keys declared with object or array schema shapes. Prior
+work reports 159 accepted root keys.
+
+[^hidden]: **Not a subset of the 152.** These were enumerated by comparing the public settings index
+against the schema directly, rather than by filtering the probe above. Only 9 of the 21 are matched
+by the narrow probe; the other 12 — including `breakReminder`, `quietHours`, `remote`,
+`policyHelpers`, and `xaaIdp` — are object-shaped or use different chaining. The two rows measure
+different things and must not be read as parent and child.
 
 The hidden set is dominated by `DISABLE_*` (41), `ENABLE_*` (14), `SKIP_*` (12), and `ARTIFACT_*`
 (12) prefixes. Most are host protocol fields, test fixtures, or telemetry plumbing rather than

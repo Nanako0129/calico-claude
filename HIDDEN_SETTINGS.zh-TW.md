@@ -133,11 +133,16 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 | 隱藏集合中的 `bool`（單向 force-on 形狀） | 111 |
 | 隱藏集合中的 `triBool`（雙向） | 28 |
 | 隱藏集合中的 `str` / `int` / `enum` | 70 / 27 / 3 |
-| 帶 `.describe()` 的 `settings.json` 根層鍵 | 量測到 152[^keys] |
-| 其中不在官方 settings 索引中的 | 21 |
+| 被窄 scalar 探針比對到的 `settings.json` 根層鍵 | 152[^keys] |
+| 未文件化的根層鍵，獨立量測 | 21[^hidden] |
 
-[^keys]: 用一個只比對 scalar 鍵的窄樣式計算；以 object 或 array schema 形狀宣告的鍵會被漏掉，所以實際被接受的鍵
-總數略高於此。既有研究回報的數字是 159。
+[^keys]: 這是下界，不是總數。該探針只比對 `X:Bt().optional().describe(…)` 形式的 scalar 鍵，會漏掉以 object 或
+array schema 形狀宣告的鍵。既有研究回報被接受的根層鍵是 159 個。
+
+[^hidden]: **這 21 個不是那 152 個的子集合。** 它們是拿官方 settings 索引直接與 schema 比對列舉出來的，不是從上
+一列的探針結果過濾而來。21 個中只有 9 個會被窄探針比對到；其餘 12 個——包括 `breakReminder`、`quietHours`、
+`remote`、`policyHelpers`、`xaaIdp`——是 object 形狀或使用了不同的串接寫法。兩列量的是不同的東西，不可當成
+父集合與子集合閱讀。
 
 隱藏集合以 `DISABLE_*`（41）、`ENABLE_*`（14）、`SKIP_*`（12）、`ARTIFACT_*`（12）這幾個前綴為大宗。其中多數是
 host 協定欄位、測試 fixture 或遙測管線，而不是使用者會想去設定的東西。
