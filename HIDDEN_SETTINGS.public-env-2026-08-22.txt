@@ -10,9 +10,13 @@
 # https://code.claude.com/docs/en/env-vars.md at sitemap lastmod
 # 2026-08-22 03:01:14.848 UTC.
 #
-# 178 names, sorted under LC_ALL=C so the file can be fed to comm and join
-# directly. Verify with:
-#   grep -v "^#" FILE | LC_ALL=C sort -c
+# 178 names, sorted under LC_ALL=C — but only the names below this header are.
+# This comment block makes the raw file unsorted, so strip it before any set
+# operation: comm and join both require sorted input and would otherwise fail
+# with an ordering error or fold this provenance text into the result.
+#
+#   grep -v "^#" FILE | LC_ALL=C sort -c        # verify the ordering
+#   LC_ALL=C comm -13 <(grep -v "^#" FILE) <(grep -v "^#" OTHER)
 #
 CLAUDE_CODE_ACCESSIBILITY
 CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD

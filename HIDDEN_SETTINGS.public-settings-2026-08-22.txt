@@ -12,9 +12,13 @@
 # https://code.claude.com/docs/en/settings-reference.md at sitemap lastmod
 # 2026-08-22 03:28:33.639 UTC.
 #
-# 145 canonical root keys, sorted under LC_ALL=C so the file can be fed to comm
-# and join directly. Verify with:
-#   grep -v "^#" FILE | LC_ALL=C sort -c
+# 145 canonical root keys, sorted under LC_ALL=C — but only the keys below this
+# header are. This comment block makes the raw file unsorted, so strip it before
+# any set operation: comm and join both require sorted input and would otherwise
+# fail with an ordering error or fold this provenance text into the result.
+#
+#   grep -v "^#" FILE | LC_ALL=C sort -c        # verify the ordering
+#   LC_ALL=C comm -13 <(grep -v "^#" FILE) <(grep -v "^#" OTHER)
 #
 advisorModel
 agent
