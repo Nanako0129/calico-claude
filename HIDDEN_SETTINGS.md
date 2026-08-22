@@ -122,11 +122,25 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 |---|---|---|---|
 | Env checked first | `triBool` | `1`, `true`, `yes`, `on` | `0`, `false`, `no`, `off` — works |
 | Env checked first | `enum` / `int` | named value | the "off" member, where one exists |
+| Env checked first | `str` | the string itself | resolver-specific — see below |
 | `F3r` OR-chain | `bool` | `1`, `true`, `yes`, `on` | **impossible** — model bundle or remote gate still wins |
 
 > ⚠️ **Warning:** every codename routed through `F3r` is a force-on switch. Setting
 > `CLAUDE_CODE_BISON_CAIRN=0` does not remove the section it controls; the model bundle can enable
-> it independently. Only `triBool` and enum controls are genuine kill switches.
+> it independently.
+
+**The resolver decides, not the parser type.** The parser is a strong signal but never the
+authority, and one documented variable proves it: `CLAUDE_CODE_TOASTY_THIMBLE` carries the `str`
+parser, yet its resolver rejects boolean-like spellings outright, so `0` is a working targeted
+disable:
+
+```js
+function qpT(e) { let t = e.trim(); return jp(t) || Gn(t) ? null : crm(t, "env", void 0) }
+function jp(e)  { … return ["0","false","no","off"].includes(String(e).toLowerCase().trim()) }
+```
+
+Before trusting an off value, read the call site. The per-variable tables below record what each
+resolver actually accepts.
 
 > **Note:** every "cannot be turned off" statement below means *targeted* control. One documented
 > variable suppresses these sections wholesale: `CLAUDE_CODE_SIMPLE` makes the section assembly
@@ -144,11 +158,15 @@ Counts below are from the pinned bundle, measured independently of any prior ana
 > (178 names) and
 > [`HIDDEN_SETTINGS.public-settings-2026-08-22.txt`](./HIDDEN_SETTINGS.public-settings-2026-08-22.txt)
 > (145 keys). Without them, a later documentation change would be indistinguishable from a change in
-> the binary. Both are sorted under `LC_ALL=C` so they can be fed straight to `comm` and `join`,
-> which compare under the caller's collation and will misbehave on a locale-sorted file:
+> the binary. Each file carries a `#` provenance header, and its names are sorted under `LC_ALL=C`
+> below it. Strip the header before set operations — `comm` and `join` compare under the caller's
+> collation and treat the comment lines as data, so passing a raw file fails with
+> `file 1 is not in sorted order`:
 >
 > ```bash
-> grep -v '^#' HIDDEN_SETTINGS.public-env-2026-08-22.txt | LC_ALL=C sort -c
+> body() { grep -v '^#' "$1"; }
+> LC_ALL=C comm -13 <(body HIDDEN_SETTINGS.public-env-2026-08-22.txt) <(body runtime-read-names.txt)
+> body HIDDEN_SETTINGS.public-env-2026-08-22.txt | LC_ALL=C sort -c   # verifies the ordering
 > ```
 
 | Measure | Count |
@@ -860,7 +878,7 @@ Three habits keep this from going wrong:
 
 | Habit | Why |
 |---|---|
-| Check the parser type before trusting `=0` | Only `triBool` and enum controls turn things off; `bool` names in an `F3r` chain ignore it |
+| Read the resolver before trusting `=0` | `bool` names in an `F3r` chain ignore it; `triBool` and enum controls honour it; a `str` control may or may not, depending on its call site |
 | Verify against the installed binary, not a stale copy | See the pitfall below |
 | Re-run the extraction after each update | Names, gates, and offsets are internal and move without notice |
 

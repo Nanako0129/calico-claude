@@ -111,10 +111,22 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 |---|---|---|---|
 | 先檢查 env | `triBool` | `1`、`true`、`yes`、`on` | `0`、`false`、`no`、`off` — 有效 |
 | 先檢查 env | `enum` / `int` | 指定的值 | 該列舉的「off」成員，如果有的話 |
+| 先檢查 env | `str` | 字串本身 | 依 resolver 而定 — 見下 |
 | `F3r` OR 鏈 | `bool` | `1`、`true`、`yes`、`on` | **關不掉** — model bundle 或遠端 gate 仍會贏 |
 
 > ⚠️ **警告：** 每一個走 `F3r` 的代號都是單向 force-on 開關。設 `CLAUDE_CODE_BISON_CAIRN=0` 並不會移除它控制的
-> 那段文字，model bundle 可以獨立把它打開。只有 `triBool` 與 enum 型的控制項才是真正的 kill switch。
+> 那段文字，model bundle 可以獨立把它打開。
+
+**決定權在 resolver，不在 parser 型別。** parser 是很強的訊號，但從來不是判準；有一個變數就足以證明：
+`CLAUDE_CODE_TOASTY_THIMBLE` 用的是 `str` parser，但它的 resolver 會直接拒絕類布林的寫法，所以 `0` 是有效的
+針對性關閉：
+
+```js
+function qpT(e) { let t = e.trim(); return jp(t) || Gn(t) ? null : crm(t, "env", void 0) }
+function jp(e)  { … return ["0","false","no","off"].includes(String(e).toLowerCase().trim()) }
+```
+
+在信任任何一個關閉值之前，先讀它的呼叫點。底下各組的表格記錄的就是每個 resolver 實際接受什麼。
 
 > **注意：** 底下所有「關不掉」的說法，指的都是**針對性**的控制。有一個已文件化的變數能整批壓掉這些段落：
 > `CLAUDE_CODE_SIMPLE` 會讓段落組裝在任何一個被求值之前就 early-return，只留下 `CWD:` 與 `Date:`。那不是關掉
@@ -128,11 +140,14 @@ function F3r(e, t, r) { return e || pci(r) || ok()?.[t] === !0 || it(t, !1) }
 > 名單本身被凍結時才可重現。兩份名單以 2026-08-22 的快照與本文一起提交：
 > [`HIDDEN_SETTINGS.public-env-2026-08-22.txt`](./HIDDEN_SETTINGS.public-env-2026-08-22.txt)（178 個名稱）與
 > [`HIDDEN_SETTINGS.public-settings-2026-08-22.txt`](./HIDDEN_SETTINGS.public-settings-2026-08-22.txt)（145 個鍵）。
-> 沒有它們的話，日後官方文件的異動會與 binary 本身的異動無法區分。兩份都以 `LC_ALL=C` 排序，因此可以直接餵給
-> `comm` 與 `join`——這兩個工具依呼叫端的 collation 比較，遇到以 locale 排序的檔案會出錯或給出錯誤結果：
+> 沒有它們的話，日後官方文件的異動會與 binary 本身的異動無法區分。每份檔案開頭都有 `#` 的來源標註，名單則在其下
+> 以 `LC_ALL=C` 排序。**做集合運算前要先去掉標註**——`comm` 與 `join` 依呼叫端的 collation 比較，而且會把註解行
+> 當成資料，直接餵原始檔會得到 `file 1 is not in sorted order`：
 >
 > ```bash
-> grep -v '^#' HIDDEN_SETTINGS.public-env-2026-08-22.txt | LC_ALL=C sort -c
+> body() { grep -v '^#' "$1"; }
+> LC_ALL=C comm -13 <(body HIDDEN_SETTINGS.public-env-2026-08-22.txt) <(body runtime-read-names.txt)
+> body HIDDEN_SETTINGS.public-env-2026-08-22.txt | LC_ALL=C sort -c   # 驗證排序
 > ```
 
 | 量測項目 | 數量 |
@@ -785,7 +800,7 @@ grep -o 'Pu\.CLAUDE_CODE_[A-Z_]*' content-240.js | sort -u | wc -l   # 22
 
 | 習慣 | 原因 |
 |---|---|
-| 相信 `=0` 之前先確認 parser 型別 | 只有 `triBool` 與 enum 控制項關得掉；`F3r` 鏈裡的 `bool` 名稱會無視它 |
+| 相信 `=0` 之前先讀 resolver | `F3r` 鏈裡的 `bool` 名稱會無視它；`triBool` 與 enum 控制項會遵守；`str` 控制項則視其呼叫點而定 |
 | 對照實際安裝的 binary，不要用過期的副本 | 見下方的陷阱 |
 | 每次改版後重跑抽取流程 | 名稱、gate 與 offset 都是內部細節，會無預警移動 |
 
