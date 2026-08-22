@@ -438,6 +438,7 @@ descriptions. Most are `triBool` and therefore genuinely switchable.
 | `CLAUDE_CODE_SILENT_TURN_REMINDER_TEXT` | `str` | replaces text | Overrides that nudge's wording |
 | `CLAUDE_CODE_SILENT_TURN_REMINDER_TURNS` | `int` ≥ 1 | n/a | Silence threshold, default 5 |
 | `CLAUDE_CODE_TODO_REMINDER_MODE` | `baseline\|off` | `off` works | Todo *and* task maintenance reminders |
+| `CLAUDE_CODE_TOTAL_TOKENS_REMINDER` | `str` → enum | `off` works | The `<total_tokens>N tokens left</total_tokens>` block itself |
 | `CLAUDE_CODE_TOTAL_TOKENS_REMINDER_BUDGET` | `int` > 0 | n/a | `padded-countdown` starting budget, default 15000000 |
 | `CLAUDE_CODE_TOTAL_TOKENS_REMINDER_AFTER_USER_TURN` | `triBool` | works | Re-anchor the budget each user turn; default on |
 | `CLAUDE_CODE_BASH_OUTPUT_AUDIENCE_NOTE` | `triBool` | works | Note that Bash output is not visible to the user |
@@ -464,6 +465,18 @@ without the relevant tool and at most once per ten turns:
 The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from
 tracking progress, consider using the TodoWrite tool to track progress. …
 ```
+
+`TOTAL_TOKENS_REMINDER` is the switch for the token block that appears in the system prompt and
+after each tool result. Its resolver checks the environment first, then the `totalTokensReminder`
+settings key, then client data, then a GrowthBook gate:
+
+| Value | Emits |
+|---|---|
+| `padded-countdown` | default — counts down from `TOTAL_TOKENS_REMINDER_BUDGET` |
+| `countdown` | the live remaining context-window tokens |
+| `fixed` | the literal `5000000` |
+| `infinite` | the literal `Infinite` |
+| `off` | nothing — the block disappears |
 
 The Bash-output note has the tightest trigger of the group — it requires an interactive session and
 more than three lines of stdout:
@@ -728,9 +741,9 @@ practice this document recommends — found no behavioral change to anything doc
 | All schema properties carrying `.describe()`[^broad] | 643 | 643 |
 | Quoted prompt and description text | — | all present |
 
-[^pop]: The 34 variables listed in the three group tables, plus `CLAUDE_CODE_THRIFTY_SONIC` from the
-case study, `CLAUDE_CODE_TOTAL_TOKENS_REMINDER` from the reminder section, and `CLAUDE_CODE_REPL`
-from the search section. Prior work covered 36 of these; `CLAUDE_CODE_REPL` is additional here. The
+[^pop]: The 35 variables listed in the three group tables, plus `CLAUDE_CODE_THRIFTY_SONIC` from the
+case study and `CLAUDE_CODE_REPL` from the search section. Prior work covered 36 of these;
+`CLAUDE_CODE_REPL` is additional here. The
 two variables introduced in `2.1.240` are excluded because a persistence check cannot apply to names
 that do not exist in `2.1.239` — counting them brings the document's full total to 39.
 
