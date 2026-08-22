@@ -1,0 +1,167 @@
+# Public settings.json root-key index, snapshot 2026-08-22
+#
+# This is the comparison input for the "21 undocumented settings keys" figure in
+# HIDDEN_SETTINGS.md. It is pinned here for the same reason as the environment
+# list: Anthropic's public documentation is not versioned, so without a frozen
+# list a later re-run cannot distinguish a documentation change from a schema
+# change.
+#
+# Provenance: the "Top-level settings.json keys" section of
+# charliie-dev/claude-code-hidden-settings, claude-code-hidden-settings-2.1.239.md,
+# which enumerates the canonical index from
+# https://code.claude.com/docs/en/settings-reference.md at sitemap lastmod
+# 2026-08-22 03:28:33.639 UTC.
+#
+# 145 canonical root keys, sorted under LC_ALL=C — but only the keys below this
+# header are. This comment block makes the raw file unsorted, so strip it before
+# any set operation: comm and join both require sorted input and would otherwise
+# fail with an ordering error or fold this provenance text into the result.
+#
+#   grep -v "^#" FILE | LC_ALL=C sort -c        # verify the ordering
+#   LC_ALL=C comm -13 <(grep -v "^#" FILE) <(grep -v "^#" OTHER)
+#
+advisorModel
+agent
+agentPushNotifEnabled
+allowAllClaudeAiMcps
+allowManagedHooksOnly
+allowManagedMcpServersOnly
+allowManagedPermissionRulesOnly
+allowedChannelPlugins
+allowedHttpHookUrls
+allowedMcpServers
+alwaysThinkingEnabled
+apiKeyHelper
+askUserQuestionTimeout
+attribution
+autoCompactEnabled
+autoCompactWindow
+autoMemoryDirectory
+autoMemoryEnabled
+autoMode
+autoScrollEnabled
+autoUpdatesChannel
+availableModels
+awaySummaryEnabled
+awsAuthRefresh
+awsCredentialExport
+axScreenReader
+blockedMarketplaces
+browserExternalPageTools
+channelsEnabled
+claudeMd
+claudeMdExcludes
+cleanupPeriodDays
+companyAnnouncements
+crossSessionInbound
+defaultShell
+deniedMcpServers
+dialogExpiry
+disableAgentView
+disableAllHooks
+disableArtifact
+disableAutoMode
+disableBrowserExternalNavigation
+disableBundledSkills
+disableClaudeAiConnectors
+disableCommandPluginSources
+disableDeepLinkRegistration
+disableMobileSimulatorTools
+disableRemoteControl
+disableSideloadFlags
+disableSkillShellExecution
+disableWorkflows
+disabledMcpjsonServers
+editorMode
+effortLevel
+emojiCompletionEnabled
+enableAllProjectMcpServers
+enableArtifact
+enableWorkflows
+enabledMcpjsonServers
+enabledPlugins
+enforceAvailableModels
+env
+extraKnownMarketplaces
+fallbackModel
+fastMode
+fastModePerSessionOptIn
+feedbackSurveyRate
+fileCheckpointingEnabled
+fileSuggestion
+footerLinksRegexes
+forceLoginGatewayUrl
+forceLoginMethod
+forceLoginOrgUUID
+forceRemoteSettingsRefresh
+gcpAuthRefresh
+hooks
+httpHookAllowedEnvVars
+includeCoAuthoredBy
+includeGitInstructions
+inputNeededNotifEnabled
+isolatePeerMachines
+keybindingFlavor
+language
+minimumVersion
+model
+modelOverrides
+otelHeadersHelper
+outputStyle
+parentSettingsBehavior
+permissions
+plansDirectory
+pluginConfigs
+pluginSuggestionMarketplaces
+pluginTrustMessage
+policyHelper
+prUrlTemplate
+preferredNotifChannel
+prefersReducedMotion
+processWrapper
+promptSuggestionEnabled
+remoteControlAtStartup
+requiredMaximumVersion
+requiredMinimumVersion
+respectGitignore
+respondToBashCommands
+sandbox
+showClearContextOnPlanAccept
+showThinkingSummaries
+showTurnDuration
+skillListingBudgetFraction
+skillListingMaxDescChars
+skillOverrides
+skipAutoPermissionPrompt
+skipDangerousModePermissionPrompt
+skipWebFetchPreflight
+spellcheck
+spinnerTipsEnabled
+spinnerTipsOverride
+spinnerVerbs
+sshConfigs
+sshHostAllowlist
+statusLine
+strictKnownMarketplaces
+strictPluginOnlyCustomization
+subagentStatusLine
+switchModelsOnFlag
+syncClaudeAiSkills
+syntaxHighlightingDisabled
+teammateMode
+terminalProgressBarEnabled
+terminalTitleFromRename
+theme
+tui
+ultracode
+useAutoModeDuringPlan
+verbose
+viewMode
+vimInsertModeRemaps
+voice
+voiceEnabled
+wheelScrollAccelerationEnabled
+workflowKeywordTriggerEnabled
+workflowSizeGuideline
+worktree
+wslInheritsWindowsSettings

@@ -15,6 +15,7 @@
 - [Trust and security](#trust-and-security)
 - [Verify the installed binary](#verify-the-installed-binary)
 - [Patch modules in detail](#patch-modules-in-detail)
+- [Related research](#related-research)
 - [Questions and answers](#questions-and-answers)
 
 ---
@@ -432,6 +433,21 @@ Body policy comes from the remora child process environment, not from the gatewa
 
 Main, subagent, quota and side-query traffic is never rewritten. Plain Calico launches without
 `REMORA_ACTIVE=1` keep stock compact behavior.
+
+---
+
+## Related research
+
+[`HIDDEN_SETTINGS.md`](./HIDDEN_SETTINGS.md) maps the environment variables and `settings.json` keys
+the native binary accepts but the public reference does not document, pinned to `2.1.239` and
+re-verified against `2.1.240`. It matters here because a patch is the expensive way to change
+behavior: the document separates the controls that genuinely switch something off from the codenames
+that only force things on, so anything already reachable from configuration does not need a patch
+that has to be re-applied every release.
+
+The comparison inputs are committed alongside it, so the counts can be re-derived rather than taken
+on trust. A Traditional Chinese version is at
+[`HIDDEN_SETTINGS.zh-TW.md`](./HIDDEN_SETTINGS.zh-TW.md).
 
 ---
 
