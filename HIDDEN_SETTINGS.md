@@ -8,7 +8,11 @@
 ## Document purpose
 
 This is a behavioral map of the environment variables and `settings.json` keys that the native
-Claude Code binary reads at runtime but that the public reference does not describe. It exists
+Claude Code binary accepts but the public reference does not describe. The two populations are
+admitted on different terms: an environment variable is listed only when the binary both declares
+it in a typed schema and reads it at runtime, whereas a settings key is listed when the schema
+accepts it — a weaker bar, and two of the twenty-one turn out to have no runtime consumer at all,
+which the [dead-key section](#two-keys-are-declared-but-dead) identifies. It exists
 because a patched-binary project needs to know which behavior is already switchable from the
 outside before deciding what is worth patching: a flag that flips a prompt section is cheaper and
 more upgrade-proof than a byte patch that has to be re-applied on every release. The findings come
@@ -69,7 +73,8 @@ direct runtime read of the form `G.NAME` or `process.env.NAME`.
 > **Note:** `G.` and `process.env.` cover every read in `2.1.239`, but not in later builds — see
 > [the alias trap](#a-trap-for-anyone-re-running-this) before reusing this probe.
 
-> **"Hidden" means read by this executable and absent from the public reference.** It does not mean
+> **"Hidden" means recognized by this executable and absent from the public reference** — read at
+> runtime for an environment variable, accepted by the schema for a settings key. It does not mean
 > supported, stable, or safe. These are internal implementation details and Anthropic can rename or
 > delete any of them in the next release.
 
