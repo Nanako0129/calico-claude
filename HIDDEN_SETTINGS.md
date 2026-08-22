@@ -152,20 +152,20 @@ rather than using the dedicated Read, Edit, or Write tools. Fall back to a dedic
 when Bash genuinely cannot do the job.
 ```
 
-The same gate also trims the Bash tool description. Normally that description carries an explicit
-prohibition list; under bash-first the list is replaced by a single line about output style. What
-gets removed is worth stating in full, because it is the counter-pressure that normally keeps edits
-in the `Edit` tool:
+The same gate also trims the Bash tool description, removing the prohibition list that is the
+counter-pressure normally keeping edits in the `Edit` tool. Two gates shape this text, so the
+"before" column depends on the search gate described in the next section — on a default CLI session
+the two search prohibitions are already gone before bash-first does anything:
 
-| Normal Bash description | Under bash-first |
-|---|---|
-| `IMPORTANT: Avoid using this tool to run find, grep, cat, head, tail, sed, awk, or echo commands…` | removed |
-| `File search: Use Glob (NOT find or ls)` | removed |
-| `Content search: Use Grep (NOT grep or rg)` | removed |
-| `Read files: Use Read (NOT cat/head/tail)` | removed |
-| `Edit files: Use Edit (NOT sed/awk)` | removed |
-| `Write files: Use Write (NOT echo >/cat <<EOF)` | removed |
-| `Communication: Output text directly (NOT echo/printf)` | kept |
+| Description line | Default CLI session | With search opt-in | Under bash-first |
+|---|---|---|---|
+| `IMPORTANT: Avoid using this tool to run …` | present, naming `cat, head, tail, sed, awk, echo` | present, also naming `find, grep` | removed |
+| `File search: Use Glob (NOT find or ls)` | **already absent** | present | removed |
+| `Content search: Use Grep (NOT grep or rg)` | **already absent** | present | removed |
+| `Read files: Use Read (NOT cat/head/tail)` | present | present | removed |
+| `Edit files: Use Edit (NOT sed/awk)` | present | present | removed |
+| `Write files: Use Write (NOT echo >/cat <<EOF)` | present | present | removed |
+| `Communication: Output text directly (NOT echo/printf)` | present | present | kept |
 
 The attachment is emitted by a resolver that only runs in the two permissive modes:
 
@@ -215,12 +215,33 @@ R5s([Jm, Nm].some(p));   // Jm = "Glob", Nm = "Grep"
 //     d = names parsed from --tools, l = rules parsed from --allowedTools
 ```
 
-So naming either tool on the command line restores both, and also restores the full prohibition
-list in the Bash description:
+So naming either tool on the command line restores both to the tool pool:
 
 ```bash
 claude --allowedTools "Glob" --allowedTools "Grep"
 ```
+
+Its effect on the Bash description is conditional, because the two gates nest rather than act
+independently there:
+
+```js
+let o = WLm();            // bash-first description trimming
+if (!o) {                 // the prohibition line exists only when bash-first is off
+  let u = sN() ? "`cat`, `head`, `tail`, `sed`, `awk`, or `echo`"
+               : "`find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo`";
+  i.push(`- IMPORTANT: Avoid using this tool to run ${u} commands, …`);
+}
+```
+
+Bash-first decides whether the prohibition list is emitted at all; the search opt-in only decides
+whether `find` and `grep` are named in it. With `THRIFTY_SONIC` still active the list is absent
+either way, so restoring the full wording takes both:
+
+| Goal | What to set |
+|---|---|
+| `Glob` and `Grep` back in the tool pool | `--allowedTools "Glob" --allowedTools "Grep"` |
+| The prohibition list present at all | `CLAUDE_CODE_THRIFTY_SONIC=0` |
+| `find` and `grep` named in that list | both of the above |
 
 A related but distinct mechanism, `CLAUDE_CODE_REPL` (`triBool`), moves a larger set of tools
 behind a REPL tool instead of removing them:
