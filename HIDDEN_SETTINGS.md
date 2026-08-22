@@ -698,8 +698,12 @@ practice this document recommends — found no behavioral change to anything doc
 >
 > ```bash
 > bash scripts/download-native-from-installer.sh \
->   --platform darwin-arm64 --version 2.1.240 --output /tmp/claude-240
+>   --platform darwin-arm64 --version 2.1.240 \
+>   --output /tmp/claude-240 --manifest-out /tmp/manifest-240.json
 > ```
+>
+> Redirect the manifest as well as the binary — its default destination is `work/manifest.json`,
+> which describes whatever binary is already in `work/`.
 
 | Measure | 2.1.239 | 2.1.240 |
 |---|---|---|
@@ -795,12 +799,26 @@ Three habits keep this from going wrong:
 > ⚠️ **Pitfall that cost two wrong conclusions during this research:** `work/claude.native.original`
 > in this repo is whatever version was last downloaded — it was `2.1.207` while the installed binary
 > was `2.1.239`. Analyzing it produced a confident "this flag was removed" claim that was entirely
-> false. Confirm the version first:
->
-> ```bash
-> jq -r .version work/manifest.json
-> shasum -a 256 ~/.local/share/claude/versions/<version>
-> ```
+> false.
+
+Establish which binary you are holding from the binary itself. `work/manifest.json` is written by a
+separate flag of the downloader and can describe a different release than the binary sitting next to
+it, so reading its `.version` is not an identity check. Compare hashes instead — the manifest
+carries a checksum per platform, so a mismatch proves the pair is out of sync:
+
+```bash
+jq -r '.platforms["darwin-arm64"].checksum' work/manifest.json
+shasum -a 256 work/claude.native.original | cut -d' ' -f1   # must be identical
+```
+
+When downloading a second release to compare against, redirect **both** outputs, or the manifest
+lands on top of the one describing the binary already in `work/`:
+
+```bash
+bash scripts/download-native-from-installer.sh \
+  --platform darwin-arm64 --version 2.1.240 \
+  --output /tmp/claude-240 --manifest-out /tmp/manifest-240.json
+```
 
 ## Prior work
 
