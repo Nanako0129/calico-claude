@@ -157,9 +157,10 @@ launches without `REMORA_ACTIVE=1` keep stock compact behavior.
 ## Related research
 
 [`HIDDEN_SETTINGS.md`](./HIDDEN_SETTINGS.md) maps the environment variables and `settings.json` keys
-that the native binary reads but the public reference does not document, pinned to `2.1.239`. It
-covers which of them are genuine off switches and which are force-on only, so behavior that is
-already configurable can be turned off instead of patched.
+that the native binary accepts but the public reference does not document, pinned to `2.1.239` and
+re-verified against `2.1.240`. It covers which of them are genuine off switches and which are
+force-on only, so behavior that is already configurable can be turned off instead of patched.
+A Traditional Chinese version is at [`HIDDEN_SETTINGS.zh-TW.md`](./HIDDEN_SETTINGS.zh-TW.md).
 
 ## Trust and security
 

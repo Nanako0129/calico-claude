@@ -1,5 +1,7 @@
 # Hidden settings in native Claude Code
 
+> 繁體中文版本：[`HIDDEN_SETTINGS.zh-TW.md`](./HIDDEN_SETTINGS.zh-TW.md)
+
 > **Pinned artifact:** Claude Code `2.1.239` for **macOS arm64** (`darwin-arm64`), SHA-256
 > `2b4f7aafdaa65bcc2335f56a4b276317837203f2c5587b1f2a17ca78ad14e36f`, size `324973552`, embedded
 > build revision `9bf8e9521fe06414183309865310e27c9b8db3dd`. Every offset, gate name, and behavior
