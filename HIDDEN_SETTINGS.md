@@ -26,6 +26,7 @@ from static tracing of the extracted JS bundle, cross-checked against live sessi
 - [Reminder and attachment variables](#reminder-and-attachment-variables)
 - [Feature and agent variables](#feature-and-agent-variables)
 - [Undocumented `settings.json` keys](#undocumented-settingsjson-keys)
+- [Verified against 2.1.240](#verified-against-21240)
 - [Practical guidance](#practical-guidance)
 - [Prior work](#prior-work)
 
@@ -64,6 +65,9 @@ Environment names reach the code through a generated export map, `CLAUDE_CODE_FO
 accessor symbol is built by a typed factory, `Ge={str,bool,triBool,int,enum}`. Finding a *string*
 in the binary proves nothing; a name only counts here when it has both a typed schema entry and a
 direct runtime read of the form `G.NAME` or `process.env.NAME`.
+
+> **Note:** `G.` and `process.env.` cover every read in `2.1.239`, but not in later builds — see
+> [the alias trap](#a-trap-for-anyone-re-running-this) before reusing this probe.
 
 > **"Hidden" means read by this executable and absent from the public reference.** It does not mean
 > supported, stable, or safe. These are internal implementation details and Anthropic can rename or
@@ -679,6 +683,66 @@ unreliable research method.
 `xaaIdp` behaves differently again: it is spread into the schema conditionally, so without
 `CLAUDE_CODE_ENABLE_XAA` in the environment the key does not exist at all and will be rejected as
 unknown.
+
+---
+
+## Verified against 2.1.240
+
+`2.1.240` was released the day after this analysis. Re-running the differential against it — the
+practice this document recommends — found no behavioral change to anything documented here.
+
+| Measure | 2.1.239 | 2.1.240 |
+|---|---|---|
+| `CLAUDE_CODE_*` in the typed schema | 452 | 453 |
+| With a direct runtime read | 405 | 406 |
+| Documented variables still present | — | 37 of 37, no parser type changed |
+| Documented settings keys still present | — | 21 of 21 |
+| Root settings keys carrying `.describe()` | 643 | 643 |
+| Quoted prompt and description text | — | all present |
+
+Nothing was removed. The three gates this document leans on are structurally identical and only
+their minified symbols moved, which is why the code quotes above are labeled as `2.1.239` shapes:
+
+| Gate | 2.1.239 | 2.1.240 |
+|---|---|---|
+| Bash-first resolver | `dci()` | `Ici()` |
+| One-way OR gate | `F3r` | `K3r` |
+| Search-tool gate | `sN()` | `cN()` |
+
+### What is new
+
+Two environment variables, both feeding the same thinking-display path:
+
+| Variable | Shape | Effect |
+|---|---|---|
+| `CLAUDE_CODE_THINKING_DISPLAY_UPDATES` | typed, env-first two-way | Selects the thinking display mode: `thinking_and_connector_text`, `connector_text`, or `none` |
+| `CLAUDE_CODE_SABLE_THRUSH` | read directly, **not in the typed schema** | Gates narration summary blocks, which feed the same renderer |
+
+> **Note for this repository:** these are adjacent to the patches that stream thinking live in the
+> UI. Upstream is growing a native option over the same surface, so future patch work should check
+> for overlap before assuming the behavior is still unreachable from configuration.
+
+Five GrowthBook gates are new. `tengu_thinking_display_updates` and `tengu_sable_thrush` are the
+server side of the two variables above. The other three — `tengu_radiant_island`,
+`tengu_effort_medium_nudge_shown`, `tengu_effort_medium_nudge_resolved` — are one feature: a UI
+nudge about effort level, shown to sessions whose effort is `high` **and** pinned there from user
+settings (the cohort is literally named `user_pin`), with a persisted `hasSeenEffortMediumNudge`
+flag.
+
+### A trap for anyone re-running this
+
+`2.1.240` introduced a **second alias for the parsed environment object**, `Pu.`, alongside `G.`.
+Twenty-two names are reachable only through it:
+
+```bash
+# a 2.1.239-era probe misses these entirely on 2.1.240
+grep -o 'Pu\.CLAUDE_CODE_[A-Z_]*' content-240.js | sort -u | wc -l   # 22
+```
+
+The counts in this document are unaffected — `Pu.` appears zero times in `2.1.239`, so the probe was
+complete for the pinned artifact. But a re-run on `2.1.240` or later that only matches `G.` and
+`process.env.` will silently undercount. Match every alias the build uses before comparing totals to
+the table above.
 
 ---
 
