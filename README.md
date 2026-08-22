@@ -154,6 +154,13 @@ gateway):
 Main / subagent / quota / side-query traffic is not rewritten. Plain Calico
 launches without `REMORA_ACTIVE=1` keep stock compact behavior.
 
+## Related research
+
+[`HIDDEN_SETTINGS.md`](./HIDDEN_SETTINGS.md) maps the environment variables and `settings.json` keys
+that the native binary reads but the public reference does not document, pinned to `2.1.239`. It
+covers which of them are genuine off switches and which are force-on only, so behavior that is
+already configurable can be turned off instead of patched.
+
 ## Trust and security
 
 Calico replaces the native Claude Code executable, so installing it is a supply-chain decision rather than a normal remora configuration change. Releases are built in GitHub Actions from Anthropic's native installer, use pinned patch dependencies, fail when a selected patch no longer matches the upstream bundle, and publish SHA-256 checksums plus GitHub provenance attestations.
