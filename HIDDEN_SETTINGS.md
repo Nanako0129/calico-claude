@@ -372,9 +372,20 @@ and you then re-read its report. Delegate only when the payoff clearly exceeds t
 
 ### The force-on group
 
-Five sections are added by codenames that cannot be turned off. Their shared resolver is `F3r`, and
-the `pci(model)` term means any `opus_5_prompt_bundle` model enables `BISON_CAIRN`, `LARCH_CISTERN`,
-and `GAULT_KESTREL` regardless of the environment.
+Six variables share the `F3r` resolver and cannot be turned off, but they do not all do the same
+kind of thing — a distinction that matters when picking patch targets:
+
+| Effect | Variables |
+|---|---|
+| Adds a section | `BISON_CAIRN`, `LARCH_CISTERN`, `AMBER_ASTROLABE` |
+| Selects an expanded variant of an existing section | `BASALT_COVE` |
+| Removes a clause | `GAULT_KESTREL` |
+| Swaps wording in the Write and Edit descriptions | `PARCHMENT_FERN` |
+
+The `pci(model)` term means any `opus_5_prompt_bundle` model enables `BISON_CAIRN`,
+`LARCH_CISTERN`, and `GAULT_KESTREL` regardless of the environment.
+
+These are the four sections whose text is added or selected by the first two rows above:
 
 | Section | Opening |
 |---|---|
@@ -711,11 +722,17 @@ practice this document recommends — found no behavioral change to anything doc
 |---|---|---|
 | `CLAUDE_CODE_*` in the typed schema | 452 | 453 |
 | With a direct runtime read | 405 | 406 |
-| Documented variables still present | — | 37 of 37, no parser type changed |
+| Documented variables predating 2.1.240 still present[^pop] | — | 37 of 37, no parser type changed |
 | Documented settings keys still present | — | 21 of 21 |
 | Root settings keys, narrow scalar pattern[^keys] | 152 | 152 |
 | All schema properties carrying `.describe()`[^broad] | 643 | 643 |
 | Quoted prompt and description text | — | all present |
+
+[^pop]: The 34 variables listed in the three group tables, plus `CLAUDE_CODE_THRIFTY_SONIC` from the
+case study, `CLAUDE_CODE_TOTAL_TOKENS_REMINDER` from the reminder section, and `CLAUDE_CODE_REPL`
+from the search section. Prior work covered 36 of these; `CLAUDE_CODE_REPL` is additional here. The
+two variables introduced in `2.1.240` are excluded because a persistence check cannot apply to names
+that do not exist in `2.1.239` — counting them brings the document's full total to 39.
 
 [^broad]: A deliberately wider probe than the row above it: constructor-agnostic and counting every
 described property in every schema in the bundle, nested fields included, not only root
