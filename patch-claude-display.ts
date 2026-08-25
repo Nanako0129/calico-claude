@@ -1939,7 +1939,13 @@ function patchCustomContextWindows(content) {
     candidates += 1;
     const helpers =
       'function __calico_context_window(e){try{let t=process.env.CALICO_MODEL_CONTEXT_WINDOWS;if(!t)return null;let r=JSON.parse(t);if(!r||typeof r!=="object"||Array.isArray(r)||!Object.hasOwn(r,e))return null;let n=r[e];if(!Number.isInteger(n)||n<100000||n>1000000)return null;return n}catch{return null}}' +
-      'function __calico_display_window(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)}';
+      // __calico_display_window is declared here but called from the status-line
+      // site below, which upstream 2.1.242+ places in a different Bun chunk.
+      // Chunks are separate ES module scopes, so this one helper has to live on
+      // globalThis; a bare declaration resolves at patch time and is undefined
+      // at runtime. __calico_context_window stays local because it is only
+      // called from the resolver body injected immediately after it.
+      'globalThis.__calico_display_window=function(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)};';
     const replacement =
       `${helpers}${functionStart}let __calico_window=__calico_context_window(e);` +
       `if(__calico_window!==null)return __calico_window;${originalBody}`;
@@ -1986,7 +1992,7 @@ function patchCustomContextWindows(content) {
     (full, contextFn, usage, windowValue) => {
       candidates += 1;
       patched += 1;
-      return `context_window:${contextFn}(${usage},__calico_display_window(${windowValue})),exceeds_200k_tokens:`;
+      return `context_window:${contextFn}(${usage},globalThis.__calico_display_window(${windowValue})),exceeds_200k_tokens:`;
     }
   );
 
