@@ -413,7 +413,7 @@ test("matches renamed wrapper, terminal, selector, and clone locals", () => {
   assert.match(result.content, /let assistantWrapper=\{message:\{\.\.\.baseMessage/);
   assert.match(result.content, /case"message_delta":\{aggregatedUsage=aggregateUsage\(aggregatedUsage,terminalEvent\.usage\);/);
   assert.match(result.content, /for\(let assistantEntry of assistantEntries\)assistantEntry\.message\.usage=aggregatedUsage/);
-  assert.match(result.content, /selectedUsage=usageReducer\(__calicoStatuslineMessages\(messageEntries\)\),windowSize=contextWindow\(modelContext,windowOptions\(\)\)/);
+  assert.match(result.content, /selectedUsage=usageReducer\(globalThis\.__calicoStatuslineMessages\(messageEntries\)\),windowSize=contextWindow\(modelContext,windowOptions\(\)\)/);
   assert.equal(completed[0].__calicoUsageState.committed, true);
   assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
 });
@@ -536,10 +536,22 @@ test("2.1.212 wrapper ownership rejects lost, mismatched, and duplicate effort v
   );
 });
 
-test("statusline selector is bound to the discovered usage reducer", () => {
-  const variant = committedUsageFixture
-    .replace("function fK_(", "function wrong(e){return null}function fK_(")
-    .replace("S=aJt(o),b=sw(y,UE())", "S=wrong(o),b=sw(y,UE())");
+// Until 2.1.242 the selector was pinned to the usage reducer by name, so a
+// selector calling anything else was rejected. Chunking removed that option:
+// the payload builder imports the reducer under a per-chunk alias, and minified
+// names are no longer unique across chunks (2.1.245 declares an unrelated
+// `function Bne(` while the statusline chunk imports the reducer *as* `Bne`),
+// so resolving the callee would need full cross-chunk alias resolution. The
+// enforceable tie is now positional plus consumption: the selector sits
+// immediately after the `?.outputStyle||` assignment, and its result and window
+// must be exactly the two arguments the payload's `context_window:` is built
+// from. These tests pin what that still rejects.
+test("statusline selector must feed its result into context_window", () => {
+  const variant = committedUsageFixture.replace(
+    "return{context_window:pK_(S,b)}",
+    "return{context_window:pK_(unrelatedUsage,b)}"
+  );
+  assert.notEqual(variant, committedUsageFixture);
   const result = patchStatuslineCommittedUsage(variant);
 
   assert.equal(result.patched, 0);
@@ -547,22 +559,46 @@ test("statusline selector is bound to the discovered usage reducer", () => {
   assert.equal(result.content.includes("__calicoUsageState"), false);
 });
 
+test("statusline selector must feed its window into context_window", () => {
+  const variant = committedUsageFixture.replace(
+    "return{context_window:pK_(S,b)}",
+    "return{context_window:pK_(S,unrelatedWindow)}"
+  );
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+});
+
+test("statusline selector must directly follow the outputStyle assignment", () => {
+  const variant = committedUsageFixture.replace(
+    '_=n?.outputStyle||"default",S=aJt(o)',
+    '_=n?.outputStyle||"default",spacer=0,S=aJt(o)'
+  );
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+});
+
 test("binary verifier rejects dead helpers and broken wrapper ownership", () => {
   const patched = patchStatuslineCommittedUsage(committedUsageFixture).content;
   assert.equal(evaluatePatchModule("statusline-committed-usage", patched), null);
 
   const statuslineHelper = patched.match(
-    /function __calicoStatuslineMessages[\s\S]*?(?=function fK_\()/
+    /globalThis\.__calicoStatuslineMessages=function[\s\S]*?(?=function fK_\()/
   )?.[0];
   const helperBlock = patched.match(
-    /function __calicoUsageHasAccountingSignal[\s\S]*?(?=function fK_\()/
+    /globalThis\.__calicoUsageHasAccountingSignal=function[\s\S]*?(?=function fK_\()/
   )?.[0];
   assert.ok(statuslineHelper);
   assert.ok(helperBlock);
 
   const emptyHelper = patched.replace(
     statuslineHelper,
-    `var __calicoStatuslineMessages=(e)=>e;/*${statuslineHelper}*/`
+    `globalThis.__calicoStatuslineMessages=(e)=>e;/*${statuslineHelper}*/`
   );
   const destructuredHelpers = patched.replace(
     helperBlock,

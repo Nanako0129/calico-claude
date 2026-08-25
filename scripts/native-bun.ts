@@ -353,14 +353,27 @@ function joinClaudeJsModules(jsModules: BunJsModule[]): string {
 // identifier, so reject it here: a helper must either be declared in the same
 // chunk that references it, or be reached through globalThis.
 function assertInjectionsAreModuleScoped(parts: string[], jsModules: BunJsModule[]): void {
-  const declarationPattern = /(?:function|var|let|const|class)\s+(__calico[\w$]*)/g;
-  const referencePattern = /__calico[\w$]*/g;
+  // A binding introduced by a patch: either a declaration keyword, or an
+  // assignment inside a declarator list (`let a=…,__calicoX=…`), which is how
+  // several patches introduce their locals.
+  const declarationPattern =
+    /(?:function|var|let|const|class)\s+(__calico[\w$]*)|[,;{(]\s*(__calico[\w$]*)\s*=(?!=)/g;
+  // A reference that has to resolve in this module's scope. Property positions
+  // are excluded: a member access (`x.__calicoState`, and so also
+  // `globalThis.__calicoHelper`) and an object key (`__calicoState:{…}`) name a
+  // property, not a binding, so they are legal wherever they appear.
+  // `(?![\w$])` pins the name to its full extent first: without it the engine
+  // backtracks a character at a time to satisfy the `:` lookahead, so
+  // `__calicoUsageState:` would report a phantom `__calicoUsageStat` reference.
+  const referencePattern = /(?<![.\w$])(__calico[\w$]*)(?![\w$])(?!\s*:)/g;
 
   for (let index = 0; index < parts.length; index += 1) {
-    const scoped = parts[index].replace(/globalThis\.__calico[\w$]*/g, "");
-    const declared = new Set(Array.from(scoped.matchAll(declarationPattern), (match) => match[1]));
+    const scoped = parts[index];
+    const declared = new Set(
+      Array.from(scoped.matchAll(declarationPattern), (match) => match[1] ?? match[2])
+    );
     const unresolved = new Set(
-      Array.from(scoped.matchAll(referencePattern), (match) => match[0]).filter(
+      Array.from(scoped.matchAll(referencePattern), (match) => match[1]).filter(
         (name) => !declared.has(name)
       )
     );

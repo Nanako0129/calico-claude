@@ -401,9 +401,9 @@ const CHECKS: Check[] = [
         return `missing marker(s): ${missing.join(", ")}`;
       }
       const frozenAgentContext =
-        /process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*\.__calicoPromptId===void 0&&\([A-Za-z_$][\w$]*\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?[A-Za-z_$][\w$]*\(\)\),\1\.run\(/;
+        /process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*\.__calicoPromptId===void 0&&\([A-Za-z_$][\w$]*\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?globalThis\.__calicoPromptIdGet\(\)\),\1\.run\(/;
       const frozenJournalContext =
-        /function [A-Za-z_$][\w$]*\(e,t\)\{e&&process\.env\.REMORA_ACTIVE==="1"&&e\.__calicoPromptId===void 0&&\(e\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?[A-Za-z_$][\w$]*\(\)\);if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return \1\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\)/;
+        /function [A-Za-z_$][\w$]*\(e,t\)\{e&&process\.env\.REMORA_ACTIVE==="1"&&e\.__calicoPromptId===void 0&&\(e\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?globalThis\.__calicoPromptIdGet\(\)\);if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return \1\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\)/;
       if (!frozenAgentContext.test(content) && !frozenJournalContext.test(content)) {
         return "missing nested-agent prompt inheritance at AsyncLocalStorage boundary";
       }
@@ -704,20 +704,20 @@ const CHECKS: Check[] = [
     run: (content: string): string | null => {
       const identifier = "[A-Za-z_$][\\w$]*";
       const accountingSignalHelper =
-        'function __calicoUsageHasAccountingSignal(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)}';
+        'globalThis.__calicoUsageHasAccountingSignal=function(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)};';
       const exactZeroHelper =
-        'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}';
+        'globalThis.__calicoUsageIsExactAllZero=function(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)};';
       const statuslineHelper =
-        'function __calicoStatuslineMessages(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})}';
+        'globalThis.__calicoStatuslineMessages=function(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&globalThis.__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})};';
       const stateCell = "__calicoUsageState:{committed:!1,usage:null}";
       const helperMarkers: Array<[string, number]> = [
         [stateCell, 1],
         [accountingSignalHelper, 1],
         [exactZeroHelper, 1],
         [statuslineHelper, 1],
-        ["__calicoUsageHasAccountingSignal(", 3],
-        ["__calicoUsageIsExactAllZero(", 2],
-        ["__calicoStatuslineMessages(", 2],
+        ["globalThis.__calicoUsageHasAccountingSignal=", 1],
+        ["globalThis.__calicoUsageIsExactAllZero=", 1],
+        ["globalThis.__calicoStatuslineMessages=", 1],
       ];
       for (const [marker, expected] of helperMarkers) {
         const actual = countOccurrences(content, marker);
@@ -758,11 +758,11 @@ const CHECKS: Check[] = [
       }
 
       const legacyWrapperPattern = new RegExp(
-        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\}\\};`,
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\}\\};`,
         "g"
       );
       const effortWrapperPattern = new RegExp(
-        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
         "g"
       );
       // 2.1.236+ batch tool-use destructured wrapper; see the matching
@@ -771,7 +771,7 @@ const CHECKS: Check[] = [
       // (`…messageId:Gr.id},i.storageV5)`), matched optionally so the patched
       // 2.1.237 and 2.1.238 binaries both verify.
       const batchWrapperPattern = new RegExp(
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -830,7 +830,7 @@ const CHECKS: Check[] = [
       const wrapperFunctionStart = content.lastIndexOf("function ", wrapperIndex);
 
       const terminalPattern = new RegExp(
-        `for\\(let (${identifier}) of (${identifier})\\)\\1\\.message\\.usage=(${identifier}),\\1\\.message\\.stop_reason=(${identifier}),\\1\\.message\\.stop_details=(${identifier})\\.delta\\.stop_details\\?\\?null,\\4!=null&&!__calicoUsageIsExactAllZero\\(\\5\\.usage\\)&&__calicoUsageHasAccountingSignal\\(\\3\\)&&\\(\\1\\.__calicoUsageState\\.committed=!0,\\1\\.__calicoUsageState\\.usage=\\3\\);`,
+        `for\\(let (${identifier}) of (${identifier})\\)\\1\\.message\\.usage=(${identifier}),\\1\\.message\\.stop_reason=(${identifier}),\\1\\.message\\.stop_details=(${identifier})\\.delta\\.stop_details\\?\\?null,\\4!=null&&!globalThis\\.__calicoUsageIsExactAllZero\\(\\5\\.usage\\)&&globalThis\\.__calicoUsageHasAccountingSignal\\(\\3\\)&&\\(\\1\\.__calicoUsageState\\.committed=!0,\\1\\.__calicoUsageState\\.usage=\\3\\);`,
         "g"
       );
       const terminalMatches = [...content.matchAll(terminalPattern)];
@@ -941,10 +941,12 @@ const CHECKS: Check[] = [
       if (usageReducerMatches.length !== 1) {
         return `expected 1 semantic statusline usage reducer, found ${usageReducerMatches.length}`;
       }
-      const usageReducer = usageReducerMatches[0][1];
-      const escapedUsageReducer = usageReducer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // The reducer is called through a per-chunk import alias on 2.1.242+, so
+      // it cannot be pinned by the name captured at its declaration. Mirror the
+      // patcher: anchor on the `?.outputStyle||` assignment that precedes the
+      // selector, inside the function that emits `context_window:`.
       const selectorPattern = new RegExp(
-        `(${identifier})=${escapedUsageReducer}\\(__calicoStatuslineMessages\\((${identifier})\\)\\),(${identifier})=(${identifier})\\((${identifier}),(${identifier})\\(\\)\\)`,
+        `${identifier}=${identifier}\\?\\.outputStyle\\|\\|[^,]{1,40},(${identifier})=${identifier}\\(globalThis\\.__calicoStatuslineMessages\\((${identifier})\\)\\),(${identifier})=(${identifier})\\((${identifier}),(${identifier})\\(\\)\\)`,
         "g"
       );
       const selectorCandidates = [...content.matchAll(selectorPattern)];
@@ -956,7 +958,15 @@ const CHECKS: Check[] = [
           functionStart,
           functionEnd === -1 ? content.length : functionEnd
         );
-        return segment.includes("context_window:");
+        // The selected usage and the computed window must be the two arguments
+        // the payload's `context_window:` is built from. custom-context-window
+        // runs after this module and wraps the window argument, so tolerate
+        // that wrapper here.
+        const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const consumption = new RegExp(
+          `context_window:${identifier}\\(${escape(match[1])},(?:globalThis\\.__calico_display_window\\()?${escape(match[3])}\\)`
+        );
+        return segment.includes("context_window:") && consumption.test(segment);
       });
       if (selectorMatches.length !== 1) {
         return `expected 1 reducer-bound statusline selector projection, found ${selectorMatches.length}`;
