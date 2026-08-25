@@ -12,16 +12,16 @@ Its job is to explain:
 
 ## Repo Mental Model
 
-This repo does not rebuild Claude Code from source. It patches the embedded JS bundle inside Anthropic's native binary.
+This repo does not rebuild Claude Code from source. It patches the embedded JavaScript modules inside Anthropic's native binary.
 
 The current flow is:
 
 1. Download or locate a native Claude binary.
    Use `bash scripts/download-native-from-installer.sh` when you want the exact upstream native download path used by CI.
-2. Use `scripts/native-bun.ts` to extract the embedded JS bundle.
-3. Write that bundle to a temporary `content.js` file.
-4. Run `patch-claude-display.ts` against that extracted JS.
-5. Use `scripts/native-bun.ts` to write the patched JS back into the binary.
+2. Use `scripts/native-bun.ts` to read the embedded Bun module table.
+3. Select every embedded JavaScript module, including the CLI entry module and split chunks.
+4. Run `patch-claude-display.ts` across those modules and aggregate the patch counts.
+5. Use `scripts/native-bun.ts` to rebuild the module table with only the changed module contents replaced.
 6. Re-sign on macOS.
 7. Publish the patched binary.
 
@@ -44,6 +44,7 @@ The important consequence: almost all real behavior lives in `patch-claude-displ
 - Every patch function takes bundle text and returns `{ content, candidates, patched }`.
 - `PATCH_MODULES` defines the patch order.
 - Patches run sequentially, so later patches see earlier rewrites.
+- `patchContents()` applies that ordered pipeline to one or more module contents and aggregates the counts.
 - The patcher prints a per-module summary but does not fail if nothing changed.
 - `main()` writes the file only when the final content differs from the original.
 
@@ -66,17 +67,18 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 - resolves `--input` and `--output`
 - copies the input binary to the output path when patching out-of-place
 - loads `scripts/native-bun.ts`
-- extracts the embedded Bun module from Mach-O, ELF, or PE binaries
-- writes that JS to a temp `content.js`
-- invokes `node patch-claude-display.ts --file <temp-content.js>`
-- reads the patched temp file back
-- writes it into the output binary with the format-specific `node-lief` path
+- reads the embedded Bun modules from Mach-O, ELF, or PE binaries
+- applies the display patch pipeline to every JavaScript module in memory
+- aggregates one patch summary across all modules
+- writes only changed module contents into the output binary with the format-specific `node-lief` path
 
 Important behavior:
 
 - if `patch-claude-display.ts` prints nonzero patch counts, the rewritten binary is patched
 - if `patch-claude-display.ts` makes no changes, the script still succeeds and the output binary can remain equivalent to upstream
 - 2.1.233 names the entry module `/$bunfs/root/cli` on macOS/Linux and `B:/~BUN/root/cli` on Windows, so entry detection recognizes the stable `/root/cli` suffix in addition to older Claude entry names
+- 2.1.245 splits the application across more than a thousand `chunk-*.js` modules. Its `/root/cli` entry is only a small loader, so entry-module-only extraction produces misleading zero counts for UI patches.
+- `--dry-run` reads and patches all JavaScript modules in memory without copying or rewriting the binary.
 
 Linux note:
 
@@ -112,6 +114,7 @@ Old bundle shape we match:
 - another build shape uses a block form `case"collapsed_read_search":{ ... }`
 - both forms contain a React renderer call with a `verbose:` prop
 - older builds use `createElement(...)`; 2.1.186-style builds use JSX-runtime calls like `.jsx(...)` or `.jsxs(...)`
+- 2.1.245-style split chunks can import the JSX factory directly and call it as a bare identifier
 
 What we rewrite:
 
@@ -140,6 +143,7 @@ Old bundle shape we match:
 - the `create` arm returns a simple write renderer with `{filePath,content,verbose}`
 - the `update` arm renders a richer diff component using `structuredPatch`
 - 2.1.186-style builds can use JSX-runtime calls like `.jsx(...)` and `.jsxs(...)` instead of `createElement(...)`
+- 2.1.245-style split chunks can call the imported JSX factory as a bare identifier
 
 What we rewrite:
 
@@ -198,6 +202,7 @@ Old bundle shape we match:
 - renderer props containing `isTranscriptMode:`
 - older builds also carry `hideInTranscript:`, but newer builds can omit it
 - renderer calls can be either `createElement(...)` or JSX-runtime `.jsx(...)` / `.jsxs(...)`
+- 2.1.245-style renderer calls can use a bare imported JSX factory, and the early null return can use a block body
 
 What we rewrite:
 
@@ -227,6 +232,7 @@ Old bundle shapes we match:
 - the thinking arm renders a component with `addMargin:`, `param:`, `isTranscriptMode:`, and `verbose:`
 - older builds use `createElement(...)` and carry `hideInTranscript:`
 - 2.1.186-style builds use `.jsx(...)` and can omit `hideInTranscript:`
+- 2.1.245-style split chunks use a bare imported JSX factory for both adjacent arms
 
 What we rewrite:
 
@@ -281,6 +287,7 @@ Old bundle shapes we match:
 - 2.1.227-style UI reducers can continue the options-destructuring `let` statement with an `authoringProgressSurface` local instead of ending it with a semicolon. Their `message_stop` branch also conditionally resets authoring progress after finalizing display state, so preserve that side effect while injecting streaming-thinking cleanup.
 - 2.1.233-style main renderer calls can omit `showAllInTranscript:` between `streamingToolUses:` and `agentDefinitions:`. Prop threading must still inject `streamingThinking:` into that call; reducer matches alone can remain nonzero while live thinking stays invisible.
 - 2.1.237-style REPLs keep `streamingThinking` in a stream-store snapshot and destructure only `streamingToolUses` and `userInputOnProcessing`. Inject the thinking snapshot into that destructuring and thread it through renderer calls that no longer carry `agentDefinitions`; the separate transcript wrapper must receive the prop too, and its compiled renderer-element cache must not hide updates. Otherwise the reducer updates state but no inline renderer observes it.
+- 2.1.245-style split chunks move the stream store, event reducer, and transcript renderer into separate modules. The transcript wrapper selects `streamingToolUses` from `turn.stream`; select `streamingThinking` through the same path, thread it into the renderer, and allow a bare imported memo hook when building inline extras. The reducer can rediscover the virtual assistant-message constructor from its semantic `{content,isVirtual,uuid}` signature before adding thinking event updates.
 - the duplicate live-thinking suppressor should match the semantic row shape around `param:{type:"thinking",thinking:<var>.thinking}` and the surrounding `marginTop:1` wrapper, not a specific wrapper component identifier
 
 Why this exists:
@@ -432,15 +439,15 @@ Likely break signs:
 
 When a Claude update breaks a patch, do this in order.
 
-1. Patch extracted JS in dry-run mode first.
+1. Patch the downloaded native binary in dry-run mode first.
 
 ```bash
-node patch-claude-display.ts --file ./content.js --dry-run
+node scripts/patch-native.ts --input ./work/claude.native.original --dry-run
 ```
 
 2. Note which module dropped from its usual nonzero count to `0`, or which module now has fewer hits than expected.
 
-3. Search the extracted bundle for the old semantic anchors, not the old minified names.
+3. Search the affected extracted module contents for the old semantic anchors, not the old minified names. Do not assume the entry module contains the UI after 2.1.245.
 
 Examples:
 
@@ -460,7 +467,7 @@ rg 'case"collapsed_read_search"|case"thinking"|case"thinking_delta"|spinnerTipsE
 
 Minimum validation for patch work:
 
-- run dry-run patching on extracted content
+- run native dry-run patching across all embedded JavaScript modules
 - patch a real native binary
 - run the patched binary with `--version` and verify `(patched)` appears
 - manually inspect the UI areas touched by the patch

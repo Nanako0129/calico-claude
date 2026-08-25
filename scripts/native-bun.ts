@@ -27,6 +27,11 @@ type BunModule = {
   side: number;
 };
 
+type NativeBunModuleContent = {
+  name: string;
+  content: string;
+};
+
 type BunStorage =
   | {
       storage: "section";
@@ -298,10 +303,27 @@ function findClaudeModuleContent(storage: BunStorage): Buffer {
   throw new Error("Could not find Claude JavaScript module in native binary");
 }
 
+function readBunModuleContents(storage: BunStorage): NativeBunModuleContent[] {
+  const moduleTable = sliceRange(storage.bunData, storage.bunOffsets.modulesPtr);
+  const moduleCount = Math.floor(moduleTable.length / storage.moduleStructSize);
+  const modules: NativeBunModuleContent[] = [];
+
+  for (let index = 0; index < moduleCount; index += 1) {
+    const moduleOffset = index * storage.moduleStructSize;
+    const moduleRecord = readBunModule(moduleTable, moduleOffset, storage.moduleStructSize);
+    modules.push({
+      name: sliceRange(storage.bunData, moduleRecord.name).toString("utf8"),
+      content: sliceRange(storage.bunData, moduleRecord.contents).toString("utf8"),
+    });
+  }
+
+  return modules;
+}
+
 function rebuildBunData(
   bunData: Buffer,
   bunOffsets: BunOffsets,
-  replacementContent: Buffer,
+  replacementContents: ReadonlyMap<string, Buffer>,
   moduleStructSize: 36 | 52
 ): Buffer {
   const rawBuffers: Buffer[] = [];
@@ -326,9 +348,8 @@ function rebuildBunData(
     const moduleRecord = readBunModule(moduleTable, moduleOffset, moduleStructSize);
     const moduleName = sliceRange(bunData, moduleRecord.name).toString("utf8");
 
-    const nextContents = isClaudeModuleName(moduleName)
-      ? replacementContent
-      : sliceRange(bunData, moduleRecord.contents);
+    const nextContents =
+      replacementContents.get(moduleName) ?? sliceRange(bunData, moduleRecord.contents);
 
     const nextModule = {
       name: sliceRange(bunData, moduleRecord.name),
@@ -882,13 +903,16 @@ function writeSectionBackedElfContent(
   writeBufferPreservingMode(binaryPath, nextBytes);
 }
 
-function writeElfBunContent(binaryPath: string, content: string): void {
+function writeElfBunContents(
+  binaryPath: string,
+  replacementContents: ReadonlyMap<string, Buffer>
+): void {
   const { binary } = parseElfBinary(binaryPath);
   const storage = parseElfBunStorage(binary);
   const rebuiltBunData = rebuildBunData(
     storage.bunData,
     storage.bunOffsets,
-    Buffer.from(content, "utf8"),
+    replacementContents,
     storage.moduleStructSize
   );
 
@@ -974,6 +998,12 @@ function readNativeBunContent(binaryPath: string): string {
   return findClaudeModuleContent(storage).toString("utf8");
 }
 
+function readNativeBunModules(binaryPath: string): NativeBunModuleContent[] {
+  const { binary } = parseNativeBinary(binaryPath);
+  const storage = parseNativeBunStorage(binary);
+  return readBunModuleContents(storage);
+}
+
 function writeMachOBunContent(
   LIEF: LIEFModule,
   binary: import("node-lief").MachO.Binary,
@@ -1025,15 +1055,53 @@ function writePeBunContent(
 function writeNativeBunContent(binaryPath: string, content: string): void {
   const { LIEF, binary } = parseNativeBinary(binaryPath);
   const storage = parseNativeBunStorage(binary);
+  const replacementContents = new Map<string, Buffer>();
+  for (const module of readBunModuleContents(storage)) {
+    if (isClaudeModuleName(module.name)) {
+      replacementContents.set(module.name, Buffer.from(content, "utf8"));
+    }
+  }
   const rebuiltBunData = rebuildBunData(
     storage.bunData,
     storage.bunOffsets,
-    Buffer.from(content, "utf8"),
+    replacementContents,
     storage.moduleStructSize
   );
 
   if (binary.format === "ELF") {
-    writeElfBunContent(binaryPath, content);
+    writeElfBunContents(binaryPath, replacementContents);
+    return;
+  }
+
+  const wrappedSectionData = wrapSectionBunData(rebuiltBunData, storage.sectionHeaderSize);
+  if (binary.format === "MachO") {
+    writeMachOBunContent(LIEF, binary, binaryPath, wrappedSectionData);
+    return;
+  }
+
+  writePeBunContent(binary, binaryPath, wrappedSectionData);
+}
+
+function writeNativeBunModules(
+  binaryPath: string,
+  replacements: ReadonlyMap<string, string>
+): void {
+  const replacementContents = new Map<string, Buffer>();
+  for (const [name, content] of replacements) {
+    replacementContents.set(name, Buffer.from(content, "utf8"));
+  }
+
+  const { LIEF, binary } = parseNativeBinary(binaryPath);
+  const storage = parseNativeBunStorage(binary);
+  const rebuiltBunData = rebuildBunData(
+    storage.bunData,
+    storage.bunOffsets,
+    replacementContents,
+    storage.moduleStructSize
+  );
+
+  if (binary.format === "ELF") {
+    writeElfBunContents(binaryPath, replacementContents);
     return;
   }
 
@@ -1049,5 +1117,7 @@ function writeNativeBunContent(binaryPath: string, content: string): void {
 module.exports = {
   canNativeBunHandle,
   readNativeBunContent,
+  readNativeBunModules,
   writeNativeBunContent,
+  writeNativeBunModules,
 };

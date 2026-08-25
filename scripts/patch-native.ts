@@ -1,21 +1,40 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs") as typeof import("node:fs");
-const os = require("node:os") as typeof import("node:os");
 const path = require("node:path") as typeof import("node:path");
-const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
 
 type PatchOptions = {
   input: string;
   output: string;
   disable: string[];
   enable: string[];
+  dryRun: boolean;
 };
 
 type NativeBunModule = {
   canNativeBunHandle(binaryPath: string): boolean;
   readNativeBunContent(binaryPath: string): string;
+  readNativeBunModules(binaryPath: string): Array<{ name: string; content: string }>;
   writeNativeBunContent(binaryPath: string, content: string): void;
+  writeNativeBunModules(binaryPath: string, replacements: ReadonlyMap<string, string>): void;
+};
+
+type PatchResult = {
+  candidates: number;
+  patched: number;
+  skipped: boolean;
+  reason: string | null;
+};
+
+type DisplayPatcher = {
+  patchContents(
+    contents: string[],
+    opts: { disable: string[]; enable: string[] }
+  ): {
+    contents: string[];
+    patchResults: Map<string, PatchResult>;
+  };
+  printPatchSummary(patchResults: Map<string, PatchResult>): void;
 };
 
 function printHelp(): void {
@@ -23,7 +42,7 @@ function printHelp(): void {
   console.log("");
   console.log("Usage:");
   console.log(
-    "  node scripts/patch-native.ts --input <native-binary> [--output <path>] [--disable <ids>] [--enable <ids>]"
+    "  node scripts/patch-native.ts --input <native-binary> [--output <path>] [--dry-run] [--disable <ids>] [--enable <ids>]"
   );
 }
 
@@ -46,6 +65,7 @@ function parseArgs(argv: string[]): PatchOptions {
     output: "",
     disable: [],
     enable: [],
+    dryRun: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -91,6 +111,11 @@ function parseArgs(argv: string[]): PatchOptions {
       continue;
     }
 
+    if (arg === "--dry-run") {
+      opts.dryRun = true;
+      continue;
+    }
+
     if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -114,6 +139,19 @@ function loadNativeBunModule(): NativeBunModule {
   return require("./native-bun.ts") as NativeBunModule;
 }
 
+function loadDisplayPatcher(): DisplayPatcher {
+  return require("../patch-claude-display.ts") as DisplayPatcher;
+}
+
+function isJavaScriptModule(name: string): boolean {
+  return (
+    name.endsWith(".js") ||
+    name.endsWith("/root/cli") ||
+    name === "claude" ||
+    name === "claude.exe"
+  );
+}
+
 async function patchNativeBinary(opts: PatchOptions): Promise<void> {
   const inputPath = path.resolve(opts.input);
   const outputPath = path.resolve(opts.output);
@@ -122,40 +160,44 @@ async function patchNativeBinary(opts: PatchOptions): Promise<void> {
     throw new Error(`Input binary not found: ${inputPath}`);
   }
 
-  if (inputPath !== outputPath) {
+  if (!opts.dryRun && inputPath !== outputPath) {
     fs.copyFileSync(inputPath, outputPath);
     fs.chmodSync(outputPath, 0o755);
   }
 
+  const binaryPath = opts.dryRun ? inputPath : outputPath;
+
   const nativeBun = loadNativeBunModule();
-  if (!nativeBun.canNativeBunHandle(outputPath)) {
-    throw new Error(`Unsupported native Claude binary: ${outputPath}`);
+  if (!nativeBun.canNativeBunHandle(binaryPath)) {
+    throw new Error(`Unsupported native Claude binary: ${binaryPath}`);
   }
-  const originalContent = nativeBun.readNativeBunContent(outputPath);
+  const javaScriptModules = nativeBun
+    .readNativeBunModules(binaryPath)
+    .filter((module) => isJavaScriptModule(module.name));
+  const patcher = loadDisplayPatcher();
+  const result = patcher.patchContents(
+    javaScriptModules.map((module) => module.content),
+    { disable: opts.disable, enable: opts.enable }
+  );
+  patcher.printPatchSummary(result.patchResults);
 
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-native-patch-"));
-  const tempContentPath = path.join(tempDir, "content.js");
-  fs.writeFileSync(tempContentPath, originalContent, "utf8");
-
-  const patcherPath = path.resolve(__dirname, "..", "patch-claude-display.ts");
-  const patchArgs = [patcherPath, "--file", tempContentPath];
-
-  if (opts.enable.length > 0) {
-    patchArgs.push("--enable", opts.enable.join(","));
-  }
-  if (opts.disable.length > 0) {
-    patchArgs.push("--disable", opts.disable.join(","));
-  }
-
-  try {
-    execFileSync(process.execPath, patchArgs, { stdio: "inherit" });
-    const patchedContent = fs.readFileSync(tempContentPath, "utf8");
-    nativeBun.writeNativeBunContent(outputPath, patchedContent);
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+  const replacements = new Map<string, string>();
+  for (let index = 0; index < javaScriptModules.length; index += 1) {
+    if (result.contents[index] !== javaScriptModules[index].content) {
+      replacements.set(javaScriptModules[index].name, result.contents[index]);
+    }
   }
 
-  console.log(`Patched native binary: ${outputPath}`);
+  if (!opts.dryRun && replacements.size > 0) {
+    nativeBun.writeNativeBunModules(outputPath, replacements);
+  }
+
+  if (opts.dryRun) {
+    console.log(`Dry run complete. ${replacements.size} native module(s) would change.`);
+    return;
+  }
+
+  console.log(`Patched ${replacements.size} native module(s): ${outputPath}`);
 }
 
 function errorMessage(error: unknown): string {

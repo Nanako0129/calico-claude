@@ -139,15 +139,13 @@ function patchCollapsedReadSearch(content, ctx = {}) {
     const end = endCandidates.length > 0 ? Math.min(...endCandidates) : output.length;
     const segment = output.slice(start, end);
 
-    const hasRendererCall =
-      segment.includes("createElement(") || segment.includes("jsx(") || segment.includes("jsxs(");
-    if (!hasRendererCall || !segment.includes("verbose:")) {
+    if (!segment.includes("verbose:")) {
       index = start + o7qCaseNeedle.length;
       continue;
     }
 
     const callMatch = segment.match(
-      /(?:createElement|jsx|jsxs)\([A-Za-z_$][\w$]*,\{message:[^}]*inProgressToolUseIDs:[^}]*shouldAnimate:[^}]*verbose:[^,}]+,tools:[^}]*lookups:[^}]*isActiveGroup:[^}]*\}\)/
+      /\{message:[^}]*inProgressToolUseIDs:[^}]*shouldAnimate:[^}]*verbose:[^,}]+,tools:[^}]*lookups:[^}]*isActiveGroup:[^}]*\}/
     );
     if (!callMatch) {
       index = start + o7qCaseNeedle.length;
@@ -209,8 +207,12 @@ function patchWriteCreateDiffColors(content) {
       continue;
     }
 
+    const rendererCallPattern =
+      "(?:[A-Za-z_$][\\w$]*\\.(?:createElement|jsx|jsxs)|[A-Za-z_$][\\w$]*)";
     const createReturnMatch = createSegment.match(
-      /return ([A-Za-z_$][\w$]*)\.(createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{filePath:([A-Za-z_$][\w$]*),content:([A-Za-z_$][\w$]*),verbose:([A-Za-z_$][\w$]*)\}\)/
+      new RegExp(
+        `return (${rendererCallPattern})\\(([A-Za-z_$][\\w$]*),\\{filePath:([A-Za-z_$][\\w$]*),content:([A-Za-z_$][\\w$]*),verbose:([A-Za-z_$][\\w$]*)\\}\\)`
+      )
     );
     if (!createReturnMatch) {
       index = updateStart + updateNeedle.length;
@@ -218,7 +220,9 @@ function patchWriteCreateDiffColors(content) {
     }
 
     const updateRendererMatch = updateSegment.match(
-      /(?:createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{filePath:[^}]*structuredPatch:[^}]*style:([A-Za-z_$][\w$]*),verbose:[A-Za-z_$][\w$]*/
+      new RegExp(
+        `${rendererCallPattern}\\(([A-Za-z_$][\\w$]*),\\{filePath:[^}]*structuredPatch:[^}]*style:([A-Za-z_$][\\w$]*),verbose:[A-Za-z_$][\\w$]*`
+      )
     );
     if (!updateRendererMatch) {
       index = updateStart + updateNeedle.length;
@@ -227,11 +231,10 @@ function patchWriteCreateDiffColors(content) {
 
     candidates += 1;
 
-    const reactNs = createReturnMatch[1];
-    const jsxFactory = createReturnMatch[2];
-    const fileVar = createReturnMatch[4];
-    const contentVar = createReturnMatch[5];
-    const verboseVar = createReturnMatch[6];
+    const renderCall = createReturnMatch[1];
+    const fileVar = createReturnMatch[3];
+    const contentVar = createReturnMatch[4];
+    const verboseVar = createReturnMatch[5];
     const diffRenderer = updateRendererMatch[1];
     const styleVar = updateRendererMatch[2];
 
@@ -243,7 +246,7 @@ function patchWriteCreateDiffColors(content) {
       : `${contentVar}===""?0:${contentVar}.split(\`\\n\`).length`;
 
     const before = createReturnMatch[0];
-    const after = `return ${reactNs}.${jsxFactory}(${diffRenderer},{filePath:${fileVar},structuredPatch:[{oldStart:1,oldLines:0,newStart:1,newLines:${lineCountExpr},lines:${contentVar}===""?[]:${contentVar}.split(\`\\n\`).map((__cc_line)=>"+"+__cc_line)}],firstLine:${contentVar}.split(\`\\n\`)[0]??null,fileContent:"",style:${styleVar},verbose:${verboseVar},previewHint:void 0})`;
+    const after = `return ${renderCall}(${diffRenderer},{filePath:${fileVar},structuredPatch:[{oldStart:1,oldLines:0,newStart:1,newLines:${lineCountExpr},lines:${contentVar}===""?[]:${contentVar}.split(\`\\n\`).map((__cc_line)=>"+"+__cc_line)}],firstLine:${contentVar}.split(\`\\n\`)[0]??null,fileContent:"",style:${styleVar},verbose:${verboseVar},previewHint:void 0})`;
 
     if (!createSegment.includes(before)) {
       index = updateStart + updateNeedle.length;
@@ -375,7 +378,7 @@ function patchThinkingCase(content, ctx = {}) {
 
     let nextSegment = segment;
     nextSegment = nextSegment.replace(
-      /if\(![A-Za-z_$][\w$]*(?:&&![A-Za-z_$][\w$]*){1,2}\)return null;/,
+      /if\(![A-Za-z_$][\w$]*(?:&&![A-Za-z_$][\w$]*){1,2}\)(?:return null;|\{return null;?\})/,
       (full) => {
         if (!ctx.preserveLength) {
           return "";
@@ -383,30 +386,20 @@ function patchThinkingCase(content, ctx = {}) {
         return `;${" ".repeat(Math.max(0, full.length - 1))}`;
       }
     );
-    nextSegment = nextSegment.replace(
-      /((?:createElement|jsx|jsxs)\([A-Za-z_$][\w$]*,\{)([^}]*)\}/g,
-      (full, prefix, props) => {
-        let nextProps = props;
-        nextProps = nextProps.replace(/isTranscriptMode:[^,}]+/g, (entry) => {
-          const desired = ctx.preserveLength ? "isTranscriptMode:1" : "isTranscriptMode:!0";
-          if (!ctx.preserveLength || desired.length > entry.length) {
-            return desired;
-          }
-          return `${desired}${" ".repeat(entry.length - desired.length)}`;
-        });
-        nextProps = nextProps.replace(/hideInTranscript:[^,}]+/g, (entry) => {
-          const desired = ctx.preserveLength ? "hideInTranscript:0" : "hideInTranscript:!1";
-          if (!ctx.preserveLength || desired.length > entry.length) {
-            return desired;
-          }
-          return `${desired}${" ".repeat(entry.length - desired.length)}`;
-        });
-        if (nextProps === props) {
-          return full;
-        }
-        return `${prefix}${nextProps}}`;
+    nextSegment = nextSegment.replace(/isTranscriptMode:[^,}]+/g, (entry) => {
+      const desired = ctx.preserveLength ? "isTranscriptMode:1" : "isTranscriptMode:!0";
+      if (!ctx.preserveLength || desired.length > entry.length) {
+        return desired;
       }
-    );
+      return `${desired}${" ".repeat(entry.length - desired.length)}`;
+    });
+    nextSegment = nextSegment.replace(/hideInTranscript:[^,}]+/g, (entry) => {
+      const desired = ctx.preserveLength ? "hideInTranscript:0" : "hideInTranscript:!1";
+      if (!ctx.preserveLength || desired.length > entry.length) {
+        return desired;
+      }
+      return `${desired}${" ".repeat(entry.length - desired.length)}`;
+    });
 
     if (nextSegment !== segment) {
       patched += 1;
@@ -455,9 +448,9 @@ function patchRedactedThinkingSummaries(content) {
     const thinkingSegment = output.slice(thinkingStart, thinkingEnd);
 
     const hasRedactedRendererCall =
-      redactedSegment.includes("createElement(") ||
-      redactedSegment.includes("jsx(") ||
-      redactedSegment.includes("jsxs(");
+      /(?:[A-Za-z_$][\w$]*\.(?:createElement|jsx|jsxs)|[A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*,\{addMargin:/.test(
+        redactedSegment
+      );
     if (
       thinkingStart - redactedStart > maxRendererGap ||
       thinkingEnd - thinkingStart > maxRendererGap ||
@@ -469,18 +462,17 @@ function patchRedactedThinkingSummaries(content) {
     }
 
     const thinkingRendererMatch = thinkingSegment.match(
-      /([A-Za-z_$][\w$]*)\.(createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{addMargin:([A-Za-z_$][\w$]*),param:([A-Za-z_$][\w$]*),isTranscriptMode:[^,}]+,verbose:[^,}]+(?:,hideInTranscript:[^}]+)?\}\)/
+      /((?:[A-Za-z_$][\w$]*\.(?:createElement|jsx|jsxs)|[A-Za-z_$][\w$]*))\(([A-Za-z_$][\w$]*),\{addMargin:([A-Za-z_$][\w$]*),param:([A-Za-z_$][\w$]*),isTranscriptMode:[^,}]+,verbose:[^,}]+(?:,hideInTranscript:[^}]+)?\}\)/
     );
     if (!thinkingRendererMatch) {
       index = redactedStart + redactedNeedle.length;
       continue;
     }
 
-    const reactNs = thinkingRendererMatch[1];
-    const jsxFactory = thinkingRendererMatch[2];
-    const thinkingComponent = thinkingRendererMatch[3];
-    const addMarginVar = thinkingRendererMatch[4];
-    const paramVar = thinkingRendererMatch[5];
+    const renderCall = thinkingRendererMatch[1];
+    const thinkingComponent = thinkingRendererMatch[2];
+    const addMarginVar = thinkingRendererMatch[3];
+    const paramVar = thinkingRendererMatch[4];
     const hideInTranscriptProp = thinkingRendererMatch[0].includes("hideInTranscript:")
       ? ",hideInTranscript:!1"
       : "";
@@ -488,7 +480,7 @@ function patchRedactedThinkingSummaries(content) {
     candidates += 1;
 
     const replacement =
-      `case"redacted_thinking":{return ${reactNs}.${jsxFactory}(${thinkingComponent},{` +
+      `case"redacted_thinking":{return ${renderCall}(${thinkingComponent},{` +
       `addMargin:${addMarginVar},param:{type:"thinking",thinking:${paramVar}.data??""},` +
       `isTranscriptMode:!0,verbose:!0${hideInTranscriptProp}})}`;
 
@@ -539,6 +531,63 @@ function patchThinkingStreaming(content) {
 
   candidates += memoCandidates;
   patched += memoPatched;
+
+  const turnStreamSelectionPattern =
+    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\?\.stream,([A-Za-z_$][\w$]*)\)\?\?([A-Za-z_$][\w$]*),/g;
+  let turnStreamSelectionMatch;
+  while ((turnStreamSelectionMatch = turnStreamSelectionPattern.exec(output)) !== null) {
+    const streamingToolUsesVar = turnStreamSelectionMatch[1];
+    const selectorHook = turnStreamSelectionMatch[2];
+    const turnVar = turnStreamSelectionMatch[3];
+    const fnStart = output.lastIndexOf("function ", turnStreamSelectionMatch.index);
+    const fnEnd = output.indexOf("function ", turnStreamSelectionMatch.index + turnStreamSelectionMatch[0].length);
+    if (fnStart === -1 || fnEnd === -1) {
+      continue;
+    }
+
+    const wrapperSegment = output.slice(fnStart, fnEnd);
+    if (!wrapperSegment.includes(`streamingToolUses:${streamingToolUsesVar},`)) {
+      continue;
+    }
+
+    const rendererSignaturePattern =
+      /(streamingToolUses:[A-Za-z_$][\w$]*,)(showAllInTranscript:)/;
+    if (!rendererSignaturePattern.test(output)) {
+      continue;
+    }
+
+    const streamingThinkingVar = "__cc_streamingThinking";
+    let nextWrapperSegment = wrapperSegment.replace(
+      turnStreamSelectionMatch[0],
+      `${turnStreamSelectionMatch[0]}${streamingThinkingVar}=${selectorHook}(${turnVar}?.stream,(__cc_state)=>__cc_state.streamingThinking)??null,`
+    );
+    nextWrapperSegment = nextWrapperSegment.replace(
+      `streamingToolUses:${streamingToolUsesVar},`,
+      `streamingToolUses:${streamingToolUsesVar},streamingThinking:${streamingThinkingVar},`
+    );
+
+    const propIndex = nextWrapperSegment.indexOf(`streamingThinking:${streamingThinkingVar},`);
+    const cacheIfIndex = nextWrapperSegment.lastIndexOf("if(", propIndex);
+    if (propIndex === -1 || cacheIfIndex === -1 || propIndex - cacheIfIndex > 1200) {
+      continue;
+    }
+    nextWrapperSegment =
+      nextWrapperSegment.slice(0, cacheIfIndex + 3) +
+      "!0||" +
+      nextWrapperSegment.slice(cacheIfIndex + 3);
+
+    let nextOutput = output.slice(0, fnStart) + nextWrapperSegment + output.slice(fnEnd);
+    nextOutput = nextOutput.replace(
+      rendererSignaturePattern,
+      `$1streamingThinking:${streamingThinkingVar},$2`
+    );
+    if (nextOutput !== output) {
+      candidates += 1;
+      patched += 1;
+      output = nextOutput;
+      turnStreamSelectionPattern.lastIndex = fnStart + nextWrapperSegment.length;
+    }
+  }
 
   let propCandidates = 0;
   let propPatched = 0;
@@ -827,13 +876,24 @@ function patchThinkingStreaming(content) {
     lingerPatched += 1;
     return `${visibleVar}=${reactNs}.useMemo(()=>!!(${streamVar}&&${streamVar}.isStreaming),[${streamVar}])`;
   });
+  const streamStoreLingerPattern =
+    /if\(([A-Za-z_$][\w$]*)&&!\1\.isStreaming&&\1\.streamingEndedAt\)\{let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*-\(Date\.now\(\)-\1\.streamingEndedAt\);if\(\2>0\)this\._cancelThinkingHide=this\._scheduleTimeout\(\(\)=>\{this\._cancelThinkingHide=null,this\.setStreamingThinking\(null\)\},\2\);else this\.setStreamingThinking\(null\)\}/g;
+  output = output.replace(streamStoreLingerPattern, (_full, streamVar) => {
+    lingerCandidates += 1;
+    lingerPatched += 1;
+    return `if(${streamVar}&&!${streamVar}.isStreaming&&${streamVar}.streamingEndedAt)this.setStreamingThinking(null)`;
+  });
   candidates += lingerCandidates;
   patched += lingerPatched;
 
   const transcriptToolUseHelpersMatch = output.match(
     /let [A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\(\{content:\[[A-Za-z_$][\w$]*\.contentBlock\]\}\);return [A-Za-z_$][\w$]*\.uuid=([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[[A-Za-z_$][\w$]*\]\)/
   );
-  let createVirtualMessageHelper = transcriptToolUseHelpersMatch?.[1] ?? null;
+  const virtualMessageHelperMatch = output.match(
+    /function ([A-Za-z_$][\w$]*)\(\{content:[^}]*isVirtual:[^}]*uuid:[^}]*\}\)\{return [A-Za-z_$][\w$]*\([\s\S]{0,500}?isVirtual:/
+  );
+  let createVirtualMessageHelper =
+    transcriptToolUseHelpersMatch?.[1] ?? virtualMessageHelperMatch?.[1] ?? null;
   let transcriptStreamingThinkingVar = null;
   const rendererStreamingThinkingMatch = output.match(
     /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),showAllInTranscript:/
@@ -864,13 +924,13 @@ function patchThinkingStreaming(content) {
     let inlineThinkingCandidates = 0;
     let inlineThinkingPatched = 0;
     const inlineThinkingPattern =
-      /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.useMemo\(\(\)=>([A-Za-z_$][\w$]*)\.flatMap\(\(([A-Za-z_$][\w$]*)\)=>\{let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{content:\[\4\.contentBlock\]\}\);return \5\.uuid=([A-Za-z_$][\w$]*)\(\4\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[\5\]\)\}\),\[\3\]\)/g;
+      /([A-Za-z_$][\w$]*)=((?:[A-Za-z_$][\w$]*\.useMemo|[A-Za-z_$][\w$]*))\(\(\)=>([A-Za-z_$][\w$]*)\.flatMap\(\(([A-Za-z_$][\w$]*)\)=>\{let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{content:\[\4\.contentBlock\]\}\);return \5\.uuid=([A-Za-z_$][\w$]*)\(\4\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[\5\]\)\}\),\[\3\]\)/g;
     output = output.replace(
       inlineThinkingPattern,
       (
         _full,
         extrasVar,
-        reactNs,
+        memoCall,
         streamingToolUsesVar,
         toolUseEntryVar,
         toolUseMessageVar,
@@ -881,7 +941,7 @@ function patchThinkingStreaming(content) {
         inlineThinkingCandidates += 1;
         inlineThinkingPatched += 1;
         createVirtualMessageHelper = createMessageHelper;
-        return `${extrasVar}=${reactNs}.useMemo(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
+        return `${extrasVar}=${memoCall}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
       }
     );
     candidates += inlineThinkingCandidates;
@@ -1895,6 +1955,62 @@ function resolveSelectedPatchIds(opts) {
   return { selected };
 }
 
+function patchContents(contents, opts = {}) {
+  const { selected } = resolveSelectedPatchIds({
+    disable: opts.disable ?? [],
+    enable: opts.enable ?? [],
+  });
+  let currentContents = [...contents];
+  const patchResults = new Map();
+
+  for (const module of PATCH_MODULES) {
+    if (!selected.has(module.id)) {
+      patchResults.set(module.id, {
+        candidates: 0,
+        patched: 0,
+        skipped: true,
+        reason: "disabled",
+      });
+      continue;
+    }
+
+    let candidates = 0;
+    let patched = 0;
+    currentContents = currentContents.map((content) => {
+      const result = module.apply(content, { preserveLength: false });
+      candidates += result.candidates;
+      patched += result.patched;
+      return result.content;
+    });
+    patchResults.set(module.id, {
+      candidates,
+      patched,
+      skipped: false,
+      reason: null,
+    });
+  }
+
+  return { contents: currentContents, patchResults };
+}
+
+function printPatchSummary(patchResults) {
+  console.log("Patch summary:");
+  for (const module of PATCH_MODULES) {
+    const result = patchResults.get(module.id);
+    if (result.skipped) {
+      if (result.reason === "disabled") {
+        console.log(`  ${module.id} candidates: 0, patched: 0 (skipped)`);
+      } else {
+        console.log(
+          `  ${module.id} candidates: ${result.candidates}, patched: 0 (skipped: ${result.reason})`
+        );
+      }
+      continue;
+    }
+    console.log(`  ${module.id} candidates: ${result.candidates}, patched: ${result.patched}`);
+  }
+}
+
 function main() {
   let opts;
   try {
@@ -1919,15 +2035,6 @@ function main() {
     process.exit(0);
   }
 
-  let patchSelection;
-  try {
-    patchSelection = resolveSelectedPatchIds(opts);
-  } catch (error) {
-    console.error(`Error: ${error.message}`);
-    process.exit(1);
-  }
-  const selectedPatchIds = patchSelection.selected;
-
   let targetPath;
   try {
     targetPath = resolveTargetPath(opts);
@@ -1938,48 +2045,16 @@ function main() {
 
   ensureFileExists(targetPath);
   const original = fs.readFileSync(targetPath, TARGET_FILE_ENCODING);
-  let currentContent = original;
-  const patchResults = new Map();
-
-  for (const module of PATCH_MODULES) {
-    if (!selectedPatchIds.has(module.id)) {
-      patchResults.set(module.id, {
-        candidates: 0,
-        patched: 0,
-        skipped: true,
-        reason: "disabled",
-      });
-      continue;
-    }
-
-    const result = module.apply(currentContent, { preserveLength: false });
-
-    currentContent = result.content;
-    patchResults.set(module.id, {
-      candidates: result.candidates,
-      patched: result.patched,
-      skipped: false,
-      reason: null,
-    });
+  let patchResult;
+  try {
+    patchResult = patchContents([original], opts);
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
   }
+  const nextContent = patchResult.contents[0];
 
-  const nextContent = currentContent;
-
-  console.log("Patch summary:");
-  for (const module of PATCH_MODULES) {
-    const result = patchResults.get(module.id);
-    if (result.skipped) {
-      if (result.reason === "disabled") {
-        console.log(`  ${module.id} candidates: 0, patched: 0 (skipped)`);
-      } else {
-        console.log(
-          `  ${module.id} candidates: ${result.candidates}, patched: 0 (skipped: ${result.reason})`
-        );
-      }
-      continue;
-    }
-    console.log(`  ${module.id} candidates: ${result.candidates}, patched: ${result.patched}`);
-  }
+  printPatchSummary(patchResult.patchResults);
 
   if (nextContent === original) {
     console.log("No changes needed.");
@@ -1995,4 +2070,11 @@ function main() {
   console.log(`Patched: ${targetPath}`);
 }
 
-main();
+module.exports = {
+  patchContents,
+  printPatchSummary,
+};
+
+if (require.main === module) {
+  main();
+}
