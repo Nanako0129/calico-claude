@@ -14,7 +14,11 @@ type PatchOptions = {
 type NativeBunModule = {
   canNativeBunHandle(binaryPath: string): boolean;
   readNativeBunContent(binaryPath: string): string;
-  readNativeBunModules(binaryPath: string): Array<{ name: string; content: string }>;
+  readNativeBunModules(binaryPath: string): Array<{
+    name: string;
+    content: string;
+    bytecodeLength: number;
+  }>;
   writeNativeBunContent(binaryPath: string, content: string): void;
   writeNativeBunModules(binaryPath: string, replacements: ReadonlyMap<string, string>): void;
 };
@@ -25,6 +29,19 @@ type PatchResult = {
   skipped: boolean;
   reason: string | null;
 };
+
+const REQUIRED_PATCH_IDS = [
+  "tool-call-verbose",
+  "create-diff-colors",
+  "word-diff-line-bg",
+  "thinking-inline",
+  "redacted-thinking-inline",
+  "thinking-streaming",
+  "subagent-prompt",
+  "disable-spinner-tips",
+  "version-output",
+  "welcome-badge",
+] as const;
 
 type DisplayPatcher = {
   patchContents(
@@ -160,19 +177,12 @@ async function patchNativeBinary(opts: PatchOptions): Promise<void> {
     throw new Error(`Input binary not found: ${inputPath}`);
   }
 
-  if (!opts.dryRun && inputPath !== outputPath) {
-    fs.copyFileSync(inputPath, outputPath);
-    fs.chmodSync(outputPath, 0o755);
-  }
-
-  const binaryPath = opts.dryRun ? inputPath : outputPath;
-
   const nativeBun = loadNativeBunModule();
-  if (!nativeBun.canNativeBunHandle(binaryPath)) {
-    throw new Error(`Unsupported native Claude binary: ${binaryPath}`);
+  if (!nativeBun.canNativeBunHandle(inputPath)) {
+    throw new Error(`Unsupported native Claude binary: ${inputPath}`);
   }
   const javaScriptModules = nativeBun
-    .readNativeBunModules(binaryPath)
+    .readNativeBunModules(inputPath)
     .filter((module) => isJavaScriptModule(module.name));
   const patcher = loadDisplayPatcher();
   const result = patcher.patchContents(
@@ -180,24 +190,56 @@ async function patchNativeBinary(opts: PatchOptions): Promise<void> {
     { disable: opts.disable, enable: opts.enable }
   );
   patcher.printPatchSummary(result.patchResults);
+  validatePatchCoverage(result.patchResults, new Set(opts.disable));
 
   const replacements = new Map<string, string>();
+  let replacedBytecodeBytes = 0;
   for (let index = 0; index < javaScriptModules.length; index += 1) {
     if (result.contents[index] !== javaScriptModules[index].content) {
       replacements.set(javaScriptModules[index].name, result.contents[index]);
+      replacedBytecodeBytes += javaScriptModules[index].bytecodeLength;
     }
   }
 
-  if (!opts.dryRun && replacements.size > 0) {
-    nativeBun.writeNativeBunModules(outputPath, replacements);
-  }
-
   if (opts.dryRun) {
-    console.log(`Dry run complete. ${replacements.size} native module(s) would change.`);
+    console.log(
+      `Dry run complete. ${replacements.size} native module(s) would change and ${formatBytes(replacedBytecodeBytes)} of stale bytecode would be dropped.`
+    );
     return;
   }
 
-  console.log(`Patched ${replacements.size} native module(s): ${outputPath}`);
+  if (inputPath !== outputPath) {
+    fs.copyFileSync(inputPath, outputPath);
+    fs.chmodSync(outputPath, 0o755);
+  }
+
+  if (replacements.size > 0) {
+    nativeBun.writeNativeBunModules(outputPath, replacements);
+  }
+  console.log(
+    `Patched ${replacements.size} native module(s), dropped ${formatBytes(replacedBytecodeBytes)} of stale bytecode: ${outputPath}`
+  );
+}
+
+function validatePatchCoverage(
+  patchResults: ReadonlyMap<string, PatchResult>,
+  disabledIds: ReadonlySet<string>
+): void {
+  const missing = REQUIRED_PATCH_IDS.filter(
+    (id) => !disabledIds.has(id) && (patchResults.get(id)?.patched ?? 0) === 0
+  );
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Required patches matched nothing: ${missing.join(", ")}. Refusing to write a partially patched binary.`
+    );
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function errorMessage(error: unknown): string {

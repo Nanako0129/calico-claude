@@ -30,6 +30,7 @@ type BunModule = {
 type NativeBunModuleContent = {
   name: string;
   content: string;
+  bytecodeLength: number;
 };
 
 type BunStorage =
@@ -314,6 +315,7 @@ function readBunModuleContents(storage: BunStorage): NativeBunModuleContent[] {
     modules.push({
       name: sliceRange(storage.bunData, moduleRecord.name).toString("utf8"),
       content: sliceRange(storage.bunData, moduleRecord.contents).toString("utf8"),
+      bytecodeLength: moduleRecord.bytecode.length,
     });
   }
 
@@ -347,17 +349,22 @@ function rebuildBunData(
     const moduleOffset = index * moduleStructSize;
     const moduleRecord = readBunModule(moduleTable, moduleOffset, moduleStructSize);
     const moduleName = sliceRange(bunData, moduleRecord.name).toString("utf8");
+    const hasReplacement = replacementContents.has(moduleName);
 
-    const nextContents =
-      replacementContents.get(moduleName) ?? sliceRange(bunData, moduleRecord.contents);
+    const nextContents = hasReplacement
+      ? replacementContents.get(moduleName)!
+      : sliceRange(bunData, moduleRecord.contents);
 
     const nextModule = {
       name: sliceRange(bunData, moduleRecord.name),
       contents: nextContents,
       sourcemap: sliceRange(bunData, moduleRecord.sourcemap),
-      bytecode: sliceRange(bunData, moduleRecord.bytecode),
+      // Bun prefers embedded bytecode to source, so patched modules must be recompiled.
+      bytecode: hasReplacement ? Buffer.alloc(0) : sliceRange(bunData, moduleRecord.bytecode),
       moduleInfo: sliceRange(bunData, moduleRecord.moduleInfo),
-      bytecodeOriginPath: sliceRange(bunData, moduleRecord.bytecodeOriginPath),
+      bytecodeOriginPath: hasReplacement
+        ? Buffer.alloc(0)
+        : sliceRange(bunData, moduleRecord.bytecodeOriginPath),
       encoding: moduleRecord.encoding,
       loader: moduleRecord.loader,
       moduleFormat: moduleRecord.moduleFormat,
@@ -493,12 +500,18 @@ function wrapSectionBunData(bunData: Buffer, sectionHeaderSize: 4 | 8): Buffer {
 }
 
 function writeBinaryPreservingMode(binary: import("node-lief").Abstract.Binary, path: string): void {
-  const tempPath = `${path}.tmp`;
-  binary.write(tempPath);
-  const originalMode = fs.statSync(path).mode;
-  fs.chmodSync(tempPath, originalMode);
+  const originalStat = fs.statSync(path);
+  const tempPath = `${path}.tmp-${process.pid}`;
 
   try {
+    binary.write(tempPath);
+    const writtenSize = fs.statSync(tempPath).size;
+    if (writtenSize < originalStat.size / 2) {
+      throw new Error(
+        `Refusing truncated binary write: ${writtenSize} bytes from ${originalStat.size} bytes`
+      );
+    }
+    fs.chmodSync(tempPath, originalStat.mode);
     fs.renameSync(tempPath, path);
   } catch (error) {
     try {

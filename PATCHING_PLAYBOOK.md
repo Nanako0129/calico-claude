@@ -21,7 +21,7 @@ The current flow is:
 2. Use `scripts/native-bun.ts` to read the embedded Bun module table.
 3. Select every embedded JavaScript module, including the CLI entry module and split chunks.
 4. Run `patch-claude-display.ts` across those modules and aggregate the patch counts.
-5. Use `scripts/native-bun.ts` to rebuild the module table with only the changed module contents replaced.
+5. Use `scripts/native-bun.ts` to rebuild the module table with the changed module contents replaced and their stale Bun bytecode removed.
 6. Re-sign on macOS.
 7. Publish the patched binary.
 
@@ -45,7 +45,7 @@ The important consequence: almost all real behavior lives in `patch-claude-displ
 - `PATCH_MODULES` defines the patch order.
 - Patches run sequentially, so later patches see earlier rewrites.
 - `patchContents()` applies that ordered pipeline to one or more module contents and aggregates the counts.
-- The patcher prints a per-module summary but does not fail if nothing changed.
+- The native patch flow requires every supported patch to match unless it was explicitly disabled.
 - `main()` writes the file only when the final content differs from the original.
 
 That last point matters: `No changes needed.` is a successful exit, not a failure.
@@ -74,8 +74,9 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 
 Important behavior:
 
-- if `patch-claude-display.ts` prints nonzero patch counts, the rewritten binary is patched
-- if `patch-claude-display.ts` makes no changes, the script still succeeds and the output binary can remain equivalent to upstream
+- a nonzero source patch count is not sufficient by itself: Bun can execute a module's embedded bytecode instead of its source
+- when a module's source changes, the writer removes its bytecode and bytecode origin path so Bun recompiles the patched source
+- if a required patch matches nothing, the script fails before copying or rewriting the output binary
 - 2.1.233 names the entry module `/$bunfs/root/cli` on macOS/Linux and `B:/~BUN/root/cli` on Windows, so entry detection recognizes the stable `/root/cli` suffix in addition to older Claude entry names
 - 2.1.245 splits the application across more than a thousand `chunk-*.js` modules. Its `/root/cli` entry is only a small loader, so entry-module-only extraction produces misleading zero counts for UI patches.
 - `--dry-run` reads and patches all JavaScript modules in memory without copying or rewriting the binary.
@@ -416,6 +417,7 @@ Old bundle shapes we match:
 
 - bold text node rendering `"Claude Code"`
 - JSX text props shaped like `{bold:!0,children:"Claude Code"}`
+- split chunks that call an imported JSX factory directly instead of through a runtime object
 - help/settings title template like ``title:(`Claude Code v${...VERSION}`),color:"professionalBlue",defaultTab:"general"``
 - welcome copy `"Welcome to Claude Code for "`
 - welcome copy `"Welcome to Claude Code"`
