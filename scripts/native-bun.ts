@@ -489,7 +489,12 @@ function rebuildBunDataPreservingBytecodeOffsets(
       bunOffsets.modulesPtr.offset + replacement.index * moduleStructSize;
     rebuilt.writeUInt32LE(contentsOffset, moduleRecordOffset + 8);
     rebuilt.writeUInt32LE(replacement.contents.length, moduleRecordOffset + 12);
-    // Clear bytecode: it was compiled from the unpatched source.
+    // Clear the sourcemap and bytecode: both describe the unpatched source, so
+    // keeping them means stale mappings and stale code. The full-rebuild path
+    // below drops the same three ranges; this is the path every patch actually
+    // takes now that only real edits are written back.
+    rebuilt.writeUInt32LE(0, moduleRecordOffset + 16);
+    rebuilt.writeUInt32LE(0, moduleRecordOffset + 20);
     rebuilt.writeUInt32LE(0, moduleRecordOffset + 24);
     rebuilt.writeUInt32LE(0, moduleRecordOffset + 28);
     if (moduleStructSize === 52) {
