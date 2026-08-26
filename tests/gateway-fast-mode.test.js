@@ -470,8 +470,8 @@ test("binary verifier accepts the complete gateway fast-mode structure", () => {
   assert.equal(evaluatePatchModule("gateway-fast-mode", patched), null);
 
   const withNativeMetadataNormalization = patched.replace(
-    "r=globalThis.__calicoGatewayFastApply(r);if(e&&e.length>0){",
-    'let n=r.metadata;if(n&&typeof n.user_id==="string")r.metadata={...n,user_id:n.user_id};r=globalThis.__calicoGatewayFastApply(r);if(e&&e.length>0){'
+    "r=__calicoGatewayFastApply(r);if(e&&e.length>0){",
+    'let n=r.metadata;if(n&&typeof n.user_id==="string")r.metadata={...n,user_id:n.user_id};r=__calicoGatewayFastApply(r);if(e&&e.length>0){'
   );
   assert.notEqual(withNativeMetadataNormalization, patched);
   assert.equal(
@@ -486,7 +486,7 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
   const interactiveStart = patched.indexOf("async function Wj_", helperStart);
   const helperBlock = patched.slice(helperStart, interactiveStart);
   const applyHelper = helperBlock.match(
-    /globalThis\.__calicoGatewayFastApply=function[\s\S]*$/
+    /function __calicoGatewayFastApply[\s\S]*$/
   )?.[0];
   const builderStart = patched.indexOf("function tHt(");
   const builderEnd = patched.indexOf("async function uea", builderStart);
@@ -501,31 +501,31 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     patched.slice(interactiveStart);
   const alternateApply = patched.replace(
     applyHelper,
-    `globalThis.__calicoGatewayFastApply=()=>{};/*${applyHelper}*/`
+    `__calicoGatewayFastApply=()=>{};/*${applyHelper}*/`
   );
   const withoutThinBranch = patched.replace(
-    'if(process.env.REMORA_ACTIVE==="1")return globalThis.__calicoGatewayFastThin(e);',
+    'if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(e);',
     ""
   );
   const withoutNativeAction = patched.replace('"shortcut"', '"shortcut-broken"');
   const applyAfterBetaMerge = patched.replace(
     builderBlock,
     builderBlock
-      .replace("r=globalThis.__calicoGatewayFastApply(r);", "")
-      .replace("return r}", "r=globalThis.__calicoGatewayFastApply(r);return r}")
+      .replace("r=__calicoGatewayFastApply(r);", "")
+      .replace("return r}", "r=__calicoGatewayFastApply(r);return r}")
   );
   const applyBeforeNativeParse = patched
     .replace(
-      "r=globalThis.__calicoGatewayFastApply(r);if(e&&e.length>0){",
+      "r=__calicoGatewayFastApply(r);if(e&&e.length>0){",
       "if(e&&e.length>0){"
     )
     .replace(
       "function tHt(e){let t=process.env.CLAUDE_CODE_EXTRA_BODY,r={};",
-      "function tHt(e){let t=process.env.CLAUDE_CODE_EXTRA_BODY,r={};r=globalThis.__calicoGatewayFastApply(r);"
+      "function tHt(e){let t=process.env.CLAUDE_CODE_EXTRA_BODY,r={};r=__calicoGatewayFastApply(r);"
     );
   const applyInsideNativeCatch = patched.replace(
-    ',{level:"error"})}r=globalThis.__calicoGatewayFastApply(r);',
-    ',{level:"error"});r=globalThis.__calicoGatewayFastApply(r)}'
+    ',{level:"error"})}r=__calicoGatewayFastApply(r);',
+    ',{level:"error"});r=__calicoGatewayFastApply(r)}'
   );
   const withoutWorkerLocator = patched.replace(
     ",...ye.CALICO_GATEWAY_FAST_STATE_FILE&&{CALICO_GATEWAY_FAST_STATE_FILE:ye.CALICO_GATEWAY_FAST_STATE_FILE}",
@@ -540,12 +540,12 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     'process.env.REMORA_ACTIVE==="1"?!1:!pn()'
   );
   const injectedAnthropicSpeed = patched.replace(
-    "globalThis.__calicoGatewayFastApply=function",
-    'var __calicoGatewayFastLeak={speed:"fast"};globalThis.__calicoGatewayFastApply=function'
+    "function __calicoGatewayFastApply",
+    'var __calicoGatewayFastLeak={speed:"fast"};function __calicoGatewayFastApply'
   );
   const injectedBuilderSpeed = patched.replace(
-    "r=globalThis.__calicoGatewayFastApply(r);if(e&&e.length>0){",
-    'r=globalThis.__calicoGatewayFastApply(r);r.speed="fast";if(e&&e.length>0){'
+    "r=__calicoGatewayFastApply(r);if(e&&e.length>0){",
+    'r=__calicoGatewayFastApply(r);r.speed="fast";if(e&&e.length>0){'
   );
   const persistedExtraBody = patched.replace(
     "writeFileSync(l,e,{encoding:",

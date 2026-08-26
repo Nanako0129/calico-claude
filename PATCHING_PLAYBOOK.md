@@ -93,9 +93,23 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   - **An injected helper must be reachable from where it is called.** A `function __calicoX(){}`
     declared in one chunk is undefined in another. `custom-context-window` declared
     `__calico_display_window` at the resolver site and called it at the status-line site, which
-    upstream now places in a different chunk. Declare the helper in the chunk that uses it, or hang
-    it off `globalThis` — `globalThis.__calicoX` is the convention here, and `native-bun.ts` fails
-    the write when a chunk references a bare `__calico*` it does not declare.
+    upstream now places in a different chunk. `native-bun.ts` fails the write when a chunk
+    references a bare `__calico*`/`__cc_*` it does not itself declare.
+  - **`globalThis` does not fix that on its own — evaluation order does.** Publishing a helper as
+    `globalThis.__calicoX=…` in one chunk and reading it from another only works if the reading
+    chunk statically imports the publishing one, transitively; otherwise the publisher may not have
+    run yet. Only **8 of 1,384** modules in 2.1.245 are statically reachable from the cli entry —
+    every other chunk arrives through dynamic `import()` — so "it will have been evaluated by then"
+    is never a safe assumption. A build that published the gateway helpers from an unreachable
+    chunk threw `globalThis.__calicoGatewayFastApply is not a function` on **every request** and
+    produced no assistant output at all, while `--assert-all`, the module-scope guard and every
+    verifier marker check passed. **Prefer a self-contained copy per consuming chunk** — that is
+    what `gateway-fast-mode` (three copies, reconciled at runtime through
+    `CALICO_GATEWAY_FAST_STATE_FILE`) and `statusline-committed-usage` (two copies of the pure
+    predicates) now do, and it cannot be broken by re-chunking. Use `globalThis` only when the
+    helper wraps upstream code that cannot be copied, and rely on
+    `verify-patched-binary.ts`'s `cross-module-globals` check, which builds the static import graph
+    and fails the build when a consumer cannot reach its publisher.
   - **A minified name captured at one site cannot be emitted at another.** Chunks import each other
     under per-chunk aliases, so the same helper is `po` in one chunk and `a` in the next. Anything
     that captures a name at site A and writes it at site B is broken by construction. Route it
@@ -114,6 +128,12 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   injected value that occupies no slot leaves the renderer showing a stale element forever while the
   patch summary, `--assert-all` and the verifier all report success. Grow the allocation and claim a
   slot in both the guard and the write-back, and assert that wiring in the verifier.
+- **A replacement must be anchored to the site you located, not to its text.** `output.replace(
+  "function kC(", …)` rewrites the *first* match in the whole joined bundle, and minified names are
+  not unique across chunks — `function kC(` occurs four times in 2.1.245. A `thinking-streaming`
+  build inserted its helper before an unrelated `kC` in another chunk and died at startup with
+  `__cc_streamingThinkingSelector is not defined`. Compute the enclosing region from the offsets you
+  already have, assert each edit target occurs exactly once inside it, and splice by index.
 - **The JSX factory and the React hooks are destructured now.** `Ag.jsx(C,props)` is `o(C,props)`,
   `Pw.useMemo(...)` is `te(...)`, `crypto.randomUUID()` is `ESe()`, and a module-level singleton
   `br.requestJournal` is `n().requestJournal`. Six modules broke on exactly this. Never require the

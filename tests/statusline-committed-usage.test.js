@@ -413,7 +413,7 @@ test("matches renamed wrapper, terminal, selector, and clone locals", () => {
   assert.match(result.content, /let assistantWrapper=\{message:\{\.\.\.baseMessage/);
   assert.match(result.content, /case"message_delta":\{aggregatedUsage=aggregateUsage\(aggregatedUsage,terminalEvent\.usage\);/);
   assert.match(result.content, /for\(let assistantEntry of assistantEntries\)assistantEntry\.message\.usage=aggregatedUsage/);
-  assert.match(result.content, /selectedUsage=usageReducer\(globalThis\.__calicoStatuslineMessages\(messageEntries\)\),windowSize=contextWindow\(modelContext,windowOptions\(\)\)/);
+  assert.match(result.content, /selectedUsage=usageReducer\(__calicoStatuslineMessages\(messageEntries\)\),windowSize=contextWindow\(modelContext,windowOptions\(\)\)/);
   assert.equal(completed[0].__calicoUsageState.committed, true);
   assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
 });
@@ -588,17 +588,19 @@ test("binary verifier rejects dead helpers and broken wrapper ownership", () => 
   assert.equal(evaluatePatchModule("statusline-committed-usage", patched), null);
 
   const statuslineHelper = patched.match(
-    /globalThis\.__calicoStatuslineMessages=function[\s\S]*?(?=function fK_\()/
+    /function __calicoStatuslineMessages[\s\S]*?(?=function fK_\()/
   )?.[0];
+  // Two copies of the predicates exist (one per consuming site); this is the
+  // copy that precedes the status-line payload builder.
   const helperBlock = patched.match(
-    /globalThis\.__calicoUsageHasAccountingSignal=function[\s\S]*?(?=function fK_\()/
-  )?.[0];
+    /function __calicoUsageHasAccountingSignal(?:(?!function __calicoUsageHasAccountingSignal)[\s\S])*?(?=function fK_\()/g
+  )?.at(-1);
   assert.ok(statuslineHelper);
   assert.ok(helperBlock);
 
   const emptyHelper = patched.replace(
     statuslineHelper,
-    `globalThis.__calicoStatuslineMessages=(e)=>e;/*${statuslineHelper}*/`
+    `__calicoStatuslineMessages=(e)=>e;/*${statuslineHelper}*/`
   );
   const destructuredHelpers = patched.replace(
     helperBlock,

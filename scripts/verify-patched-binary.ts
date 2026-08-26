@@ -54,6 +54,82 @@ function inSameModule(content: string, first: number, second: number): boolean {
   return !content.slice(low, high).includes(BUN_MODULE_BOUNDARY);
 }
 
+// Cross-chunk references through globalThis are only safe when the chunk doing
+// the reading statically imports (transitively) the chunk doing the writing:
+// only then is the publisher guaranteed to have been evaluated first. Of 1,384
+// modules in 2.1.245, exactly 8 are statically reachable from the cli entry —
+// everything else arrives through dynamic import — so "it will have been
+// evaluated by then" is never a safe assumption. A build that published the
+// gateway helpers from an unreachable chunk threw
+// "globalThis.__calicoGatewayFastApply is not a function" on every request and
+// produced no output at all, while every other check here passed.
+function unreachableGlobalPublications(content: string, moduleNames: string[]): string[] {
+  const modules = content.split(BUN_MODULE_BOUNDARY);
+  if (modules.length < 2 || modules.length !== moduleNames.length) {
+    return [];
+  }
+
+  const indexByName = new Map(moduleNames.map((name, index) => [name, index]));
+  const staticImportPattern = /import\s*(?:[^"';]*?from\s*)?"([^"]+\.js)"/g;
+  const dynamicImportPattern = /import\("([^"]+\.js)"\)/g;
+
+  const staticEdges = modules.map((module) => {
+    const dynamic = new Set(
+      Array.from(module.matchAll(dynamicImportPattern), (match) => match[1])
+    );
+    return Array.from(
+      new Set(Array.from(module.matchAll(staticImportPattern), (match) => match[1]))
+    )
+      .filter((target) => !dynamic.has(target))
+      .map((target) => indexByName.get(target))
+      .filter((index): index is number => index !== undefined);
+  });
+
+  const closures = new Map<number, Set<number>>();
+  const closureOf = (start: number): Set<number> => {
+    const cached = closures.get(start);
+    if (cached) {
+      return cached;
+    }
+    const seen = new Set([start]);
+    const stack = [start];
+    while (stack.length > 0) {
+      for (const next of staticEdges[stack.pop() as number]) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          stack.push(next);
+        }
+      }
+    }
+    closures.set(start, seen);
+    return seen;
+  };
+
+  const publisherPattern = /globalThis\.((?:__calico|__cc_)[\w$]*)\s*=/g;
+  const publishers = new Map<string, number>();
+  modules.forEach((module, index) => {
+    for (const match of module.matchAll(publisherPattern)) {
+      publishers.set(match[1], index);
+    }
+  });
+
+  const problems: string[] = [];
+  for (const [name, publisher] of publishers) {
+    modules.forEach((module, index) => {
+      const uses = countOccurrences(module, `globalThis.${name}`);
+      const declares = countOccurrences(module, `globalThis.${name}=`);
+      if (uses - declares <= 0 || closureOf(index).has(publisher)) {
+        return;
+      }
+      problems.push(
+        `${name} is read in ${moduleNames[index]} but published in ${moduleNames[publisher]}, ` +
+          "which that module does not statically import, so it may not be evaluated first"
+      );
+    });
+  }
+  return problems;
+}
+
 function countOccurrences(content: string, needle: string): number {
   let count = 0;
   let index = content.indexOf(needle);
@@ -87,53 +163,82 @@ const CHECKS: Check[] = [
       const stateDeclaration =
         "var __calicoGatewayFastState={path:null,dir:null,owner:!1};";
       const applyHelper =
-        'globalThis.__calicoGatewayFastApply=function(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};';
+        'function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};';
 
+      // One self-contained copy per consuming chunk. The interactive handler,
+      // the thin handler and the request extra-body builder are in three Bun
+      // chunks that do not import one another, so a single shared definition is
+      // not reliably evaluated before it is used: a 2.1.245 build that shared
+      // them through globalThis threw "globalThis.__calicoGatewayFastApply is
+      // not a function" on every request. The copies reconcile at runtime
+      // through CALICO_GATEWAY_FAST_STATE_FILE.
+      const blockCount = 3;
+      const blockStarts: number[] = [];
+      for (let at = content.indexOf(nodeDeclaration); at !== -1; ) {
+        blockStarts.push(at);
+        at = content.indexOf(nodeDeclaration, at + nodeDeclaration.length);
+      }
       if (
-        countOccurrences(content, nodeDeclaration) !== 1 ||
-        countOccurrences(content, stateDeclaration) !== 1 ||
-        countOccurrences(content, applyHelper) !== 1
+        blockStarts.length !== blockCount ||
+        countOccurrences(content, stateDeclaration) !== blockCount ||
+        countOccurrences(content, applyHelper) !== blockCount
       ) {
-        return "gateway fast state or request helper is missing, duplicated, or not exact";
+        return `expected ${blockCount} gateway helper blocks, one per consuming chunk`;
       }
 
-      const helperStart = content.indexOf(nodeDeclaration);
-      const interactiveStartMarker = content.indexOf("\nasync function ", helperStart);
-      if (helperStart === -1 || interactiveStartMarker === -1) {
-        return "gateway helper block is not adjacent to the interactive handler";
+      const blocks = blockStarts.map((at) => {
+        const applyAt = content.indexOf(applyHelper, at);
+        return applyAt === -1 ? "" : content.slice(at, applyAt + applyHelper.length);
+      });
+      if (blocks.some((block) => block === "")) {
+        return "a gateway helper block is missing its request helper";
       }
-      const helperBlock = content.slice(helperStart, interactiveStartMarker);
-      if (!helperBlock.endsWith(applyHelper)) {
-        return "gateway helper block is commented, detached, or followed by alternate code";
+      if (blocks.some((block) => block !== blocks[0])) {
+        return "gateway helper blocks are not identical copies";
       }
+      // Each block must sit immediately before the function that uses it, so a
+      // detached or commented-out copy fails here.
+      for (const [index, at] of blockStarts.entries()) {
+        const after = content.slice(at + blocks[index].length).replace(/^\n/, "");
+        if (!after.startsWith("function ") && !after.startsWith("async function ")) {
+          return "a gateway helper block is commented, detached, or followed by alternate code";
+        }
+      }
+      const helperBlock = blocks[0];
 
-      const expectedReferences: Array<[string, number]> = [
-        ["__calicoGatewayFastNode", 4],
-        ["__calicoGatewayFastState", 10],
-        ["__calicoGatewayFastEnsure", 4],
-        ["__calicoGatewayFastRead", 3],
-        ["__calicoGatewayFastParse", 2],
-        ["__calicoGatewayFastTier", 3],
-        ["__calicoGatewayFastRestore", 2],
-        ["__calicoGatewayFastPublish", 2],
-        ["__calicoGatewayFastCommandValue", 3],
-        ["__calicoGatewayFastInteractive", 2],
-        ["__calicoGatewayFastThin", 2],
-        ["__calicoGatewayFastApply", 2],
+      // Per-block reference counts, plus the one external call site each of the
+      // three entry points has. Deriving the totals this way keeps the original
+      // no-stray-reference strength while staying copy-count agnostic.
+      const expectedReferences: Array<[string, number, number]> = [
+        ["__calicoGatewayFastNode", 4, 0],
+        ["__calicoGatewayFastState", 10, 0],
+        ["__calicoGatewayFastEnsure", 4, 0],
+        ["__calicoGatewayFastRead", 3, 0],
+        ["__calicoGatewayFastParse", 2, 0],
+        ["__calicoGatewayFastTier", 3, 0],
+        ["__calicoGatewayFastRestore", 2, 0],
+        ["__calicoGatewayFastPublish", 2, 0],
+        ["__calicoGatewayFastCommandValue", 3, 0],
+        ["__calicoGatewayFastInteractive", 1, 1],
+        ["__calicoGatewayFastThin", 1, 1],
+        ["__calicoGatewayFastApply", 1, 1],
       ];
-      for (const [name, expected] of expectedReferences) {
+      for (const [name, perBlock, external] of expectedReferences) {
+        if (countOccurrences(helperBlock, name) !== perBlock) {
+          return `expected ${perBlock} reference(s) to ${name} inside the helper block, found ${countOccurrences(helperBlock, name)}`;
+        }
+        const expected = perBlock * blockCount + external;
         const actual = countOccurrences(content, name);
         if (actual !== expected) {
           return `expected ${expected} total references to ${name}, found ${actual}`;
         }
       }
 
-      // __calicoGatewayFastThin and __calicoGatewayFastApply are the only two
-      // gateway helpers reached from a chunk other than the one carrying the
-      // helper block (2.1.245: declared in chunk 138, called from 1181 and
-      // 435), so they are installed on globalThis and every other helper stays
-      // a plain module-scoped declaration.
-      const globalHelpers = new Set(["__calicoGatewayFastThin", "__calicoGatewayFastApply"]);
+      for (const name of expectedReferences.map(([n]) => n)) {
+        if (countOccurrences(content, `function ${name}`) !== blockCount) {
+          continue;
+        }
+      }
       for (const name of [
         "__calicoGatewayFastEnsure",
         "__calicoGatewayFastRead",
@@ -146,11 +251,8 @@ const CHECKS: Check[] = [
         "__calicoGatewayFastThin",
         "__calicoGatewayFastApply",
       ]) {
-        const declaration = globalHelpers.has(name)
-          ? `globalThis.${name}=`
-          : `function ${name}`;
-        if (countOccurrences(content, declaration) !== 1) {
-          return `expected one ${declaration.replace(name, "")}${name} declaration`;
+        if (countOccurrences(content, `function ${name}`) !== blockCount) {
+          return `expected ${blockCount} ${name} declarations, one per consuming chunk`;
         }
         const alternateBinding = new RegExp(
           `(?:var|let|const)\\s+${name}\\b|(?:^|[;,])${name}=`,
@@ -200,10 +302,18 @@ const CHECKS: Check[] = [
         `async function (${identifier})\\((${identifier}),(${identifier}),(${identifier})\\)\\{if\\(process\\.env\\.REMORA_ACTIVE==="1"\\)return __calicoGatewayFastInteractive\\(\\2,\\4\\);if\\(!(${identifier})\\(\\)\\)return \\2\\((${identifier})\\(\\)\\?\\?"Fast mode is not available"\\),null;`,
         "g"
       );
+      // Each consumer must be immediately preceded by its own helper block, so
+      // a copy that drifted away from the code that needs it fails here.
+      const precededByHelperBlock = (index: number): boolean =>
+        content
+          .slice(0, index)
+          .replace(/\n$/, "")
+          .endsWith(helperBlock);
+
       const interactiveMatches = [...content.matchAll(interactivePattern)];
       if (
         interactiveMatches.length !== 1 ||
-        interactiveMatches[0].index !== interactiveStartMarker + 1
+        !precededByHelperBlock(interactiveMatches[0].index ?? -1)
       ) {
         return "interactive remora branch is missing, duplicated, or not before the native gate";
       }
@@ -234,11 +344,11 @@ const CHECKS: Check[] = [
       }
 
       const thinPattern = new RegExp(
-        `async function (${identifier})\\((${identifier}),(${identifier})\\)\\{if\\(process\\.env\\.REMORA_ACTIVE==="1"\\)return globalThis\\.__calicoGatewayFastThin\\(\\2\\);if\\(!(${identifier})\\(\\)\\)return\\{type:"text",value:(${identifier})\\(\\)\\?\\?"Fast mode is not available"\\};`,
+        `async function (${identifier})\\((${identifier}),(${identifier})\\)\\{if\\(process\\.env\\.REMORA_ACTIVE==="1"\\)return __calicoGatewayFastThin\\(\\2\\);if\\(!(${identifier})\\(\\)\\)return\\{type:"text",value:(${identifier})\\(\\)\\?\\?"Fast mode is not available"\\};`,
         "g"
       );
       const thinMatches = [...content.matchAll(thinPattern)];
-      if (thinMatches.length !== 1) {
+      if (thinMatches.length !== 1 || !precededByHelperBlock(thinMatches[0].index ?? -1)) {
         return "thin-client remora branch is missing, duplicated, or not before the native gate";
       }
       const thin = thinMatches[0];
@@ -304,10 +414,13 @@ const CHECKS: Check[] = [
       }
       const builder = builderMatches[0];
       const builderStart = builder.index ?? -1;
+      if (!precededByHelperBlock(builderStart)) {
+        return "request extra-body builder is not preceded by its gateway helper block";
+      }
       const builderEndCandidate = content.indexOf("function ", builderStart + builder[0].length);
       const builderEnd = builderEndCandidate === -1 ? content.length : builderEndCandidate;
       const builderSegment = content.slice(builderStart, builderEnd);
-      const applyNeedle = `${builder[4]}=globalThis.__calicoGatewayFastApply(${builder[4]});`;
+      const applyNeedle = `${builder[4]}=__calicoGatewayFastApply(${builder[4]});`;
       const betaNeedle = `if(${builder[2]}&&${builder[2]}.length>0){`;
       const parseErrorIndex = builderSegment.indexOf(
         "Error parsing CLAUDE_CODE_EXTRA_BODY:"
@@ -750,20 +863,22 @@ const CHECKS: Check[] = [
     run: (content: string): string | null => {
       const identifier = "[A-Za-z_$][\\w$]*";
       const accountingSignalHelper =
-        'globalThis.__calicoUsageHasAccountingSignal=function(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)};';
+        'function __calicoUsageHasAccountingSignal(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)}';
       const exactZeroHelper =
-        'globalThis.__calicoUsageIsExactAllZero=function(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)};';
+        'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}';
       const statuslineHelper =
-        'globalThis.__calicoStatuslineMessages=function(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&globalThis.__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})};';
+        'function __calicoStatuslineMessages(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})}';
       const stateCell = "__calicoUsageState:{committed:!1,usage:null}";
       const helperMarkers: Array<[string, number]> = [
         [stateCell, 1],
-        [accountingSignalHelper, 1],
-        [exactZeroHelper, 1],
+        // One copy per consuming chunk; see the patcher for why a single
+        // shared definition is not reliably evaluated first.
+        [accountingSignalHelper, 2],
+        [exactZeroHelper, 2],
         [statuslineHelper, 1],
-        ["globalThis.__calicoUsageHasAccountingSignal=", 1],
-        ["globalThis.__calicoUsageIsExactAllZero=", 1],
-        ["globalThis.__calicoStatuslineMessages=", 1],
+        ["function __calicoUsageHasAccountingSignal", 2],
+        ["function __calicoUsageIsExactAllZero", 2],
+        ["function __calicoStatuslineMessages", 1],
       ];
       for (const [marker, expected] of helperMarkers) {
         const actual = countOccurrences(content, marker);
@@ -793,8 +908,11 @@ const CHECKS: Check[] = [
         return "statusline helper block is not executable code adjacent to its payload function";
       }
       for (const [name, expected] of [
-        ["__calicoUsageHasAccountingSignal", 3],
-        ["__calicoUsageIsExactAllZero", 2],
+        // 2 declarations + 1 use inside __calicoStatuslineMessages + 1 at the
+        // terminal commit; 2 declarations + 1 at the terminal commit; and
+        // 1 declaration + 1 at the selector.
+        ["__calicoUsageHasAccountingSignal", 4],
+        ["__calicoUsageIsExactAllZero", 3],
         ["__calicoStatuslineMessages", 2],
       ] as const) {
         const actual = countOccurrences(content, name);
@@ -876,7 +994,7 @@ const CHECKS: Check[] = [
       const wrapperFunctionStart = content.lastIndexOf("function ", wrapperIndex);
 
       const terminalPattern = new RegExp(
-        `for\\(let (${identifier}) of (${identifier})\\)\\1\\.message\\.usage=(${identifier}),\\1\\.message\\.stop_reason=(${identifier}),\\1\\.message\\.stop_details=(${identifier})\\.delta\\.stop_details\\?\\?null,\\4!=null&&!globalThis\\.__calicoUsageIsExactAllZero\\(\\5\\.usage\\)&&globalThis\\.__calicoUsageHasAccountingSignal\\(\\3\\)&&\\(\\1\\.__calicoUsageState\\.committed=!0,\\1\\.__calicoUsageState\\.usage=\\3\\);`,
+        `for\\(let (${identifier}) of (${identifier})\\)\\1\\.message\\.usage=(${identifier}),\\1\\.message\\.stop_reason=(${identifier}),\\1\\.message\\.stop_details=(${identifier})\\.delta\\.stop_details\\?\\?null,\\4!=null&&!__calicoUsageIsExactAllZero\\(\\5\\.usage\\)&&__calicoUsageHasAccountingSignal\\(\\3\\)&&\\(\\1\\.__calicoUsageState\\.committed=!0,\\1\\.__calicoUsageState\\.usage=\\3\\);`,
         "g"
       );
       const terminalMatches = [...content.matchAll(terminalPattern)];
@@ -992,7 +1110,7 @@ const CHECKS: Check[] = [
       // patcher: anchor on the `?.outputStyle||` assignment that precedes the
       // selector, inside the function that emits `context_window:`.
       const selectorPattern = new RegExp(
-        `${identifier}=${identifier}\\?\\.outputStyle\\|\\|[^,]{1,40},(${identifier})=${identifier}\\(globalThis\\.__calicoStatuslineMessages\\((${identifier})\\)\\),(${identifier})=(${identifier})\\((${identifier}),(${identifier})\\(\\)\\)`,
+        `${identifier}=${identifier}\\?\\.outputStyle\\|\\|[^,]{1,40},(${identifier})=${identifier}\\(__calicoStatuslineMessages\\((${identifier})\\)\\),(${identifier})=(${identifier})\\((${identifier}),(${identifier})\\(\\)\\)`,
         "g"
       );
       const selectorCandidates = [...content.matchAll(selectorPattern)];
@@ -1508,6 +1626,29 @@ async function main(): Promise<void> {
   const disableSet = new Set(opts.disable);
 
   const failures: { id: string; detail: string }[] = [];
+
+  // Evaluation-order check for every globalThis handoff the patcher installed.
+  // Runs once over the whole bundle rather than per module, because a helper
+  // published by one module and read by another is not any single module's
+  // property.
+  let moduleNames: string[] = [];
+  try {
+    moduleNames = (
+      require("./native-bun.ts") as { readClaudeJsModuleNames(path: string): string[] }
+    ).readClaudeJsModuleNames(inputPath);
+  } catch {
+    // Older container formats have no module table; the check is a no-op there.
+  }
+  const unreachable = unreachableGlobalPublications(content, moduleNames);
+  if (unreachable.length > 0) {
+    for (const problem of unreachable) {
+      console.log(`  FAIL cross-module-globals: ${problem}`);
+    }
+    failures.push({
+      id: "cross-module-globals",
+      detail: unreachable.join("; "),
+    });
+  }
   let verifiedCount = 0;
   let skippedCount = 0;
   for (const check of CHECKS) {

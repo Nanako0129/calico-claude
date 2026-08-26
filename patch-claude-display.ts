@@ -887,6 +887,52 @@ function patchThinkingStreaming(content) {
       return full;
     }
   );
+  // 2.1.245 hoists the display guard into its own local
+  // (`ws=so&&hh()&&fUr(d),Zr=ws?n.display:void 0`) instead of inlining it in
+  // the display assignment, so neither branch above reaches it. Without this
+  // the request enables thinking but never asks for summarized text, the API
+  // returns signature-only thinking blocks, and the UI shows the collapsed
+  // placeholder row with no thinking content at all.
+  const thinkingDisplayHoistedGuardPattern = new RegExp(
+    `(${identifierPattern})=(${identifierPattern})\\(process\\.env\\.CLAUDE_CODE_DISABLE_THINKING\\),` +
+      `(${identifierPattern})=(${identifierPattern})\\.type!=="disabled"&&!\\1,` +
+      `((${identifierPattern})=\\3&&${identifierPattern}\\(\\)&&${identifierPattern}\\(${identifierPattern}\\)),` +
+      `(${identifierPattern})=\\6\\?\\4\\.display(?:\\?\\?void 0)?:void 0,` +
+      `(${identifierPattern})=void 0;`,
+    "g"
+  );
+  output = output.replace(
+    thinkingDisplayHoistedGuardPattern,
+    (
+      full,
+      disableThinkingVar,
+      envFlagHelper,
+      enabledVar,
+      thinkingConfigVar,
+      guardAssignment,
+      guardVar,
+      displayVar,
+      requestVar
+    ) => {
+      displayCandidates += 1;
+      if (full.includes('display??"summarized"')) {
+        return full;
+      }
+
+      const replacement =
+        `${disableThinkingVar}=${envFlagHelper}(process.env.CLAUDE_CODE_DISABLE_THINKING),` +
+        `${enabledVar}=${thinkingConfigVar}.type!=="disabled"&&!${disableThinkingVar},` +
+        `${guardAssignment},` +
+        `${displayVar}=${guardVar}?${thinkingConfigVar}.display??"summarized":void 0,` +
+        `${requestVar}=void 0;`;
+      if (replacement !== full) {
+        displayPatched += 1;
+        return replacement;
+      }
+      return full;
+    }
+  );
+
   candidates += displayCandidates;
   patched += displayPatched;
 
@@ -2562,10 +2608,12 @@ function patchStatuslineCommittedUsage(content) {
     return { content: original, candidates, patched: 0 };
   }
 
+  const predicateHelpers =
+    'function __calicoUsageHasAccountingSignal(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)}' +
+    'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}';
   const accountingHelper =
-    'globalThis.__calicoUsageHasAccountingSignal=function(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)};' +
-    'globalThis.__calicoUsageIsExactAllZero=function(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)};' +
-    'globalThis.__calicoStatuslineMessages=function(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&globalThis.__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})};';
+    predicateHelpers +
+    'function __calicoStatuslineMessages(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})}';
   const wrapperStateNeedle = ",...!1,";
   const wrapperReplacement = wrapperMatch.match[0].replace(
     wrapperStateNeedle,
@@ -2577,7 +2625,7 @@ function patchStatuslineCommittedUsage(content) {
   ) {
     return { content: original, candidates, patched: 0 };
   }
-  const terminalReplacement = `for(let ${terminalItem} of ${terminalArray})${terminalItem}.message.usage=${terminalUsage},${terminalItem}.message.stop_reason=${terminalStop},${terminalItem}.message.stop_details=${terminalRawEvent}.delta.stop_details??null,${terminalStop}!=null&&!globalThis.__calicoUsageIsExactAllZero(${terminalRawEvent}.usage)&&globalThis.__calicoUsageHasAccountingSignal(${terminalUsage})&&(${terminalItem}.__calicoUsageState.committed=!0,${terminalItem}.__calicoUsageState.usage=${terminalUsage});`;
+  const terminalReplacement = `for(let ${terminalItem} of ${terminalArray})${terminalItem}.message.usage=${terminalUsage},${terminalItem}.message.stop_reason=${terminalStop},${terminalItem}.message.stop_details=${terminalRawEvent}.delta.stop_details??null,${terminalStop}!=null&&!__calicoUsageIsExactAllZero(${terminalRawEvent}.usage)&&__calicoUsageHasAccountingSignal(${terminalUsage})&&(${terminalItem}.__calicoUsageState.committed=!0,${terminalItem}.__calicoUsageState.usage=${terminalUsage});`;
   const cloneReplacements = cloneMatches.map(
     (match) => `${cloneArray}.push({src:${match[1]},dst:${match[2]}})`
   );
@@ -2588,7 +2636,7 @@ function patchStatuslineCommittedUsage(content) {
   // The reducer is called through whatever local name this chunk imported it
   // under (selectorMatch[3]), not the name captured at its declaration site.
   const selectorReplacement =
-    `${selectorMatch[1]}${selectorMatch[2]}=${selectorMatch[3]}(globalThis.__calicoStatuslineMessages(${selectorMatch[4]}))` +
+    `${selectorMatch[1]}${selectorMatch[2]}=${selectorMatch[3]}(__calicoStatuslineMessages(${selectorMatch[4]}))` +
     `,${selectorMatch[5]}=${selectorMatch[6]}(${selectorMatch[7]},${selectorMatch[8]}())`;
 
   // wrapperReplacement/terminalReplacement/cloneSyncReplacement interpolate
@@ -2607,8 +2655,25 @@ function patchStatuslineCommittedUsage(content) {
     return { content: original, candidates, patched: 0 };
   }
 
-  output =
-    output.slice(0, functionStart) + accountingHelper + output.slice(functionStart);
+  // The terminal-commit loop calls the two predicates from a different Bun
+  // chunk than the status-line payload builder that carries the helper block,
+  // and neither chunk statically imports the other, so a single shared
+  // definition is not reliably evaluated first. Give that site its own copy of
+  // the two pure predicates; __calicoStatuslineMessages stays single because it
+  // is only called from the selector, in this same function.
+  const terminalCommitIndex = output.indexOf(terminalReplacement);
+  const terminalHelperStart =
+    terminalCommitIndex === -1 ? -1 : output.lastIndexOf("function ", terminalCommitIndex);
+  if (terminalHelperStart === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  for (const [insertAt, helpers] of [
+    [functionStart, accountingHelper],
+    [terminalHelperStart, predicateHelpers],
+  ].sort((a, b) => b[0] - a[0])) {
+    output = output.slice(0, insertAt) + helpers + output.slice(insertAt);
+  }
   output = output.replace(selectorPattern, () => selectorReplacement);
 
   if (
@@ -2617,9 +2682,9 @@ function patchStatuslineCommittedUsage(content) {
     cloneReplacements.some((replacement) => output.split(replacement).length - 1 !== 1) ||
     output.split(cloneSyncReplacement).length - 1 !== 1 ||
     output.split(selectorReplacement).length - 1 !== 1 ||
-    output.split("globalThis.__calicoUsageHasAccountingSignal=").length - 1 !== 1 ||
-    output.split("globalThis.__calicoUsageIsExactAllZero=").length - 1 !== 1 ||
-    output.split("globalThis.__calicoStatuslineMessages=").length - 1 !== 1
+    output.split("function __calicoUsageHasAccountingSignal").length - 1 !== 2 ||
+    output.split("function __calicoUsageIsExactAllZero").length - 1 !== 2 ||
+    output.split("function __calicoStatuslineMessages").length - 1 !== 1
   ) {
     return { content: original, candidates, patched: 0 };
   }
@@ -3042,8 +3107,8 @@ function __calicoGatewayFastRestore(e,t){if(e)process.env.CLAUDE_CODE_EXTRA_BODY
 function __calicoGatewayFastPublish(e,t,r,n){let o=__calicoGatewayFastEnsure();if(!o.path)throw Error("gateway fast state is unavailable");let i=__calicoGatewayFastNode,s=i.path.dirname(o.path),a=i.path.basename(o.path)+"."+process.pid+"."+i.crypto.randomBytes(8).toString("hex")+".tmp",l=i.path.join(s,a),c=!1;try{i.fs.writeFileSync(l,e,{encoding:"utf8",mode:0o600,flag:"wx"});c=!0;i.fs.chmodSync(l,0o600);process.env.CLAUDE_CODE_EXTRA_BODY=t;i.fs.renameSync(l,o.path)}catch(u){__calicoGatewayFastRestore(r,n);if(c)try{i.fs.unlinkSync(l)}catch{}throw u}}
 function __calicoGatewayFastCommandValue(e){let t=typeof e==="string"?e.trim().toLowerCase():"";if(t!==""&&t!=="on"&&t!=="off")return'Unknown argument "'+t+'". Use: /fast [on|off]';try{let r=__calicoGatewayFastRead(),n=Object.prototype.hasOwnProperty.call(process.env,"CLAUDE_CODE_EXTRA_BODY"),o=process.env.CLAUDE_CODE_EXTRA_BODY,i=__calicoGatewayFastParse(o),s;if(t==="on")s="on";else if(t==="off")s="off";else if(r==="on")s="off";else if(r==="off")s="on";else s=__calicoGatewayFastTier(i)?"off":"on";if(s==="on"){__calicoGatewayFastTier(i);i.service_tier="priority"}else delete i.service_tier;let a=JSON.stringify(i);__calicoGatewayFastPublish(s,a,n,o);return s==="on"?"Gateway priority mode ON (this session only)":"Gateway priority mode OFF (this session only)"}catch(r){return"Gateway priority mode error: "+(r&&r.message?r.message:String(r))}}
 function __calicoGatewayFastInteractive(e,t){e(__calicoGatewayFastCommandValue(t));return null}
-globalThis.__calicoGatewayFastThin=function(e){return{type:"text",value:__calicoGatewayFastCommandValue(e)}};
-globalThis.__calicoGatewayFastApply=function(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};
+function __calicoGatewayFastThin(e){return{type:"text",value:__calicoGatewayFastCommandValue(e)}}
+function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};
 `;
 
   const interactiveReplacement = interactive[0].replace(
@@ -3052,7 +3117,7 @@ globalThis.__calicoGatewayFastApply=function(e){if(process.env.REMORA_ACTIVE!=="
   );
   const thinReplacement = thin[0].replace(
     `if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`,
-    `if(process.env.REMORA_ACTIVE==="1")return globalThis.__calicoGatewayFastThin(${thin[2]});if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`
+    `if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(${thin[2]});if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`
   );
 
   const jsxDescription =
@@ -3077,7 +3142,7 @@ globalThis.__calicoGatewayFastApply=function(e){if(process.env.REMORA_ACTIVE!=="
 
   const builderReplacement = builderSegment.replace(
     betaMergeNeedle,
-    `${builder[4]}=globalThis.__calicoGatewayFastApply(${builder[4]});${betaMergeNeedle}`
+    `${builder[4]}=__calicoGatewayFastApply(${builder[4]});${betaMergeNeedle}`
   );
   const workerReplacement =
     worker[0] +
@@ -3102,21 +3167,37 @@ globalThis.__calicoGatewayFastApply=function(e){if(process.env.REMORA_ACTIVE!=="
   output = output.replace(builderSegment, builderReplacement);
   output = output.replace(worker[0], workerReplacement);
 
-  const helperIndex = output.indexOf(interactiveReplacement);
-  if (helperIndex === -1) {
+  // The three consumers of these helpers — the interactive handler, the thin
+  // handler and the request extra-body builder — are in three different Bun
+  // chunks on 2.1.242+, and none of them statically imports the others, so a
+  // single shared definition is not reliably evaluated before it is used. A
+  // 2.1.245 build published them on globalThis and died on every request with
+  // "globalThis.__calicoGatewayFastApply is not a function". Each consumer
+  // therefore gets its own module-scoped copy: the block is self-contained, and
+  // the copies reconcile through CALICO_GATEWAY_FAST_STATE_FILE and the state
+  // file itself, so whichever runs first creates the state and the rest adopt
+  // it. On a pre-2.1.242 monolith all three land in one scope, where repeated
+  // function and `var` declarations are legal and Ensure() is idempotent.
+  const helperIndexes = [interactiveReplacement, thinReplacement, builderReplacement].map(
+    (replacement) => output.indexOf(replacement)
+  );
+  if (helperIndexes.some((index) => index === -1)) {
     return { content: original, candidates, patched: 0 };
   }
-  output = output.slice(0, helperIndex) + helperBlock + output.slice(helperIndex);
+  // Insert from the last offset backwards so the earlier offsets stay valid.
+  for (const helperIndex of [...helperIndexes].sort((a, b) => b - a)) {
+    output = output.slice(0, helperIndex) + helperBlock + output.slice(helperIndex);
+  }
 
   if (
-    output.split("function __calicoGatewayFastEnsure").length - 1 !== 1 ||
-    output.split("function __calicoGatewayFastParse").length - 1 !== 1 ||
-    output.split("function __calicoGatewayFastCommandValue").length - 1 !== 1 ||
-    output.split("globalThis.__calicoGatewayFastApply=").length - 1 !== 1 ||
+    output.split("function __calicoGatewayFastEnsure").length - 1 !== 3 ||
+    output.split("function __calicoGatewayFastParse").length - 1 !== 3 ||
+    output.split("function __calicoGatewayFastCommandValue").length - 1 !== 3 ||
+    output.split("function __calicoGatewayFastApply").length - 1 !== 3 ||
     output.split('if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastInteractive').length - 1 !== 1 ||
-    output.split('if(process.env.REMORA_ACTIVE==="1")return globalThis.__calicoGatewayFastThin').length - 1 !== 1 ||
+    output.split('if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin').length - 1 !== 1 ||
     output.split(`CALICO_GATEWAY_FAST_STATE_FILE:${worker[1]}.CALICO_GATEWAY_FAST_STATE_FILE`).length - 1 !== 1 ||
-    output.split(`${builder[4]}=globalThis.__calicoGatewayFastApply(${builder[4]});`).length - 1 !== 1
+    output.split(`${builder[4]}=__calicoGatewayFastApply(${builder[4]});`).length - 1 !== 1
   ) {
     return { content: original, candidates, patched: 0 };
   }

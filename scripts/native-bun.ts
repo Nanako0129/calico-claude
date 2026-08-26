@@ -1097,6 +1097,12 @@ function parseNativeBunStorage(
   };
 }
 
+function readClaudeJsModuleNames(binaryPath: string): string[] {
+  const { binary } = parseNativeBinary(binaryPath);
+  const storage = parseNativeBunStorage(binary);
+  return readClaudeJsModules(storage).map((jsModule) => jsModule.name);
+}
+
 function canNativeBunHandle(binaryPath: string): boolean {
   try {
     const { binary } = parseNativeBinary(binaryPath);
@@ -1199,4 +1205,8 @@ module.exports = {
   // the joined text live in the same Bun module, and therefore whether a
   // minified name captured at one is comparable at the other.
   BUN_MODULE_BOUNDARY,
+  // Module names in the same order joinClaudeJsModules emits their contents, so
+  // the verifier can resolve each chunk's import specifiers to a section of the
+  // joined text and reason about evaluation order.
+  readClaudeJsModuleNames,
 };
