@@ -1574,7 +1574,13 @@ function patchThinkingStreaming(content) {
 
       if (signatureMatch) {
         const params = signatureMatch[1].split(",").map((param) => param.trim());
-        if (params.length >= 7) {
+        // This positional branch is its own scope: the helper the two
+        // destructured reducer loops resolve is not visible here, so referencing
+        // it would throw a ReferenceError and abort the whole patch run the
+        // first time an older bundle reached this shape. Resolve it for this
+        // reducer's own module, and skip the injection when it is unavailable.
+        const positionalMessageHelper = virtualMessageHelperAt(output, wg6Start);
+        if (params.length >= 7 && positionalMessageHelper !== null) {
           const eventParam = params[0];
           const appendOutputParam = params[2];
           const setModeParam = params[3];
@@ -1591,7 +1597,7 @@ function patchThinkingStreaming(content) {
           const thinkingStartAfter = `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
             eventParam,
             setStreamingThinkingParam,
-            reducerMessageHelper
+            positionalMessageHelper
           )},${setModeParam}("thinking");return;`;
 
           const textStartBefore = `case"text":${setModeParam}("responding");return;`;
@@ -1607,7 +1613,7 @@ function patchThinkingStreaming(content) {
           const thinkingDeltaBody = buildStreamingThinkingDeltaStatement(
             eventParam,
             setStreamingThinkingParam,
-            reducerMessageHelper
+            positionalMessageHelper
           );
           const thinkingDeltaAfter =
             thinkingDeltaBody === null
@@ -3902,6 +3908,9 @@ module.exports = {
   patchStatuslineCommittedUsage,
   patchStatuslineRateLimitWindows,
   patchCustomContextWindows,
+  // Exported for tests: the positional stream-reducer branch is only reachable
+  // on older bundle shapes, so nothing else exercises it.
+  patchThinkingStreaming,
 };
 
 if (require.main === module) {
