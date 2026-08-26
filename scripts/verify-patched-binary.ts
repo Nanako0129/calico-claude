@@ -1406,18 +1406,28 @@ const CHECKS: Check[] = [
         }
         // The inline extras memo materialises streamed thinking into the
         // transcript. 2.1.246 restructured that memo away entirely, so the site
-        // no longer exists to patch. Requiring the marker unconditionally would
-        // fail a correct build; accepting its absence unconditionally would
-        // re-open the hole this check was added for. Fail only when the
-        // unpatched shape is still present, i.e. a site we should have taken.
+        // no longer exists to patch there. Every version before it still has the
+        // site and still needs the marker: relaxing on the absence of an exact
+        // unpatched-shape regex would let a bundle whose shape merely drifted
+        // pass, approving a binary whose reducer updates state the UI never
+        // consumes. So the relaxation is version-gated, and even on 2.1.246+ a
+        // site that is still present un-patched is a failure.
+        const allowsMissingExtras =
+          version[0] > 2 ||
+          (version[0] === 2 &&
+            (version[1] > 1 || (version[1] === 1 && version[2] >= 246)));
         const unpatchedExtrasMemo =
           /=[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\(\)=>[A-Za-z_$][\w$]*\.flatMap\(\([A-Za-z_$][\w$]*\)=>\{let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\(\{content:\[[A-Za-z_$][\w$]*\.contentBlock\]\}\)/;
         if (!content.includes("__cc_streamingThinkingExtras")) {
+          if (!allowsMissingExtras) {
+            return "expected inline streaming-thinking transcript extras";
+          }
           if (unpatchedExtrasMemo.test(content)) {
             return "inline streaming-thinking transcript extras site is present but was not patched";
           }
-          // Absent site: streamed thinking still updates through the reducer
-          // plumbing asserted above, but is not materialised inline.
+          // 2.1.246+ with the site genuinely gone: streamed thinking still
+          // updates through the reducer plumbing asserted above, but upstream no
+          // longer materialises it inline.
         }
         // The stream reducer builds virtual thinking messages through
         // upstream's create-message helper. That helper's name is a per-chunk

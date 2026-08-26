@@ -56,13 +56,21 @@ test("thinking verifier requires renderer threading and inline extras from Claud
     ),
     /expected 1 renderer call-site streamingThinking prop, found 0/
   );
-  // The inline-extras requirement is conditional: 2.1.246 restructured that memo
-  // away, so a bundle without the site is accepted, while a bundle that still
-  // carries the unpatched site must fail.
-  assert.equal(
+  // Before 2.1.246 the extras site exists, so its marker stays mandatory: a
+  // missing injection there means the reducer updates state the UI never reads.
+  assert.match(
     evaluatePatchModule(
       "thinking-streaming",
       bundle("2.1.234", `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker}`)
+    ),
+    /inline streaming-thinking transcript extras/
+  );
+  // 2.1.246 restructured that memo away, so its absence is accepted there —
+  // but only when the site is genuinely gone.
+  assert.equal(
+    evaluatePatchModule(
+      "thinking-streaming",
+      bundle("2.1.246", `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker}`)
     ),
     null
   );
@@ -70,7 +78,7 @@ test("thinking verifier requires renderer threading and inline extras from Claud
     evaluatePatchModule(
       "thinking-streaming",
       bundle(
-        "2.1.234",
+        "2.1.246",
         `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker} ${unpatchedExtrasMarker}`
       )
     ),
