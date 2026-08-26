@@ -138,6 +138,20 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   injected value that occupies no slot leaves the renderer showing a stale element forever while the
   patch summary, `--assert-all` and the verifier all report success. Grow the allocation and claim a
   slot in both the guard and the write-back, and assert that wiring in the verifier.
+- **Write back only the modules you changed.** Bun keeps bytecode in a
+  position-sensitive pool, so rewriting every module — even with identical bytes — forces a full
+  re-layout of the container. 2.1.245 tolerated that; 2.1.246 killed the process at exec with no
+  output, and once the bytecode was cleared it segfaulted instead. Restricting the write-back to
+  real edits leaves the other ~1,400 modules and their bytecode untouched, and is what lets the
+  offset-preserving rebuild path apply. A replaced module's own bytecode is always dropped: it was
+  compiled from the unpatched source, so keeping it means the runtime can execute the old code and
+  the patch silently does nothing.
+- **Check `upstream/main` before reverse-engineering a new upstream shape.** This repo tracks
+  `a-connoisseur/patch-claude-code` and shares the extraction layer and the thinking patches with
+  it. The position-sensitive bytecode pool, the declaration-based fallback for the virtual-message
+  helper, and the 2.1.246 hoisted display guard were all already solved there. `git fetch upstream`
+  and read `git log upstream/main` first — porting a fix with attribution costs an hour less than
+  deriving it, and their release tags say which versions are known good.
 - **Static checks cannot see a wrong-but-valid call.** Three of the defects in this episode
   produced a bundle where every text-level assertion passed and the feature was dead or the whole
   turn was empty. The only thing that caught them was running the binary. `bash tools/local-verify/run.sh <binary>`

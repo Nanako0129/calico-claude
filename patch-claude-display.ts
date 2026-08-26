@@ -1064,7 +1064,16 @@ function patchThinkingStreaming(content) {
   const transcriptToolUseHelpersMatch = output.match(
     /let [A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\(\{content:\[[A-Za-z_$][\w$]*\.contentBlock\]\}\);return [A-Za-z_$][\w$]*\.uuid=([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[[A-Za-z_$][\w$]*\]\)/
   );
-  let createVirtualMessageHelper = transcriptToolUseHelpersMatch?.[1] ?? null;
+  // 2.1.246 restructured the transcript-extras memo, so its anchor no longer
+  // matches and the helper name cannot be captured there. The reducer sections
+  // below still need to know a helper exists; fall back to its own declaration.
+  // The name emitted at each injection site is resolved separately and per
+  // module by virtualMessageHelperAt — this value only gates the sections.
+  const virtualMessageDeclarationMatch = output.match(
+    new RegExp(VIRTUAL_MESSAGE_DECLARATION_PATTERN.source)
+  );
+  let createVirtualMessageHelper =
+    transcriptToolUseHelpersMatch?.[1] ?? virtualMessageDeclarationMatch?.[1] ?? null;
   let transcriptStreamingThinkingVar = null;
   const rendererStreamingThinkingMatch = output.match(
     /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),showAllInTranscript:/
@@ -1579,14 +1588,11 @@ function patchThinkingStreaming(content) {
           const messageStopAfter = `if(${eventParam}.event.type==="message_stop"){${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:Date.now(),currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("tool-use"),${setStreamingToolsParam}(()=>[]);return}`;
 
           const thinkingStartBefore = `case"thinking":case"redacted_thinking":${setModeParam}("thinking");return;`;
-          const thinkingStartAfter =
-            createVirtualMessageHelper === null
-              ? null
-              : `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
-                  eventParam,
-                  setStreamingThinkingParam,
-                  createVirtualMessageHelper
-                )},${setModeParam}("thinking");return;`;
+          const thinkingStartAfter = `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
+            eventParam,
+            setStreamingThinkingParam,
+            reducerMessageHelper
+          )},${setModeParam}("thinking");return;`;
 
           const textStartBefore = `case"text":${setModeParam}("responding");return;`;
           const textStartAfter = `case"text":${setStreamingThinkingParam}?.((__cc_prevStreamingThinking)=>__cc_prevStreamingThinking?{...__cc_prevStreamingThinking,isStreaming:!1,streamingEndedAt:void 0,currentIndex:null,currentMessage:null}:__cc_prevStreamingThinking),${setModeParam}("responding");return;`;
@@ -1598,14 +1604,11 @@ function patchThinkingStreaming(content) {
 
           const thinkingDeltaBefore = `case"thinking_delta":${appendOutputParam}(${eventParam}.event.delta.thinking);return;`;
           const thinkingDeltaBareBefore = `case"thinking_delta":return;`;
-          const thinkingDeltaBody =
-            createVirtualMessageHelper === null
-              ? null
-              : buildStreamingThinkingDeltaStatement(
-                  eventParam,
-                  setStreamingThinkingParam,
-                  createVirtualMessageHelper
-                );
+          const thinkingDeltaBody = buildStreamingThinkingDeltaStatement(
+            eventParam,
+            setStreamingThinkingParam,
+            reducerMessageHelper
+          );
           const thinkingDeltaAfter =
             thinkingDeltaBody === null
               ? null

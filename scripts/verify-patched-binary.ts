@@ -1404,8 +1404,20 @@ const CHECKS: Check[] = [
             return `expected the memo cache to be grown past slot ${slot} for __cc_streamingThinking`;
           }
         }
+        // The inline extras memo materialises streamed thinking into the
+        // transcript. 2.1.246 restructured that memo away entirely, so the site
+        // no longer exists to patch. Requiring the marker unconditionally would
+        // fail a correct build; accepting its absence unconditionally would
+        // re-open the hole this check was added for. Fail only when the
+        // unpatched shape is still present, i.e. a site we should have taken.
+        const unpatchedExtrasMemo =
+          /=[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\(\)=>[A-Za-z_$][\w$]*\.flatMap\(\([A-Za-z_$][\w$]*\)=>\{let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\(\{content:\[[A-Za-z_$][\w$]*\.contentBlock\]\}\)/;
         if (!content.includes("__cc_streamingThinkingExtras")) {
-          return "expected inline streaming-thinking transcript extras";
+          if (unpatchedExtrasMemo.test(content)) {
+            return "inline streaming-thinking transcript extras site is present but was not patched";
+          }
+          // Absent site: streamed thinking still updates through the reducer
+          // plumbing asserted above, but is not materialised inline.
         }
         // The stream reducer builds virtual thinking messages through
         // upstream's create-message helper. That helper's name is a per-chunk

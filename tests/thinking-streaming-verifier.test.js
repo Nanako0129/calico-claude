@@ -15,6 +15,9 @@ const rendererCallSiteMarker = "screen:l,streamingToolUses:c,streamingThinking:d
 const storeCallSiteMarker =
   "screen:l,streamingToolUses:c,streamingThinking:__cc_streamingThinkingState,";
 const inlineExtrasMarker = "__cc_streamingThinkingExtras";
+// The un-rewritten memo the patch is supposed to take over.
+const unpatchedExtrasMarker =
+  'let extras=React.useMemo(()=>streamingToolUses.flatMap((entry)=>{let msg=createMessage({content:[entry.contentBlock]});return msg.uuid=mintUuid(entry.contentBlock.id,0),normalize([msg])}),[streamingToolUses])';
 
 function bundle(version, extra = "") {
   return `PACKAGE_URL:"@anthropic-ai/claude-code",VERSION:"${version}" ${plumbing} ${extra}`;
@@ -53,12 +56,25 @@ test("thinking verifier requires renderer threading and inline extras from Claud
     ),
     /expected 1 renderer call-site streamingThinking prop, found 0/
   );
-  assert.match(
+  // The inline-extras requirement is conditional: 2.1.246 restructured that memo
+  // away, so a bundle without the site is accepted, while a bundle that still
+  // carries the unpatched site must fail.
+  assert.equal(
     evaluatePatchModule(
       "thinking-streaming",
       bundle("2.1.234", `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker}`)
     ),
-    /inline streaming-thinking transcript extras/
+    null
+  );
+  assert.match(
+    evaluatePatchModule(
+      "thinking-streaming",
+      bundle(
+        "2.1.234",
+        `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker} ${unpatchedExtrasMarker}`
+      )
+    ),
+    /transcript extras site is present but was not patched/
   );
   assert.equal(
     evaluatePatchModule(
