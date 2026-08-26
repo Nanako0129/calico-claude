@@ -776,7 +776,26 @@ function patchThinkingStreaming(content) {
             () => `,${cacheLocal}[${cacheSize}]=${thinkingLocal},${cacheLocal}[${resultSlot}]=${memoCall[1]};`
           );
 
-        const nextOutput = output
+        // Every edit here is applied to the one enclosing function, spliced
+        // back by offset. A plain `output.replace(text, …)` would rewrite the
+        // FIRST occurrence in the whole joined bundle, and minified names are
+        // not unique across chunks: `function kC(` occurs four times in
+        // 2.1.245, so the selector declaration landed in chunk 25 while its use
+        // stayed in chunk 117 and the binary died at startup with
+        // "__cc_streamingThinkingSelector is not defined". The uniqueness
+        // assertions below keep the in-region replaces honest.
+        const regionStart = functionStart;
+        const regionEnd = selectorRead.index + memoCall.index + memoCall[0].length;
+        const region = output.slice(regionStart, regionEnd);
+        if (
+          region.split(cacheAlloc[0]).length - 1 !== 1 ||
+          region.split(selectorRead[0]).length - 1 !== 1 ||
+          region.split(memoCall[0]).length - 1 !== 1
+        ) {
+          continue;
+        }
+
+        const patchedRegion = region
           .replace(
             cacheAlloc[0],
             () => `let ${cacheLocal}=${cacheAlloc[1]}(${cacheSize + 1})${cacheAlloc[3]}`
@@ -786,13 +805,13 @@ function patchThinkingStreaming(content) {
             () =>
               `${selectorRead[0]}${thinkingLocal}=${storeHook}(${turnLocal}?.stream,${selectorName})??null,`
           )
-          .replace(memoCall[0], () => grownCall)
-          .replace(
-            `function ${output.slice(functionStart + "function ".length).match(/^[A-Za-z_$][\w$]*/)[0]}(`,
-            () =>
-              `function ${selectorName}(e){return e.streamingThinking}` +
-              `function ${output.slice(functionStart + "function ".length).match(/^[A-Za-z_$][\w$]*/)[0]}(`
-          );
+          .replace(memoCall[0], () => grownCall);
+
+        const nextOutput =
+          output.slice(0, regionStart) +
+          `function ${selectorName}(e){return e.streamingThinking}` +
+          patchedRegion +
+          output.slice(regionEnd);
 
         if (nextOutput !== output) {
           output = nextOutput;

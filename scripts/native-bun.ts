@@ -353,11 +353,30 @@ function joinClaudeJsModules(jsModules: BunJsModule[]): string {
 // identifier, so reject it here: a helper must either be declared in the same
 // chunk that references it, or be reached through globalThis.
 function assertInjectionsAreModuleScoped(parts: string[], jsModules: BunJsModule[]): void {
-  // A binding introduced by a patch: either a declaration keyword, or an
-  // assignment inside a declarator list (`let a=…,__calicoX=…`), which is how
-  // several patches introduce their locals.
-  const declarationPattern =
-    /(?:function|var|let|const|class)\s+(__calico[\w$]*)|[,;{(]\s*(__calico[\w$]*)\s*=(?!=)/g;
+  // Both prefixes this repo injects under. `__cc_` was missing here at first,
+  // which is how a `__cc_streamingThinkingSelector` declared in one chunk and
+  // referenced from another reached a built binary and killed it at startup.
+  // The prefix alone is not enough to identify our code: upstream generates a
+  // shell snippet containing `$__cc_name`, `__cc_set` and `read -r __cc_line`,
+  // so a name that already exists in the module's unpatched text is upstream's
+  // and is skipped below. That also narrows every check here to exactly what
+  // this patch run introduced into this module.
+  const injected = "(?:__calico|__cc_)[\\w$]*";
+  // A binding introduced by a patch: a declaration keyword, an assignment in a
+  // declarator list (`let a=…,__calicoX=…`), or a destructuring target
+  // (`{streamingThinking:__cc_state}=…`).
+  const declarationPattern = new RegExp(
+    `(?:function|var|let|const|class)\\s+(${injected})` +
+      `|[,;{(]\\s*(${injected})\\s*=(?!=)` +
+      `|:\\s*(${injected})\\s*(?=[,}])`,
+    "g"
+  );
+  // Arrow parameters bind too, but `(a,__cc_x)=>` and the call `f(a,__cc_x)`
+  // are textually identical up to the closing paren; the `=>` is the only thing
+  // separating a binding from a reference, and treating the second as the first
+  // is exactly the mistake this guard exists to catch, so require it.
+  const arrowParameterPattern = /\(([^()]*)\)\s*=>/g;
+  const injectedNamePattern = new RegExp(injected, "g");
   // A reference that has to resolve in this module's scope. Property positions
   // are excluded: a member access (`x.__calicoState`, and so also
   // `globalThis.__calicoHelper`) and an object key (`__calicoState:{…}`) name a
@@ -365,16 +384,27 @@ function assertInjectionsAreModuleScoped(parts: string[], jsModules: BunJsModule
   // `(?![\w$])` pins the name to its full extent first: without it the engine
   // backtracks a character at a time to satisfy the `:` lookahead, so
   // `__calicoUsageState:` would report a phantom `__calicoUsageStat` reference.
-  const referencePattern = /(?<![.\w$])(__calico[\w$]*)(?![\w$])(?!\s*:)/g;
+  const referencePattern = new RegExp(`(?<![.\\w$])(${injected})(?![\\w$])(?!\\s*:)`, "g");
 
   for (let index = 0; index < parts.length; index += 1) {
     const scoped = parts[index];
-    const declared = new Set(
-      Array.from(scoped.matchAll(declarationPattern), (match) => match[1] ?? match[2])
+    const preexisting = new Set(
+      Array.from(jsModules[index].content.matchAll(injectedNamePattern), (match) => match[0])
     );
+    const declared = new Set(
+      Array.from(
+        scoped.matchAll(declarationPattern),
+        (match) => match[1] ?? match[2] ?? match[3]
+      )
+    );
+    for (const parameterList of scoped.matchAll(arrowParameterPattern)) {
+      for (const parameter of parameterList[1].matchAll(injectedNamePattern)) {
+        declared.add(parameter[0]);
+      }
+    }
     const unresolved = new Set(
       Array.from(scoped.matchAll(referencePattern), (match) => match[1]).filter(
-        (name) => !declared.has(name)
+        (name) => !declared.has(name) && !preexisting.has(name)
       )
     );
 

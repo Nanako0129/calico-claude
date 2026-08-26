@@ -71,36 +71,62 @@ test("refuses source that already contains the boundary marker", () => {
 
 // Bun chunks are separate ES module scopes. A helper declared in one chunk and
 // called from another passes every text-level check and is undefined at
-// runtime, which is how custom-context-window broke on upstream 2.1.242.
-test("rejects an injected helper used outside the chunk that declares it", () => {
-  const modules = jsModules("let a=__calico_display_window(1)", "function __calico_display_window(e){return e}");
-  const joined = nativeBun.joinClaudeJsModules(modules);
+// runtime, which is how custom-context-window broke on upstream 2.1.242 and how
+// thinking-streaming shipped a binary that died at startup with
+// "__cc_streamingThinkingSelector is not defined".
+//
+// The scope check compares the patched text against the module's unpatched
+// text, so these tests pass the clean modules as the originals and a separately
+// built patched string, the way splitClaudeJsModules is actually called.
+function splitPatched(originalContents, patchedContents) {
+  const modules = jsModules(...originalContents);
+  const patched = patchedContents.join("\n/*@@calico-bun-module-boundary@@*/\n");
+  return () => nativeBun.splitClaudeJsModules(patched, modules);
+}
 
+test("rejects an injected helper used outside the chunk that declares it", () => {
   assert.throws(
-    () => nativeBun.splitClaudeJsModules(joined, modules),
+    splitPatched(
+      ["let a=1", "let b=2"],
+      ["let a=__calico_display_window(1)", "function __calico_display_window(e){return e}let b=2"]
+    ),
     /chunk-0\.js references injected identifier\(s\) it does not declare: __calico_display_window/
   );
 });
 
-test("accepts an injected helper declared in the chunk that uses it", () => {
-  const modules = jsModules(
-    "function __calicoLocal(e){return e}let a=__calicoLocal(1)",
-    "let b=2"
+test("rejects an injected helper passed as a value across chunks", () => {
+  // The thinking-streaming failure: the selector is never called at the use
+  // site, only handed to a hook, so a call-position-only check would miss it.
+  assert.throws(
+    splitPatched(
+      ["let a=1", "let b=2"],
+      [
+        "let a=hook(store,__cc_streamingThinkingSelector)",
+        "function __cc_streamingThinkingSelector(e){return e.streamingThinking}let b=2",
+      ]
+    ),
+    /chunk-0\.js references injected identifier\(s\) it does not declare: __cc_streamingThinkingSelector/
   );
+});
 
-  assert.doesNotThrow(() =>
-    nativeBun.splitClaudeJsModules(nativeBun.joinClaudeJsModules(modules), modules)
+test("accepts an injected helper declared in the chunk that uses it", () => {
+  assert.doesNotThrow(
+    splitPatched(
+      ["let a=1", "let b=2"],
+      ["function __calicoLocal(e){return e}let a=__calicoLocal(1)", "let b=2"]
+    )
   );
 });
 
 test("accepts a cross-chunk helper reached through globalThis", () => {
-  const modules = jsModules(
-    "let a=globalThis.__calico_display_window(1)",
-    "globalThis.__calico_display_window=function(e){return e};"
-  );
-
-  assert.doesNotThrow(() =>
-    nativeBun.splitClaudeJsModules(nativeBun.joinClaudeJsModules(modules), modules)
+  assert.doesNotThrow(
+    splitPatched(
+      ["let a=1", "let b=2"],
+      [
+        "let a=globalThis.__calico_display_window(1)",
+        "globalThis.__calico_display_window=function(e){return e};let b=2",
+      ]
+    )
   );
 });
 
@@ -111,10 +137,26 @@ test("accepts var, let, const and class declarations of injected helpers", () =>
     "const __calicoX=1;let a=__calicoX",
     "class __calicoX{};let a=new __calicoX",
   ]) {
-    const modules = jsModules(declaration, "let b=2");
-    assert.doesNotThrow(
-      () => nativeBun.splitClaudeJsModules(nativeBun.joinClaudeJsModules(modules), modules),
-      declaration
-    );
+    assert.doesNotThrow(splitPatched(["let a=1", "let b=2"], [declaration, "let b=2"]), declaration);
   }
+});
+
+test("accepts arrow parameters and destructuring targets as bindings", () => {
+  assert.doesNotThrow(
+    splitPatched(
+      ["let a=1", "let b=2"],
+      [
+        'let a=r.split("\n").map((__cc_line)=>"+"+__cc_line)',
+        "let{streamingToolUses:x,streamingThinking:__cc_state}=hook(s);let b=__cc_state",
+      ]
+    )
+  );
+});
+
+test("does not flag an upstream identifier that shares an injected prefix", () => {
+  // Upstream generates a shell snippet using `$__cc_name`, `__cc_set` and
+  // `read -r __cc_line`. Those are not bindings in the surrounding JavaScript
+  // and are not ours, so a prefix-only check reports them forever.
+  const upstream = 'let s=\'\\builtin eval "__cc_set=\\${$__cc_name+x}"; read -r __cc_line\';';
+  assert.doesNotThrow(splitPatched([upstream, "let b=2"], [upstream, "let b=2"]));
 });
