@@ -36,6 +36,24 @@ type Check = {
   describe: string;
 };
 
+// A minified name captured at one site is only comparable at another when both
+// sites are in the same Bun module: 2.1.242+ splits the bundle into ES module
+// chunks that import each other under per-chunk aliases, so the same helper is
+// `po` in one chunk and `a` in the next. The joined text carries the module
+// boundaries, so cross-site name equalities stay enforced wherever they are
+// still meaningful and are skipped only where the names cannot match by
+// construction. On a pre-2.1.242 monolith every gateway site is in the cli
+// module, so every equality below applies exactly as it did before.
+const { BUN_MODULE_BOUNDARY } = require("./native-bun.ts") as { BUN_MODULE_BOUNDARY: string };
+
+function inSameModule(content: string, first: number, second: number): boolean {
+  if (first < 0 || second < 0) {
+    return false;
+  }
+  const [low, high] = first <= second ? [first, second] : [second, first];
+  return !content.slice(low, high).includes(BUN_MODULE_BOUNDARY);
+}
+
 function countOccurrences(content: string, needle: string): number {
   let count = 0;
   let index = content.indexOf(needle);
@@ -69,7 +87,7 @@ const CHECKS: Check[] = [
       const stateDeclaration =
         "var __calicoGatewayFastState={path:null,dir:null,owner:!1};";
       const applyHelper =
-        'function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r}';
+        'globalThis.__calicoGatewayFastApply=function(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};';
 
       if (
         countOccurrences(content, nodeDeclaration) !== 1 ||
@@ -110,6 +128,12 @@ const CHECKS: Check[] = [
         }
       }
 
+      // __calicoGatewayFastThin and __calicoGatewayFastApply are the only two
+      // gateway helpers reached from a chunk other than the one carrying the
+      // helper block (2.1.245: declared in chunk 138, called from 1181 and
+      // 435), so they are installed on globalThis and every other helper stays
+      // a plain module-scoped declaration.
+      const globalHelpers = new Set(["__calicoGatewayFastThin", "__calicoGatewayFastApply"]);
       for (const name of [
         "__calicoGatewayFastEnsure",
         "__calicoGatewayFastRead",
@@ -122,8 +146,11 @@ const CHECKS: Check[] = [
         "__calicoGatewayFastThin",
         "__calicoGatewayFastApply",
       ]) {
-        if (countOccurrences(content, `function ${name}`) !== 1) {
-          return `expected one function declaration for ${name}`;
+        const declaration = globalHelpers.has(name)
+          ? `globalThis.${name}=`
+          : `function ${name}`;
+        if (countOccurrences(content, declaration) !== 1) {
+          return `expected one ${declaration.replace(name, "")}${name} declaration`;
         }
         const alternateBinding = new RegExp(
           `(?:var|let|const)\\s+${name}\\b|(?:^|[;,])${name}=`,
@@ -197,13 +224,17 @@ const CHECKS: Check[] = [
         !interactiveSegment.includes("tengu_fast_mode_picker_shown") ||
         !interactiveSegment.includes(".getAppState") ||
         !interactiveSegment.includes(".setAppState") ||
-        !interactiveSegment.includes(".jsx(")
+        // 2.1.242+ destructures the JSX factory, so match a component call
+        // shape rather than a `.jsx(` literal.
+        !/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\([A-Za-z_$][\w$]*,\{[^}]*\}\)/.test(
+          interactiveSegment
+        )
       ) {
         return "interactive native Fast action, picker, or app-state fallback is missing";
       }
 
       const thinPattern = new RegExp(
-        `async function (${identifier})\\((${identifier}),(${identifier})\\)\\{if\\(process\\.env\\.REMORA_ACTIVE==="1"\\)return __calicoGatewayFastThin\\(\\2\\);if\\(!(${identifier})\\(\\)\\)return\\{type:"text",value:(${identifier})\\(\\)\\?\\?"Fast mode is not available"\\};`,
+        `async function (${identifier})\\((${identifier}),(${identifier})\\)\\{if\\(process\\.env\\.REMORA_ACTIVE==="1"\\)return globalThis\\.__calicoGatewayFastThin\\(\\2\\);if\\(!(${identifier})\\(\\)\\)return\\{type:"text",value:(${identifier})\\(\\)\\?\\?"Fast mode is not available"\\};`,
         "g"
       );
       const thinMatches = [...content.matchAll(thinPattern)];
@@ -222,10 +253,17 @@ const CHECKS: Check[] = [
       const thinAction = thinSegment.match(
         /await ([A-Za-z_$][\w$]*)\([^;]*?"bridge"/
       )?.[1];
+      const handlersShareModule = inSameModule(
+        content,
+        interactive.index ?? -1,
+        thin.index ?? -1
+      );
       if (
-        interactive[5] !== thin[4] ||
-        interactive[6] !== thin[5] ||
-        thinAction !== interactiveAction ||
+        !thinAction ||
+        (handlersShareModule &&
+          (interactive[5] !== thin[4] ||
+            interactive[6] !== thin[5] ||
+            thinAction !== interactiveAction)) ||
         !/\.options\.fastMode(?![A-Za-z0-9_$])/.test(thinSegment) ||
         !thinSegment.includes("Unknown argument") ||
         !thinSegment.includes(".getAppState") ||
@@ -235,7 +273,7 @@ const CHECKS: Check[] = [
       }
 
       const localJsxPattern =
-        /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",get immediate\(\)\{return ([A-Za-z_$][\w$]*)\(\)\},requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+        /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
       const localPattern =
         /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>process\.env\.REMORA_ACTIVE==="1"\|\|([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\}/g;
       const localJsxMatches = [...content.matchAll(localJsxPattern)];
@@ -243,9 +281,14 @@ const CHECKS: Check[] = [
       if (localJsxMatches.length !== 1 || localMatches.length !== 1) {
         return "gateway-aware Fast command registrations are missing or duplicated";
       }
+      const registrationSharesInteractiveModule = inSameModule(
+        content,
+        localJsxMatches[0].index ?? -1,
+        interactive.index ?? -1
+      );
       if (
         localJsxMatches[0][2] !== localMatches[0][2] ||
-        localJsxMatches[0][3] !== interactive[5] ||
+        (registrationSharesInteractiveModule && localJsxMatches[0][3] !== interactive[5]) ||
         localMatches[0][3] !== localMatches[0][4]
       ) {
         return "Fast registrations changed native description or visibility gate ownership";
@@ -264,7 +307,7 @@ const CHECKS: Check[] = [
       const builderEndCandidate = content.indexOf("function ", builderStart + builder[0].length);
       const builderEnd = builderEndCandidate === -1 ? content.length : builderEndCandidate;
       const builderSegment = content.slice(builderStart, builderEnd);
-      const applyNeedle = `${builder[4]}=__calicoGatewayFastApply(${builder[4]});`;
+      const applyNeedle = `${builder[4]}=globalThis.__calicoGatewayFastApply(${builder[4]});`;
       const betaNeedle = `if(${builder[2]}&&${builder[2]}.length>0){`;
       const parseErrorIndex = builderSegment.indexOf(
         "Error parsing CLAUDE_CODE_EXTRA_BODY:"
@@ -364,13 +407,16 @@ const CHECKS: Check[] = [
       }
       const dispatchRecord = dispatchRecords[0];
       const dispatchRecordLocal = dispatchRecord.match[1];
+      // 2.1.239 appended arguments to the dispatch call; accept a trailing
+      // argument list one level of call nesting deep, matching the patcher.
+      const dispatchArguments = "(?:,(?:[^()]|\\([^()]*\\))*)?";
       const awaitedDispatchPattern = new RegExp(
-        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${dispatchRecordLocal}\\)\\]\\)`,
+        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${dispatchRecordLocal}${dispatchArguments}\\)\\]\\)`,
         "g"
       );
       const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
       const directDispatchPattern = new RegExp(
-        `(${identifier})\\(${dispatchRecordLocal}\\)`,
+        `(${identifier})\\(${dispatchRecordLocal}${dispatchArguments}\\)`,
         "g"
       );
       const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];

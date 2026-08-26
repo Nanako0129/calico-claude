@@ -2778,7 +2778,7 @@ function patchGatewayFastMode(content) {
     "g"
   );
   const localJsxPattern =
-    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",get immediate\(\)\{return ([A-Za-z_$][\w$]*)\(\)\},requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
   const localPattern =
     /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\}/g;
   const builderPattern = new RegExp(
@@ -2832,11 +2832,17 @@ function patchGatewayFastMode(content) {
   const builder = builderMatches[0];
   const worker = workerMatches[0];
 
-  if (
-    interactive[5] !== thin[4] ||
-    interactive[6] !== thin[5] ||
-    local[3] !== local[4]
-  ) {
+  // The interactive and thin handlers used to be required to name the same
+  // availability helper and the same unavailable-message helper. On 2.1.242+
+  // they live in different chunks and reach those helpers through per-chunk
+  // import aliases (2.1.245: `po`/`q` against `a`/`n`), so the names differ
+  // while the target is the same and the equality can no longer be evaluated.
+  // What still holds is that each handler shape pins the literal
+  // "Fast mode is not available" and is required to occur exactly once in the
+  // whole bundle, and each site's replacement only re-emits identifiers it
+  // captured at that same site, so nothing crosses a chunk scope.
+  // local[3]/local[4] are both inside one object literal and stay checkable.
+  if (local[3] !== local[4]) {
     return { content: original, candidates, patched: 0 };
   }
 
@@ -2856,7 +2862,10 @@ function patchGatewayFastMode(content) {
     !interactiveSegment.includes("tengu_fast_mode_picker_shown") ||
     !interactiveSegment.includes(".getAppState") ||
     !interactiveSegment.includes(".setAppState") ||
-    !interactiveSegment.includes(".jsx(")
+    // Confirms the interactive handler renders a component. On 2.1.242+ the JSX
+    // factory is a destructured local, so match the call-with-props shape
+    // instead of a `.jsx(` literal.
+    !/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\([A-Za-z_$][\w$]*,\{[^}]*\}\)/.test(interactiveSegment)
   ) {
     return { content: original, candidates, patched: 0 };
   }
@@ -2869,7 +2878,12 @@ function patchGatewayFastMode(content) {
   if (
     thinStart === -1 ||
     !thinAction ||
-    thinAction !== interactiveAction ||
+    // Both handlers must reach the same apply-fast-mode action, but on 2.1.242+
+    // they are in different chunks and call it through different import
+    // aliases (2.1.245: `go` interactive, `i` thin), so the names cannot be
+    // compared. Each handler is still pinned by its own `"shortcut"` /
+    // `"bridge"` call shape plus the app-state and argument markers below, and
+    // neither capture is used outside the check itself.
     !thinSegment.includes(".options.fastMode") ||
     !thinSegment.includes("Unknown argument") ||
     !thinSegment.includes(".getAppState") ||
@@ -2961,6 +2975,12 @@ function patchGatewayFastMode(content) {
   }
   const dispatchRecord = dispatchRecords[0];
   const dispatchRecordLocal = dispatchRecord.match[1];
+  // 2.1.239 appended arguments to the dispatch call
+  // (`_0c(K)` became `_0c(K,!1,Date.now(),s)`), which is why this module has
+  // applied 0 changes since that release. Accept a trailing argument list, one
+  // level of call nesting deep so `Date.now()` does not terminate it early. The
+  // record local is still the required first argument.
+  const dispatchArguments = "(?:,(?:[^()]|\\([^()]*\\))*)?";
   const awaitedDispatchPattern = new RegExp(
     "\\},\\[,(" +
       identifier +
@@ -2968,12 +2988,13 @@ function patchGatewayFastMode(content) {
       identifier +
       ")\\(" +
       dispatchRecordLocal +
+      dispatchArguments +
       "\\)\\]\\)",
     "g"
   );
   const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
   const directDispatchPattern = new RegExp(
-    "(" + identifier + ")\\(" + dispatchRecordLocal + "\\)",
+    "(" + identifier + ")\\(" + dispatchRecordLocal + dispatchArguments + "\\)",
     "g"
   );
   const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
@@ -3002,8 +3023,8 @@ function __calicoGatewayFastRestore(e,t){if(e)process.env.CLAUDE_CODE_EXTRA_BODY
 function __calicoGatewayFastPublish(e,t,r,n){let o=__calicoGatewayFastEnsure();if(!o.path)throw Error("gateway fast state is unavailable");let i=__calicoGatewayFastNode,s=i.path.dirname(o.path),a=i.path.basename(o.path)+"."+process.pid+"."+i.crypto.randomBytes(8).toString("hex")+".tmp",l=i.path.join(s,a),c=!1;try{i.fs.writeFileSync(l,e,{encoding:"utf8",mode:0o600,flag:"wx"});c=!0;i.fs.chmodSync(l,0o600);process.env.CLAUDE_CODE_EXTRA_BODY=t;i.fs.renameSync(l,o.path)}catch(u){__calicoGatewayFastRestore(r,n);if(c)try{i.fs.unlinkSync(l)}catch{}throw u}}
 function __calicoGatewayFastCommandValue(e){let t=typeof e==="string"?e.trim().toLowerCase():"";if(t!==""&&t!=="on"&&t!=="off")return'Unknown argument "'+t+'". Use: /fast [on|off]';try{let r=__calicoGatewayFastRead(),n=Object.prototype.hasOwnProperty.call(process.env,"CLAUDE_CODE_EXTRA_BODY"),o=process.env.CLAUDE_CODE_EXTRA_BODY,i=__calicoGatewayFastParse(o),s;if(t==="on")s="on";else if(t==="off")s="off";else if(r==="on")s="off";else if(r==="off")s="on";else s=__calicoGatewayFastTier(i)?"off":"on";if(s==="on"){__calicoGatewayFastTier(i);i.service_tier="priority"}else delete i.service_tier;let a=JSON.stringify(i);__calicoGatewayFastPublish(s,a,n,o);return s==="on"?"Gateway priority mode ON (this session only)":"Gateway priority mode OFF (this session only)"}catch(r){return"Gateway priority mode error: "+(r&&r.message?r.message:String(r))}}
 function __calicoGatewayFastInteractive(e,t){e(__calicoGatewayFastCommandValue(t));return null}
-function __calicoGatewayFastThin(e){return{type:"text",value:__calicoGatewayFastCommandValue(e)}}
-function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r}
+globalThis.__calicoGatewayFastThin=function(e){return{type:"text",value:__calicoGatewayFastCommandValue(e)}};
+globalThis.__calicoGatewayFastApply=function(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};
 `;
 
   const interactiveReplacement = interactive[0].replace(
@@ -3012,7 +3033,7 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
   );
   const thinReplacement = thin[0].replace(
     `if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`,
-    `if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(${thin[2]});if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`
+    `if(process.env.REMORA_ACTIVE==="1")return globalThis.__calicoGatewayFastThin(${thin[2]});if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`
   );
 
   const jsxDescription =
@@ -3037,7 +3058,7 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
 
   const builderReplacement = builderSegment.replace(
     betaMergeNeedle,
-    `${builder[4]}=__calicoGatewayFastApply(${builder[4]});${betaMergeNeedle}`
+    `${builder[4]}=globalThis.__calicoGatewayFastApply(${builder[4]});${betaMergeNeedle}`
   );
   const workerReplacement =
     worker[0] +
@@ -3072,11 +3093,11 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
     output.split("function __calicoGatewayFastEnsure").length - 1 !== 1 ||
     output.split("function __calicoGatewayFastParse").length - 1 !== 1 ||
     output.split("function __calicoGatewayFastCommandValue").length - 1 !== 1 ||
-    output.split("function __calicoGatewayFastApply").length - 1 !== 1 ||
+    output.split("globalThis.__calicoGatewayFastApply=").length - 1 !== 1 ||
     output.split('if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastInteractive').length - 1 !== 1 ||
-    output.split('if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin').length - 1 !== 1 ||
+    output.split('if(process.env.REMORA_ACTIVE==="1")return globalThis.__calicoGatewayFastThin').length - 1 !== 1 ||
     output.split(`CALICO_GATEWAY_FAST_STATE_FILE:${worker[1]}.CALICO_GATEWAY_FAST_STATE_FILE`).length - 1 !== 1 ||
-    output.split(`${builder[4]}=__calicoGatewayFastApply(${builder[4]});`).length - 1 !== 1
+    output.split(`${builder[4]}=globalThis.__calicoGatewayFastApply(${builder[4]});`).length - 1 !== 1
   ) {
     return { content: original, candidates, patched: 0 };
   }

@@ -1165,4 +1165,8 @@ module.exports = {
   // chunked bundle reassemblable, and both failure modes are silent without it.
   joinClaudeJsModules,
   splitClaudeJsModules,
+  // Exported so scripts/verify-patched-binary.ts can tell whether two sites in
+  // the joined text live in the same Bun module, and therefore whether a
+  // minified name captured at one is comparable at the other.
+  BUN_MODULE_BOUNDARY,
 };
