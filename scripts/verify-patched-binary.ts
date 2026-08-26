@@ -1186,8 +1186,59 @@ const CHECKS: Check[] = [
         const rendererCallSites = [...content.matchAll(rendererCallSitePattern)].filter(
           (match) => match[1] !== "__cc_streamingThinking"
         );
-        if (rendererCallSites.length !== 1) {
+        // 2.1.245 replaced the explicit prop list at the main call site with a
+        // rest spread inside a React-compiler memo cache, so that shape is the
+        // second accepted form.
+        const compilerCallSitePattern =
+          /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:__cc_streamingThinking[,}]/;
+        const usesCompilerCallSite = compilerCallSitePattern.test(content);
+        if (rendererCallSites.length !== 1 && !usesCompilerCallSite) {
           return `expected 1 renderer call-site streamingThinking prop, found ${rendererCallSites.length}`;
+        }
+
+        if (usesCompilerCallSite) {
+          // Passing the prop is not sufficient at a compiler-cached call site:
+          // the element is only rebuilt when one of the compared cache slots
+          // changes, so an injected value that occupies no slot would leave the
+          // renderer showing a stale element forever while every text-level
+          // check still passed. Pin the whole wiring — stable selector, one
+          // store read, and a guard slot that is written back and that lives
+          // inside a cache allocation grown to hold it.
+          if (
+            countOccurrences(
+              content,
+              "function __cc_streamingThinkingSelector(e){return e.streamingThinking}"
+            ) !== 1
+          ) {
+            return "expected exactly one stable __cc_streamingThinkingSelector declaration";
+          }
+          const storeReadPattern =
+            /__cc_streamingThinking=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\?\.stream,__cc_streamingThinkingSelector\)\?\?null,/g;
+          if ([...content.matchAll(storeReadPattern)].length !== 1) {
+            return "expected exactly one streamingThinking store read at the renderer call site";
+          }
+          const guards = [
+            ...content.matchAll(/([A-Za-z_$][\w$]*)\[(\d+)\]!==__cc_streamingThinking\)/g),
+          ];
+          if (guards.length !== 1) {
+            return `expected 1 memo-cache guard on __cc_streamingThinking, found ${guards.length}`;
+          }
+          const cacheLocal = guards[0][1];
+          const slot = Number(guards[0][2]);
+          if (countOccurrences(content, `${cacheLocal}[${slot}]=__cc_streamingThinking`) !== 1) {
+            return "expected the __cc_streamingThinking memo-cache slot to be written back";
+          }
+          const guardFunctionStart = content.lastIndexOf("function ", guards[0].index ?? -1);
+          const allocPattern = new RegExp(
+            `let ${cacheLocal.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}=[A-Za-z_$][\\w$]*\\((\\d+)\\)[,;]`
+          );
+          const alloc =
+            guardFunctionStart === -1
+              ? null
+              : content.slice(guardFunctionStart, guards[0].index).match(allocPattern);
+          if (!alloc || Number(alloc[1]) <= slot) {
+            return `expected the memo cache to be grown past slot ${slot} for __cc_streamingThinking`;
+          }
         }
         if (!content.includes("__cc_streamingThinkingExtras")) {
           return "expected inline streaming-thinking transcript extras";

@@ -578,7 +578,7 @@ function patchThinkingStreaming(content) {
       const searchStart = Math.max(0, anchor - 50000);
       const searchSegment = output.slice(searchStart, anchor);
       const statePattern = new RegExp(
-        `\\[(${identifierPattern}),${escapeRegExp(setStreamingThinkingVar)}\\]=${identifierPattern}\\.useState\\(null\\)`,
+        `\\[(${identifierPattern}),${escapeRegExp(setStreamingThinkingVar)}\\]=${identifierPattern}(?:\\.useState)?\\(null\\)`,
         "g"
       );
       let stateMatch;
@@ -697,6 +697,110 @@ function patchThinkingStreaming(content) {
       injectStreamingThinking
     );
     output = output.replace(jsxTranscriptRendererPropsPattern, injectStreamingThinking);
+
+    // 2.1.245 rewrote the main renderer call site: instead of an explicit prop
+    // list it spreads a rest object and reads the streaming state through store
+    // selectors, inside a React-compiler memo cache:
+    //
+    //   function kC(lh){let ju=v(19);…
+    //     let mh=Do(Wu,NC)??!1,ph=Do(Wu?.stream,EC)??_i,…
+    //     let qu;if(ju[10]!==Vu||…||ju[14]!==fh)
+    //       qu=o(Rh,{...nn,messages:Vu,isLoading:mh,streamingToolUses:ph,
+    //               onRateLimitAutoQueueContinue:fh}),
+    //       ju[10]=Vu,…,ju[14]=fh,ju[15]=qu;else qu=ju[15];
+    //
+    // Adding the prop alone is not enough: the cached element is only rebuilt
+    // when one of the compared slots changes, so a streamingThinking value that
+    // updates on its own would never reach the renderer. The injection
+    // therefore also claims one new cache slot — growing the allocation the way
+    // the compiler itself would — and adds it to both the guard and the
+    // write-back. `streamingThinking` is read through its own module-scoped
+    // selector declared beside the component, so the selector identity is
+    // stable across renders and nothing crosses a chunk scope.
+    // Not gated on the earlier prop patterns having failed: the spread call
+    // site is a distinct shape that simply does not exist on pre-2.1.245
+    // bundles, so it self-selects and pre-2.1.245 builds keep their counts.
+    {
+      const storeSelectorPattern = new RegExp(
+        `(${identifierPattern})=(${identifierPattern})\\((${identifierPattern})\\?\\.stream,${identifierPattern}\\)\\?\\?${identifierPattern},`,
+        "g"
+      );
+
+      for (const selectorRead of [...output.matchAll(storeSelectorPattern)]) {
+        const toolUsesLocal = selectorRead[1];
+        const storeHook = selectorRead[2];
+        const turnLocal = selectorRead[3];
+        const escapedToolUses = escapeRegExp(toolUsesLocal);
+        const memoCallPattern = new RegExp(
+          `let (${identifierPattern});if\\((${identifierPattern})\\[\\d+\\]!==[^)]*?\\)\\1=${identifierPattern}\\(${identifierPattern},\\{\\.\\.\\.${identifierPattern},[^{}]*streamingToolUses:${escapedToolUses}[^{}]*\\}\\),[^;]*?,\\2\\[(\\d+)\\]=\\1;`
+        );
+        const memoCall = output.slice(selectorRead.index).match(memoCallPattern);
+        if (!memoCall || memoCall[0].includes("streamingThinking:")) {
+          continue;
+        }
+
+        const cacheLocal = memoCall[2];
+        const cacheAllocPattern = new RegExp(
+          `let ${escapeRegExp(cacheLocal)}=(${identifierPattern})\\((\\d+)\\)([,;])`
+        );
+        const functionStart = output.lastIndexOf("function ", selectorRead.index);
+        const cacheAlloc =
+          functionStart === -1
+            ? null
+            : output.slice(functionStart, selectorRead.index).match(cacheAllocPattern);
+        if (!cacheAlloc) {
+          continue;
+        }
+
+        const cacheSize = Number(cacheAlloc[2]);
+        const resultSlot = Number(memoCall[3]);
+        if (!Number.isInteger(cacheSize) || resultSlot >= cacheSize) {
+          continue;
+        }
+
+        propCandidates += 1;
+
+        const thinkingLocal = "__cc_streamingThinking";
+        const selectorName = "__cc_streamingThinkingSelector";
+        const grownCall = memoCall[0]
+          .replace(
+            new RegExp(`\\)${escapeRegExp(memoCall[1])}=`),
+            () => `||${cacheLocal}[${cacheSize}]!==${thinkingLocal})${memoCall[1]}=`
+          )
+          .replace(
+            new RegExp(`streamingToolUses:${escapedToolUses}`),
+            () => `streamingToolUses:${toolUsesLocal},streamingThinking:${thinkingLocal}`
+          )
+          .replace(
+            new RegExp(`,${escapeRegExp(cacheLocal)}\\[${resultSlot}\\]=${escapeRegExp(memoCall[1])};$`),
+            () => `,${cacheLocal}[${cacheSize}]=${thinkingLocal},${cacheLocal}[${resultSlot}]=${memoCall[1]};`
+          );
+
+        const nextOutput = output
+          .replace(
+            cacheAlloc[0],
+            () => `let ${cacheLocal}=${cacheAlloc[1]}(${cacheSize + 1})${cacheAlloc[3]}`
+          )
+          .replace(
+            selectorRead[0],
+            () =>
+              `${selectorRead[0]}${thinkingLocal}=${storeHook}(${turnLocal}?.stream,${selectorName})??null,`
+          )
+          .replace(memoCall[0], () => grownCall)
+          .replace(
+            `function ${output.slice(functionStart + "function ".length).match(/^[A-Za-z_$][\w$]*/)[0]}(`,
+            () =>
+              `function ${selectorName}(e){return e.streamingThinking}` +
+              `function ${output.slice(functionStart + "function ".length).match(/^[A-Za-z_$][\w$]*/)[0]}(`
+          );
+
+        if (nextOutput !== output) {
+          output = nextOutput;
+          propPatched += 1;
+        }
+        break;
+      }
+    }
   }
 
   candidates += propCandidates;
@@ -842,11 +946,11 @@ function patchThinkingStreaming(content) {
     return `let ${visibleVar}=!!(${streamVar}&&${streamVar}.isStreaming)`;
   });
   const promptLingerPattern =
-    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.useMemo\(\(\)=>\{if\(!([A-Za-z_$][\w$]*)\)return!1;if\(\3\.isStreaming\)return!0;if\(\3\.streamingEndedAt\)return Date\.now\(\)-\3\.streamingEndedAt<30000;return!1\},\[\3\]\)/g;
-  output = output.replace(promptLingerPattern, (_full, visibleVar, reactNs, streamVar) => {
+    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(\(\)=>\{if\(!([A-Za-z_$][\w$]*)\)return!1;if\(\3\.isStreaming\)return!0;if\(\3\.streamingEndedAt\)return Date\.now\(\)-\3\.streamingEndedAt<30000;return!1\},\[\3\]\)/g;
+  output = output.replace(promptLingerPattern, (_full, visibleVar, useMemoCallee, streamVar) => {
     lingerCandidates += 1;
     lingerPatched += 1;
-    return `${visibleVar}=${reactNs}.useMemo(()=>!!(${streamVar}&&${streamVar}.isStreaming),[${streamVar}])`;
+    return `${visibleVar}=${useMemoCallee}(()=>!!(${streamVar}&&${streamVar}.isStreaming),[${streamVar}])`;
   });
   candidates += lingerCandidates;
   patched += lingerPatched;
@@ -885,13 +989,13 @@ function patchThinkingStreaming(content) {
     let inlineThinkingCandidates = 0;
     let inlineThinkingPatched = 0;
     const inlineThinkingPattern =
-      /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.useMemo\(\(\)=>([A-Za-z_$][\w$]*)\.flatMap\(\(([A-Za-z_$][\w$]*)\)=>\{let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{content:\[\4\.contentBlock\]\}\);return \5\.uuid=([A-Za-z_$][\w$]*)\(\4\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[\5\]\)\}\),\[\3\]\)/g;
+      /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(\(\)=>([A-Za-z_$][\w$]*)\.flatMap\(\(([A-Za-z_$][\w$]*)\)=>\{let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{content:\[\4\.contentBlock\]\}\);return \5\.uuid=([A-Za-z_$][\w$]*)\(\4\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[\5\]\)\}\),\[\3\]\)/g;
     output = output.replace(
       inlineThinkingPattern,
       (
         _full,
         extrasVar,
-        reactNs,
+        useMemoCallee,
         streamingToolUsesVar,
         toolUseEntryVar,
         toolUseMessageVar,
@@ -902,7 +1006,7 @@ function patchThinkingStreaming(content) {
         inlineThinkingCandidates += 1;
         inlineThinkingPatched += 1;
         createVirtualMessageHelper = createMessageHelper;
-        return `${extrasVar}=${reactNs}.useMemo(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
+        return `${extrasVar}=${useMemoCallee}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
       }
     );
     candidates += inlineThinkingCandidates;
