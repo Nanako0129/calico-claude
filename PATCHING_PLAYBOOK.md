@@ -140,10 +140,10 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   slot in both the guard and the write-back, and assert that wiring in the verifier.
 - **Static checks cannot see a wrong-but-valid call.** Three of the defects in this episode
   produced a bundle where every text-level assertion passed and the feature was dead or the whole
-  turn was empty. The only thing that caught them was running the binary. `scratchpad/mockapi.js`
-  plus `tui.exp` drive the real TUI against a canned streaming response with no credentials and no
-  network, which reproduces this entire class locally — use it before claiming a rendering or
-  request-path module works.
+  turn was empty. The only thing that caught them was running the binary. `bash tools/local-verify/run.sh <binary>`
+  drives the real TUI against a canned streaming response, in a throwaway seeded config, with no
+  credentials and no network. It reproduces this entire class locally and exits non-zero when the
+  turn renders nothing — run it before claiming a rendering or request-path module works.
 - **A replacement must be anchored to the site you located, not to its text.** `output.replace(
   "function kC(", …)` rewrites the *first* match in the whole joined bundle, and minified names are
   not unique across chunks — `function kC(` occurs four times in 2.1.245. A `thinking-streaming`

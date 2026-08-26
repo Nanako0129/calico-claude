@@ -1,25 +1,47 @@
 #!/usr/bin/expect -f
-# Drive the interactive TUI against the local mock API and log everything the
-# terminal receives. usage: tui.exp <binary> <logfile>
+# Drive the interactive TUI against a local mock API and log everything the
+# terminal receives.
+#
+#   tui.exp <binary> <logfile> <config-dir> [base-url]
+#
+# The config directory must already be seeded so the launch reaches the main
+# renderer; run.sh does that. Without it the TUI stops at onboarding and the
+# wait below times out before anything is exercised.
+if {[llength $argv] < 3} {
+    puts "usage: tui.exp <binary> <logfile> <config-dir> \[base-url\]"
+    exit 2
+}
 set binary [lindex $argv 0]
 set logfile [lindex $argv 1]
+set configdir [lindex $argv 2]
+set baseurl [expr {[llength $argv] > 3 ? [lindex $argv 3] : "http://127.0.0.1:8787"}]
 
 set timeout 60
 log_file -noappend $logfile
-set env(ANTHROPIC_BASE_URL) "http://127.0.0.1:8787"
+set env(ANTHROPIC_BASE_URL) $baseurl
 set env(ANTHROPIC_API_KEY) "sk-ant-mock"
-set env(CLAUDE_CONFIG_DIR) "/private/tmp/claude-501/-Users-nanako-side-project-calico-claude/6862363f-a158-4cc4-9197-546228441a51/scratchpad/cfgmin"
+set env(CLAUDE_CONFIG_DIR) $configdir
 
 spawn -noecho $binary
-# Wait for the prompt box to appear rather than guessing a delay.
+# Wait for the status line the main renderer draws, then for the input
+# placeholder, so the prompt is not typed before the box exists.
 expect {
     -re {shortcuts} {}
-    timeout { puts "\nHARNESS: prompt never appeared"; exit 2 }
+    timeout { puts "\nHARNESS: main renderer never mounted"; exit 2 }
+}
+expect {
+    -re {Try "} {}
+    timeout {}
 }
 sleep 2
 send "say pong\r"
-# Give the stream time to arrive and render.
-sleep 16
+# Wait for the response itself rather than a fixed delay. "from" appears only in
+# the mock's reply, never in the echoed prompt, so this cannot match the input.
+expect {
+    -re {from} {}
+    timeout { puts "\nHARNESS: no response rendered before timeout" }
+}
+sleep 2
 send \003
 sleep 1
 send \003
