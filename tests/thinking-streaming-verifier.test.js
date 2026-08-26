@@ -15,6 +15,12 @@ const rendererCallSiteMarker = "screen:l,streamingToolUses:c,streamingThinking:d
 const storeCallSiteMarker =
   "screen:l,streamingToolUses:c,streamingThinking:__cc_streamingThinkingState,";
 const inlineExtrasMarker = "__cc_streamingThinkingExtras";
+// A stream-reducer injection plus the create-message helper it resolves to.
+// When the inline-extras marker is waived on 2.1.246+, this is the only
+// remaining proof that any stream event populates the state the renderer reads.
+const reducerProducerMarker =
+  "function mkMessage({content:a,usage:b,isVirtual:c,now:d,uuid:e}){return inner(a)}" +
+  "__cc_streamingThinkingMessage=mkMessage({content:[x]})";
 // The un-rewritten memo the patch is supposed to take over.
 const unpatchedExtrasMarker =
   'let extras=React.useMemo(()=>streamingToolUses.flatMap((entry)=>{let msg=createMessage({content:[entry.contentBlock]});return msg.uuid=mintUuid(entry.contentBlock.id,0),normalize([msg])}),[streamingToolUses])';
@@ -66,11 +72,22 @@ test("thinking verifier requires renderer threading and inline extras from Claud
     /inline streaming-thinking transcript extras/
   );
   // 2.1.246 restructured that memo away, so its absence is accepted there —
-  // but only when the site is genuinely gone.
-  assert.equal(
+  // but only when the site is genuinely gone AND the stream reducer was still
+  // patched. Renderer plumbing alone means nothing ever populates the state.
+  assert.match(
     evaluatePatchModule(
       "thinking-streaming",
       bundle("2.1.246", `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker}`)
+    ),
+    /stream reducer to build virtual thinking messages when inline extras are absent/
+  );
+  assert.equal(
+    evaluatePatchModule(
+      "thinking-streaming",
+      bundle(
+        "2.1.246",
+        `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker} ${reducerProducerMarker}`
+      )
     ),
     null
   );
@@ -79,7 +96,7 @@ test("thinking verifier requires renderer threading and inline extras from Claud
       "thinking-streaming",
       bundle(
         "2.1.246",
-        `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker} ${unpatchedExtrasMarker}`
+        `${briefMarker} ${rendererSignatureMarker} ${rendererCallSiteMarker} ${reducerProducerMarker} ${unpatchedExtrasMarker}`
       )
     ),
     /transcript extras site is present but was not patched/

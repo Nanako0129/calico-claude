@@ -1418,6 +1418,7 @@ const CHECKS: Check[] = [
             (version[1] > 1 || (version[1] === 1 && version[2] >= 246)));
         const unpatchedExtrasMemo =
           /=[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\(\)=>[A-Za-z_$][\w$]*\.flatMap\(\([A-Za-z_$][\w$]*\)=>\{let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\(\{content:\[[A-Za-z_$][\w$]*\.contentBlock\]\}\)/;
+        let extrasWaived = false;
         if (!content.includes("__cc_streamingThinkingExtras")) {
           if (!allowsMissingExtras) {
             return "expected inline streaming-thinking transcript extras";
@@ -1425,9 +1426,11 @@ const CHECKS: Check[] = [
           if (unpatchedExtrasMemo.test(content)) {
             return "inline streaming-thinking transcript extras site is present but was not patched";
           }
-          // 2.1.246+ with the site genuinely gone: streamed thinking still
-          // updates through the reducer plumbing asserted above, but upstream no
-          // longer materialises it inline.
+          // 2.1.246+ with the site genuinely gone. Nothing above then requires
+          // any stream-reducer injection, so the reducer check below stops being
+          // optional: without it a renderer-only build passes while no stream
+          // event ever populates the state it reads.
+          extrasWaived = true;
         }
         // The stream reducer builds virtual thinking messages through
         // upstream's create-message helper. That helper's name is a per-chunk
@@ -1439,8 +1442,12 @@ const CHECKS: Check[] = [
         const reducerCalls = [
           ...content.matchAll(/__cc_streamingThinkingMessage=([A-Za-z_$][\w$]*)\(\{content:/g),
         ];
-        // Presence is already covered by the threading and extras checks above;
-        // what this adds is that whatever the reducer calls resolves here.
+        // When the extras marker was waived this is the only thing left that
+        // proves the reducer was patched at all, so presence becomes mandatory.
+        // Otherwise presence is covered above and this only checks resolution.
+        if (extrasWaived && reducerCalls.length === 0) {
+          return "expected the stream reducer to build virtual thinking messages when inline extras are absent";
+        }
         for (const call of reducerCalls) {
           const declaration = new RegExp(
             `function ${call[1]}\\(\\{content:[A-Za-z_$][\\w$]*,usage:`,
