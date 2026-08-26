@@ -83,7 +83,42 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 - **A falling candidate count is silent.** `--assert-all` only fails a module at `patched == 0`, so a
   matcher that quietly stops matching one of its sites still ships. Four separate defects have hidden
   this way. When a count changes, find out why before assuming the bundle changed rather than the
-  matcher.
+  matcher. In 2.1.245 two of these turned out to be real breakage that only
+  `scripts/verify-patched-binary.ts` caught: `thinking-streaming` at 11/11 with the renderer prop
+  missing entirely, and `welcome-badge` at 8/8 with the branding gone.
+- **The bundle is many ES module scopes, not one.** From 2.1.242 upstream ships `/$bunfs/root/cli`
+  as a loader over ~1,380 `chunk-*.js` modules. `scripts/native-bun.ts` joins them into the single
+  text the patcher sees, but they are still separate scopes when the binary runs. Three consequences,
+  each of which produced a defect that every text-level check reported as success:
+  - **An injected helper must be reachable from where it is called.** A `function __calicoX(){}`
+    declared in one chunk is undefined in another. `custom-context-window` declared
+    `__calico_display_window` at the resolver site and called it at the status-line site, which
+    upstream now places in a different chunk. Declare the helper in the chunk that uses it, or hang
+    it off `globalThis` — `globalThis.__calicoX` is the convention here, and `native-bun.ts` fails
+    the write when a chunk references a bare `__calico*` it does not declare.
+  - **A minified name captured at one site cannot be emitted at another.** Chunks import each other
+    under per-chunk aliases, so the same helper is `po` in one chunk and `a` in the next. Anything
+    that captures a name at site A and writes it at site B is broken by construction. Route it
+    through a `globalThis.__calico*` published at the declaration instead — that is what
+    `active-turn-prompt-id` does for the prompt getter and the query-source classifier.
+  - **Minified names are no longer unique.** 2.1.245 declares an unrelated `function Bne(` while the
+    status-line chunk imports the usage reducer *as* `Bne`, so looking a callee up by name finds the
+    wrong function. Cross-site name equalities are not reconstructible from the joined text; re-anchor
+    on structure and consumption instead (`statusline-committed-usage` now pins the selector by its
+    position after the `?.outputStyle||` assignment and by its result feeding `context_window:`).
+    Where the equality is still worth keeping, `verify-patched-binary.ts` has `inSameModule`, which
+    uses the boundary markers to enforce it only between sites that share a module.
+- **A compiler-cached call site needs its own cache slot.** Some 2.1.245 renderer call sites sit
+  inside a React-compiler memo cache (`let ju=v(19);…if(ju[13]!==ph)qu=o(C,{…}),ju[13]=ph,ju[15]=qu`).
+  Adding a prop there is not enough: the element is only rebuilt when a compared slot changes, so an
+  injected value that occupies no slot leaves the renderer showing a stale element forever while the
+  patch summary, `--assert-all` and the verifier all report success. Grow the allocation and claim a
+  slot in both the guard and the write-back, and assert that wiring in the verifier.
+- **The JSX factory and the React hooks are destructured now.** `Ag.jsx(C,props)` is `o(C,props)`,
+  `Pw.useMemo(...)` is `te(...)`, `crypto.randomUUID()` is `ESe()`, and a module-level singleton
+  `br.requestJournal` is `n().requestJournal`. Six modules broke on exactly this. Never require the
+  member form: capture the whole callee expression, emit it back verbatim, and anchor on the prop
+  names or call shape around it.
 
 ## Native Patching Flow
 
@@ -92,11 +127,19 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 - resolves `--input` and `--output`
 - copies the input binary to the output path when patching out-of-place
 - loads `scripts/native-bun.ts`
-- extracts the embedded JS from the Bun container, including 2.1.233 `/root/cli` entry modules
+- extracts every JavaScript module from the Bun container (selected by loader tag, not by name, so
+  nothing depends on upstream's chunk naming) and joins them with
+  `\n/*@@calico-bun-module-boundary@@*/\n`. Before 2.1.242 that is the `/root/cli` bundle plus five
+  small worker stubs; from 2.1.242 it is the cli loader plus ~1,380 `chunk-*.js` modules.
 - writes that JS to a temp `content.js`
 - invokes `node patch-claude-display.ts --file <temp-content.js>`
 - reads the patched temp file back
-- writes it into the output binary with the platform-specific native writer
+- splits it on the same boundary marker, failing if the section count changed, and rejects any module
+  that references a bare `__calico*` identifier it does not itself declare (see the ES module scope
+  rule above)
+- writes each module's content back into the output binary with the platform-specific native writer.
+  `rebuildBunData` recomputes every module's offset and length from the rebuilt layout, so per-module
+  contents are free to change size and the module table needs no separate fixup.
 
 Important behavior:
 
