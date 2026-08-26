@@ -144,6 +144,15 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   drives the real TUI against a canned streaming response, in a throwaway seeded config, with no
   credentials and no network. It reproduces this entire class locally and exits non-zero when the
   turn renders nothing — run it before claiming a rendering or request-path module works.
+- **If a replacement rewrites an object, carry its members across.** Several matchers rewrite an
+  initialiser or a destructuring wholesale and hardcode the member list, so a field upstream adds is
+  silently dropped rather than failing loudly. 2.1.246 appended `seenToolUseIds:new Set` to the
+  background-agent tracker and `toolProgress:<local>` to the streaming store destructuring; both are
+  now captured and re-emitted. Prefer capturing the tail over widening the anchor and discarding it.
+- **Widening an anchor can make two branches overlap.** A patch with several known upstream shapes
+  relies on exactly one matching. Allowing a trailing `,...{}` on the wrapper patterns let the
+  legacy branch also match the effort shape, taking the candidate count from 6 to 7 and failing the
+  module. Widen to what upstream actually emits, and check the other branches still exclude it.
 - **A replacement must be anchored to the site you located, not to its text.** `output.replace(
   "function kC(", …)` rewrites the *first* match in the whole joined bundle, and minified names are
   not unique across chunks — `function kC(` occurs four times in 2.1.245. A `thinking-streaming`

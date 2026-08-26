@@ -222,8 +222,12 @@ function patchWriteCreateDiffColors(content) {
     // and anchor on the distinctive `{filePath,content,verbose}` prop triple —
     // the factory's local name is exactly the kind of minified binding that
     // differs per platform build and must never be pinned.
+    // 2.1.246 appends `replacedUndiffedContent:<local>` to the create renderer's
+    // props. The trailing props are matched but not forwarded: the replacement
+    // renders through the *diff* component, which has its own prop contract —
+    // the same reason `content` is dropped in favour of `structuredPatch`.
     const createReturnMatch = createSegment.match(
-      /return ([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(([A-Za-z_$][\w$]*),\{filePath:([A-Za-z_$][\w$]*),content:([A-Za-z_$][\w$]*),verbose:([A-Za-z_$][\w$]*)\}\)/
+      /return ([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(([A-Za-z_$][\w$]*),\{filePath:([A-Za-z_$][\w$]*),content:([A-Za-z_$][\w$]*),verbose:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[^,{}]+)*\}\)/
     );
     if (!createReturnMatch) {
       index = updateStart + updateNeedle.length;
@@ -634,20 +638,22 @@ function patchThinkingStreaming(content) {
   if (streamingVar === null) {
     let storeCandidates = 0;
     let storePatched = 0;
+    // This destructuring is rewritten, so fields upstream adds have to be
+    // carried across rather than dropped: 2.1.246 appended `toolProgress:<local>`.
     const storeSnapshotPattern = new RegExp(
-      `\\{streamingToolUses:(${identifierPattern}),userInputOnProcessing:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\.stream\\)`,
+      `\\{streamingToolUses:(${identifierPattern}),userInputOnProcessing:(${identifierPattern})((?:,[^{}]*?)?)\\}=(${identifierPattern})\\((${identifierPattern})\\.stream\\)`,
       "g"
     );
     output = output.replace(
       storeSnapshotPattern,
-      (full, toolUsesVar, inputVar, hookFunction, contextVar) => {
+      (full, toolUsesVar, inputVar, extraSnapshotFields, hookFunction, contextVar) => {
         if (streamingVar !== null) {
           return full;
         }
         storeCandidates += 1;
         storePatched += 1;
         streamingVar = "__cc_streamingThinkingState";
-        return `{streamingToolUses:${toolUsesVar},streamingThinking:__cc_streamingThinkingState,userInputOnProcessing:${inputVar}}=${hookFunction}(${contextVar}.stream)`;
+        return `{streamingToolUses:${toolUsesVar},streamingThinking:__cc_streamingThinkingState,userInputOnProcessing:${inputVar}${extraSnapshotFields}}=${hookFunction}(${contextVar}.stream)`;
       }
     );
     candidates += storeCandidates;
@@ -2232,8 +2238,13 @@ function patchBackgroundAgentUsage(content) {
   const original = content;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
   const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // The replacement rewrites this initialiser, so any field upstream adds has to
+  // be carried across rather than silently dropped: 2.1.246 appended
+  // `seenToolUseIds:new Set`. Capture the trailing fields verbatim. A future
+  // field whose value contains braces will fail to match, which reports zero
+  // candidates and fails --assert-all rather than quietly discarding state.
   const trackerPattern = new RegExp(
-    `function (${identifierPattern})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:\\[\\]\\}\\}`,
+    `function (${identifierPattern})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:\\[\\]((?:,[^{}]*)?)\\}\\}`,
     "g"
   );
   const totalPattern = new RegExp(
@@ -2248,6 +2259,7 @@ function patchBackgroundAgentUsage(content) {
   const totalMatches = [...content.matchAll(totalPattern)];
   const accountingMatches = [...content.matchAll(accountingPattern)];
   const trackerName = trackerMatches[0]?.[1];
+  const trackerUpstreamFields = trackerMatches[0]?.[2] ?? "";
   const totalName = totalMatches[0]?.[1];
   const accountingMatch = accountingMatches[0];
   const eventVar = accountingMatch?.[1];
@@ -2364,7 +2376,7 @@ function patchBackgroundAgentUsage(content) {
   const trackerReplacement =
     'function __calicoTrackAgentUsage(e,t,r,n){if(!t||typeof t!=="object")return;let o=["input_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((s)=>typeof t[s]==="number"),i=(t.input_tokens??0)+(t.cache_creation_input_tokens??0)+(t.cache_read_input_tokens??0);if(o&&(n||i>0))e.latestInputTokens=i;let s=typeof t.output_tokens==="number"&&Number.isFinite(t.output_tokens)?Math.max(0,t.output_tokens):0;if(r==null){if(s>0)e.cumulativeOutputTokens+=s;return}let a=e.responseOutputTokens.get(r)??0;if(s>a)e.cumulativeOutputTokens+=s-a;if(s>a||!e.responseOutputTokens.has(r))e.responseOutputTokens.set(r,Math.max(a,s))}' +
     'function __calicoRefreshAgentUsage(e,t){if(!Array.isArray(t))return;let r=!1;for(let n=t.length-1;n>=0;n--){let o=t[n];if(o?.type==="assistant")r=!0,__calicoTrackAgentUsage(e,o.message?.usage,o.message?.id,o.message?.stop_reason!=null);else if(o?.type==="user"&&r)break}}' +
-    `function ${trackerName}(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[],activeMessageId:null,responseOutputTokens:new Map}}`;
+    `function ${trackerName}(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[]${trackerUpstreamFields},activeMessageId:null,responseOutputTokens:new Map}}`;
   const eventReplacement =
     `if(${eventVar}.type==="stream_event"){if(${eventVar}.event.type==="message_start")${trackerVar}.activeMessageId=${eventVar}.event.message.id,__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.message.usage,${trackerVar}.activeMessageId,!1);else if(${eventVar}.event.type==="message_delta")__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.usage,${trackerVar}.activeMessageId,${eventVar}.event.delta.stop_reason!=null);else if(${eventVar}.event.type==="message_stop")${trackerVar}.activeMessageId=null;return}if(${eventVar}.type!=="assistant")return;let ${usageVar}=${eventVar}.message.usage;__calicoTrackAgentUsage(${trackerVar},${usageVar},${eventVar}.message.id,${eventVar}.message.stop_reason!=null);`;
   const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),__calicoRefreshAgentUsage(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
@@ -2405,11 +2417,11 @@ function patchStatuslineCommittedUsage(content) {
     "g"
   );
   const legacyWrapperPattern = new RegExp(
-    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\}\\};`,
+    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
     "g"
   );
   const effortWrapperPattern = new RegExp(
-    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
+    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
     "g"
   );
   // 2.1.236+: batch tool-use destructuring wraps the content builder. The
@@ -2423,8 +2435,11 @@ function patchStatuslineCommittedUsage(content) {
   // so the trailing `,<identifier-or-member>` is matched optionally to keep both
   // 2.1.237 (no fifth arg) and 2.1.238 (one appended arg) matching, and to
   // tolerate a further appended argument without another edit.
+  // 2.1.246 appends `,...{}` after the effort spread. Match any trailing spread
+  // entries so the wrapper still matches; the replacement is derived from the
+  // matched text, so whatever upstream appended is carried across unchanged.
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
