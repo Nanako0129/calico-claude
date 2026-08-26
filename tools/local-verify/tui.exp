@@ -1,0 +1,26 @@
+#!/usr/bin/expect -f
+# Drive the interactive TUI against the local mock API and log everything the
+# terminal receives. usage: tui.exp <binary> <logfile>
+set binary [lindex $argv 0]
+set logfile [lindex $argv 1]
+
+set timeout 60
+log_file -noappend $logfile
+set env(ANTHROPIC_BASE_URL) "http://127.0.0.1:8787"
+set env(ANTHROPIC_API_KEY) "sk-ant-mock"
+set env(CLAUDE_CONFIG_DIR) "/private/tmp/claude-501/-Users-nanako-side-project-calico-claude/6862363f-a158-4cc4-9197-546228441a51/scratchpad/cfgmin"
+
+spawn -noecho $binary
+# Wait for the prompt box to appear rather than guessing a delay.
+expect {
+    -re {shortcuts} {}
+    timeout { puts "\nHARNESS: prompt never appeared"; exit 2 }
+}
+sleep 2
+send "say pong\r"
+# Give the stream time to arrive and render.
+sleep 16
+send \003
+sleep 1
+send \003
+expect eof

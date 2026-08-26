@@ -531,6 +531,41 @@ function patchRedactedThinkingSummaries(content) {
   };
 }
 
+// The joined bundle carries a marker between Bun modules (see
+// scripts/native-bun.ts). A minified name captured at one site is a different
+// binding at another when a boundary separates them, because 2.1.242+ chunks
+// import each other under per-chunk aliases.
+const BUN_MODULE_BOUNDARY = "\n/*@@calico-bun-module-boundary@@*/\n";
+
+function inSameModule(content, first, second) {
+  if (first < 0 || second < 0) {
+    return false;
+  }
+  const [low, high] = first <= second ? [first, second] : [second, first];
+  return !content.slice(low, high).includes(BUN_MODULE_BOUNDARY);
+}
+
+// Upstream's "build a virtual message" helper, matched by its own destructured
+// option names rather than by a name captured elsewhere. On 2.1.245 the
+// transcript-extras site (chunk 117) knows it as `Ah` while the stream
+// reducer's chunk imports an unrelated `ypd as Ah`, so passing the captured
+// name into the reducer injected a call to the wrong function: every turn that
+// produced a thinking block rendered no assistant output at all, with no error
+// surfaced anywhere. Resolving the declaration and requiring it to be in the
+// reducer's own module makes the name correct by construction, and returns
+// null — skipping the injection — rather than emitting a cross-module name.
+const VIRTUAL_MESSAGE_DECLARATION_PATTERN =
+  /function ([A-Za-z_$][\w$]*)\(\{content:[A-Za-z_$][\w$]*,usage:[A-Za-z_$][\w$]*,isVirtual:[A-Za-z_$][\w$]*,now:[A-Za-z_$][\w$]*,uuid:[A-Za-z_$][\w$]*\}\)\{/g;
+
+function virtualMessageHelperAt(content, index) {
+  for (const match of content.matchAll(VIRTUAL_MESSAGE_DECLARATION_PATTERN)) {
+    if (inSameModule(content, match.index ?? -1, index)) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
 function patchThinkingStreaming(content) {
   let output = content;
   let candidates = 0;
@@ -1160,6 +1195,10 @@ function patchThinkingStreaming(content) {
       const eventParam = destructuredMatch[1];
       const optionsParam = destructuredMatch[2];
       const props = destructuredMatch[3];
+      const reducerMessageHelper = virtualMessageHelperAt(output, destructuredMatch.index ?? -1);
+      if (reducerMessageHelper === null) {
+        continue;
+      }
       const propVar = (name) => {
         const match = props.match(new RegExp(`${name}:([A-Za-z_$][\\w$]*)`));
         return match?.[1] ?? null;
@@ -1203,7 +1242,7 @@ function patchThinkingStreaming(content) {
       const thinkingStartAfter = `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
         eventParam,
         setStreamingThinkingParam,
-        createVirtualMessageHelper
+        reducerMessageHelper
       )},${setModeParam}("thinking");return;`;
 
       const textStartBefore = `case"text":${setModeParam}("responding");return;`;
@@ -1220,7 +1259,7 @@ function patchThinkingStreaming(content) {
       const thinkingDeltaBody = buildStreamingThinkingDeltaStatement(
         eventParam,
         setStreamingThinkingParam,
-        createVirtualMessageHelper
+        reducerMessageHelper
       );
       const thinkingDeltaAfter = `case"thinking_delta":{${thinkingDeltaBody}return;}`;
       const thinkingDeltaProgressPattern = new RegExp(
@@ -1297,6 +1336,13 @@ function patchThinkingStreaming(content) {
       const optionsParam = missingStreamingThinkingMatch[2];
       const props = missingStreamingThinkingMatch[3];
       const declarationSeparator = missingStreamingThinkingMatch[4];
+      const reducerMessageHelper = virtualMessageHelperAt(
+        output,
+        missingStreamingThinkingMatch.index ?? -1
+      );
+      if (reducerMessageHelper === null) {
+        continue;
+      }
       if (props.includes("onStreamingThinking:")) {
         continue;
       }
@@ -1336,7 +1382,7 @@ function patchThinkingStreaming(content) {
       const thinkingDeltaBody = buildStreamingThinkingDeltaStatement(
         eventParam,
         setStreamingThinkingParam,
-        createVirtualMessageHelper
+        reducerMessageHelper
       );
 
       const replacements = [
@@ -1365,7 +1411,7 @@ function patchThinkingStreaming(content) {
           `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
             eventParam,
             setStreamingThinkingParam,
-            createVirtualMessageHelper
+            reducerMessageHelper
           )},${setModeParam}?.("thinking");return;`,
         ],
         [
@@ -1373,7 +1419,7 @@ function patchThinkingStreaming(content) {
           `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
             eventParam,
             setStreamingThinkingParam,
-            createVirtualMessageHelper
+            reducerMessageHelper
           )},${setModeParam}?.("thinking");return;`,
         ],
         [

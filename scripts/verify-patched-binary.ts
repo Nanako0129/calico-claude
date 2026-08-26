@@ -1407,6 +1407,30 @@ const CHECKS: Check[] = [
         if (!content.includes("__cc_streamingThinkingExtras")) {
           return "expected inline streaming-thinking transcript extras";
         }
+        // The stream reducer builds virtual thinking messages through
+        // upstream's create-message helper. That helper's name is a per-chunk
+        // import alias on 2.1.242+, so a name captured elsewhere resolves to a
+        // different function here: a 2.1.245 build called the wrong one and
+        // every turn with a thinking block rendered no assistant output, with
+        // no error surfaced. Require the called name to be declared in the
+        // reducer's own module.
+        const reducerCalls = [
+          ...content.matchAll(/__cc_streamingThinkingMessage=([A-Za-z_$][\w$]*)\(\{content:/g),
+        ];
+        // Presence is already covered by the threading and extras checks above;
+        // what this adds is that whatever the reducer calls resolves here.
+        for (const call of reducerCalls) {
+          const declaration = new RegExp(
+            `function ${call[1]}\\(\\{content:[A-Za-z_$][\\w$]*,usage:`,
+            "g"
+          );
+          const declared = [...content.matchAll(declaration)].some((match) =>
+            inSameModule(content, match.index ?? -1, call.index ?? -1)
+          );
+          if (!declared) {
+            return `stream reducer calls ${call[1]} to build virtual thinking messages, but that name is not the create-message helper declared in its own module`;
+          }
+        }
       }
       return null;
     },

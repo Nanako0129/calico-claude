@@ -115,6 +115,16 @@ These rules are not style preferences. They are what keeps the patcher alive acr
     that captures a name at site A and writes it at site B is broken by construction. Route it
     through a `globalThis.__calico*` published at the declaration instead — that is what
     `active-turn-prompt-id` does for the prompt getter and the query-source classifier.
+  - **A name captured at one site must be resolved again at the site that uses it.** This is the
+    same rule as above but it bites hardest with *upstream* names, which no `__calico*` guard covers.
+    `thinking-streaming` captured the create-message helper at the transcript-extras site (chunk 117
+    knows it as `Ah`) and emitted it into the stream reducer's chunk, which imports an unrelated
+    `ypd as Ah`. The reducer then called the wrong function on the first thinking block, and every
+    turn that produced thinking rendered **no assistant output at all** — no error surfaced anywhere,
+    `--assert-all` passed, and the verifier passed. Resolve the helper from its own declaration and
+    require it to be in the same module as the injection: `patch-claude-display.ts` has
+    `inSameModule` for exactly this, and returns null (skipping the injection) rather than emitting a
+    name from another module.
   - **Minified names are no longer unique.** 2.1.245 declares an unrelated `function Bne(` while the
     status-line chunk imports the usage reducer *as* `Bne`, so looking a callee up by name finds the
     wrong function. Cross-site name equalities are not reconstructible from the joined text; re-anchor
@@ -128,6 +138,12 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   injected value that occupies no slot leaves the renderer showing a stale element forever while the
   patch summary, `--assert-all` and the verifier all report success. Grow the allocation and claim a
   slot in both the guard and the write-back, and assert that wiring in the verifier.
+- **Static checks cannot see a wrong-but-valid call.** Three of the defects in this episode
+  produced a bundle where every text-level assertion passed and the feature was dead or the whole
+  turn was empty. The only thing that caught them was running the binary. `scratchpad/mockapi.js`
+  plus `tui.exp` drive the real TUI against a canned streaming response with no credentials and no
+  network, which reproduces this entire class locally — use it before claiming a rendering or
+  request-path module works.
 - **A replacement must be anchored to the site you located, not to its text.** `output.replace(
   "function kC(", …)` rewrites the *first* match in the whole joined bundle, and minified names are
   not unique across chunks — `function kC(` occurs four times in 2.1.245. A `thinking-streaming`
