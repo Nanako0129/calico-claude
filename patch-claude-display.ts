@@ -215,8 +215,15 @@ function patchWriteCreateDiffColors(content) {
       continue;
     }
 
+    // Claude 2.1.242 split the bundle into ES module chunks, so the JSX factory
+    // arrives destructured (`o(Component,props)`) instead of namespace-qualified
+    // (`iv.jsx(Component,props)`). Capture the whole callee expression and emit
+    // it back verbatim rather than requiring a `.jsx`/`.createElement` suffix,
+    // and anchor on the distinctive `{filePath,content,verbose}` prop triple —
+    // the factory's local name is exactly the kind of minified binding that
+    // differs per platform build and must never be pinned.
     const createReturnMatch = createSegment.match(
-      /return ([A-Za-z_$][\w$]*)\.(createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{filePath:([A-Za-z_$][\w$]*),content:([A-Za-z_$][\w$]*),verbose:([A-Za-z_$][\w$]*)\}\)/
+      /return ([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(([A-Za-z_$][\w$]*),\{filePath:([A-Za-z_$][\w$]*),content:([A-Za-z_$][\w$]*),verbose:([A-Za-z_$][\w$]*)\}\)/
     );
     if (!createReturnMatch) {
       index = updateStart + updateNeedle.length;
@@ -224,7 +231,7 @@ function patchWriteCreateDiffColors(content) {
     }
 
     const updateRendererMatch = updateSegment.match(
-      /(?:createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{filePath:[^}]*structuredPatch:[^}]*style:([A-Za-z_$][\w$]*),verbose:[A-Za-z_$][\w$]*/
+      /\(([A-Za-z_$][\w$]*),\{filePath:[^}]*structuredPatch:[^}]*style:([A-Za-z_$][\w$]*),verbose:[A-Za-z_$][\w$]*/
     );
     if (!updateRendererMatch) {
       index = updateStart + updateNeedle.length;
@@ -233,23 +240,22 @@ function patchWriteCreateDiffColors(content) {
 
     candidates += 1;
 
-    const reactNs = createReturnMatch[1];
-    const jsxFactory = createReturnMatch[2];
-    const fileVar = createReturnMatch[4];
-    const contentVar = createReturnMatch[5];
-    const verboseVar = createReturnMatch[6];
+    const jsxCallee = createReturnMatch[1];
+    const fileVar = createReturnMatch[3];
+    const contentVar = createReturnMatch[4];
+    const verboseVar = createReturnMatch[5];
     const diffRenderer = updateRendererMatch[1];
     const styleVar = updateRendererMatch[2];
 
     const lineCounterMatch = createSegment.match(
-      /let [A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*\);return [A-Za-z_$][\w$]*\.(?:createElement|jsxs)\([A-Za-z_$][\w$]*,(?:null,|\{children:\[)"Wrote "/
+      /let [A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*\);return [A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\([A-Za-z_$][\w$]*,(?:null,|\{children:\[)"Wrote "/
     );
     const lineCountExpr = lineCounterMatch
       ? `${lineCounterMatch[1]}(${contentVar})`
       : `${contentVar}===""?0:${contentVar}.split(\`\\n\`).length`;
 
     const before = createReturnMatch[0];
-    const after = `return ${reactNs}.${jsxFactory}(${diffRenderer},{filePath:${fileVar},structuredPatch:[{oldStart:1,oldLines:0,newStart:1,newLines:${lineCountExpr},lines:${contentVar}===""?[]:${contentVar}.split(\`\\n\`).map((__cc_line)=>"+"+__cc_line)}],firstLine:${contentVar}.split(\`\\n\`)[0]??null,fileContent:"",style:${styleVar},verbose:${verboseVar},previewHint:void 0})`;
+    const after = `return ${jsxCallee}(${diffRenderer},{filePath:${fileVar},structuredPatch:[{oldStart:1,oldLines:0,newStart:1,newLines:${lineCountExpr},lines:${contentVar}===""?[]:${contentVar}.split(\`\\n\`).map((__cc_line)=>"+"+__cc_line)}],firstLine:${contentVar}.split(\`\\n\`)[0]??null,fileContent:"",style:${styleVar},verbose:${verboseVar},previewHint:void 0})`;
 
     if (!createSegment.includes(before)) {
       index = updateStart + updateNeedle.length;
@@ -394,8 +400,13 @@ function patchThinkingCase(content, ctx = {}) {
         return `;${" ".repeat(Math.max(0, full.length - 1))}`;
       }
     );
+    // The callee is `Ag.jsx(...)` on a monolithic bundle and a destructured
+    // `o(...)` on 2.1.242+ ES module chunks, so match any component call shape
+    // rather than the factory name. Loosening it is safe here because the body
+    // only rewrites props literally named isTranscriptMode/hideInTranscript and
+    // returns the match untouched when neither is present.
     nextSegment = nextSegment.replace(
-      /((?:createElement|jsx|jsxs)\([A-Za-z_$][\w$]*,\{)([^}]*)\}/g,
+      /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\([A-Za-z_$][\w$]*,\{)([^}]*)\}/g,
       (full, prefix, props) => {
         let nextProps = props;
         nextProps = nextProps.replace(/isTranscriptMode:[^,}]+/g, (entry) => {
@@ -465,10 +476,11 @@ function patchRedactedThinkingSummaries(content) {
     const redactedSegment = output.slice(redactedStart, thinkingStart);
     const thinkingSegment = output.slice(thinkingStart, thinkingEnd);
 
+    // Confirm the redacted case actually renders a component before replacing
+    // it. On 2.1.242+ chunks the JSX factory is a destructured local, so match
+    // the call-with-props shape instead of a `jsx(`/`createElement(` literal.
     const hasRedactedRendererCall =
-      redactedSegment.includes("createElement(") ||
-      redactedSegment.includes("jsx(") ||
-      redactedSegment.includes("jsxs(");
+      /[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\([A-Za-z_$][\w$]*,\{[^}]*\}\)/.test(redactedSegment);
     if (
       thinkingStart - redactedStart > maxRendererGap ||
       thinkingEnd - thinkingStart > maxRendererGap ||
@@ -480,18 +492,17 @@ function patchRedactedThinkingSummaries(content) {
     }
 
     const thinkingRendererMatch = thinkingSegment.match(
-      /([A-Za-z_$][\w$]*)\.(createElement|jsx|jsxs)\(([A-Za-z_$][\w$]*),\{addMargin:([A-Za-z_$][\w$]*),param:([A-Za-z_$][\w$]*),isTranscriptMode:[^,}]+,verbose:[^,}]+(?:,hideInTranscript:[^}]+)?\}\)/
+      /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(([A-Za-z_$][\w$]*),\{addMargin:([A-Za-z_$][\w$]*),param:([A-Za-z_$][\w$]*),isTranscriptMode:[^,}]+,verbose:[^,}]+(?:,hideInTranscript:[^}]+)?\}\)/
     );
     if (!thinkingRendererMatch) {
       index = redactedStart + redactedNeedle.length;
       continue;
     }
 
-    const reactNs = thinkingRendererMatch[1];
-    const jsxFactory = thinkingRendererMatch[2];
-    const thinkingComponent = thinkingRendererMatch[3];
-    const addMarginVar = thinkingRendererMatch[4];
-    const paramVar = thinkingRendererMatch[5];
+    const jsxCallee = thinkingRendererMatch[1];
+    const thinkingComponent = thinkingRendererMatch[2];
+    const addMarginVar = thinkingRendererMatch[3];
+    const paramVar = thinkingRendererMatch[4];
     const hideInTranscriptProp = thinkingRendererMatch[0].includes("hideInTranscript:")
       ? ",hideInTranscript:!1"
       : "";
@@ -499,7 +510,7 @@ function patchRedactedThinkingSummaries(content) {
     candidates += 1;
 
     const replacement =
-      `case"redacted_thinking":{return ${reactNs}.${jsxFactory}(${thinkingComponent},{` +
+      `case"redacted_thinking":{return ${jsxCallee}(${thinkingComponent},{` +
       `addMargin:${addMarginVar},param:{type:"thinking",thinking:${paramVar}.data??""},` +
       `isTranscriptMode:!0,verbose:!0${hideInTranscriptProp}})}`;
 
@@ -518,6 +529,41 @@ function patchRedactedThinkingSummaries(content) {
     candidates,
     patched,
   };
+}
+
+// The joined bundle carries a marker between Bun modules (see
+// scripts/native-bun.ts). A minified name captured at one site is a different
+// binding at another when a boundary separates them, because 2.1.242+ chunks
+// import each other under per-chunk aliases.
+const BUN_MODULE_BOUNDARY = "\n/*@@calico-bun-module-boundary@@*/\n";
+
+function inSameModule(content, first, second) {
+  if (first < 0 || second < 0) {
+    return false;
+  }
+  const [low, high] = first <= second ? [first, second] : [second, first];
+  return !content.slice(low, high).includes(BUN_MODULE_BOUNDARY);
+}
+
+// Upstream's "build a virtual message" helper, matched by its own destructured
+// option names rather than by a name captured elsewhere. On 2.1.245 the
+// transcript-extras site (chunk 117) knows it as `Ah` while the stream
+// reducer's chunk imports an unrelated `ypd as Ah`, so passing the captured
+// name into the reducer injected a call to the wrong function: every turn that
+// produced a thinking block rendered no assistant output at all, with no error
+// surfaced anywhere. Resolving the declaration and requiring it to be in the
+// reducer's own module makes the name correct by construction, and returns
+// null — skipping the injection — rather than emitting a cross-module name.
+const VIRTUAL_MESSAGE_DECLARATION_PATTERN =
+  /function ([A-Za-z_$][\w$]*)\(\{content:[A-Za-z_$][\w$]*,usage:[A-Za-z_$][\w$]*,isVirtual:[A-Za-z_$][\w$]*,now:[A-Za-z_$][\w$]*,uuid:[A-Za-z_$][\w$]*\}\)\{/g;
+
+function virtualMessageHelperAt(content, index) {
+  for (const match of content.matchAll(VIRTUAL_MESSAGE_DECLARATION_PATTERN)) {
+    if (inSameModule(content, match.index ?? -1, index)) {
+      return match[1];
+    }
+  }
+  return null;
 }
 
 function patchThinkingStreaming(content) {
@@ -567,7 +613,7 @@ function patchThinkingStreaming(content) {
       const searchStart = Math.max(0, anchor - 50000);
       const searchSegment = output.slice(searchStart, anchor);
       const statePattern = new RegExp(
-        `\\[(${identifierPattern}),${escapeRegExp(setStreamingThinkingVar)}\\]=${identifierPattern}\\.useState\\(null\\)`,
+        `\\[(${identifierPattern}),${escapeRegExp(setStreamingThinkingVar)}\\]=${identifierPattern}(?:\\.useState)?\\(null\\)`,
         "g"
       );
       let stateMatch;
@@ -686,6 +732,129 @@ function patchThinkingStreaming(content) {
       injectStreamingThinking
     );
     output = output.replace(jsxTranscriptRendererPropsPattern, injectStreamingThinking);
+
+    // 2.1.245 rewrote the main renderer call site: instead of an explicit prop
+    // list it spreads a rest object and reads the streaming state through store
+    // selectors, inside a React-compiler memo cache:
+    //
+    //   function kC(lh){let ju=v(19);…
+    //     let mh=Do(Wu,NC)??!1,ph=Do(Wu?.stream,EC)??_i,…
+    //     let qu;if(ju[10]!==Vu||…||ju[14]!==fh)
+    //       qu=o(Rh,{...nn,messages:Vu,isLoading:mh,streamingToolUses:ph,
+    //               onRateLimitAutoQueueContinue:fh}),
+    //       ju[10]=Vu,…,ju[14]=fh,ju[15]=qu;else qu=ju[15];
+    //
+    // Adding the prop alone is not enough: the cached element is only rebuilt
+    // when one of the compared slots changes, so a streamingThinking value that
+    // updates on its own would never reach the renderer. The injection
+    // therefore also claims one new cache slot — growing the allocation the way
+    // the compiler itself would — and adds it to both the guard and the
+    // write-back. `streamingThinking` is read through its own module-scoped
+    // selector declared beside the component, so the selector identity is
+    // stable across renders and nothing crosses a chunk scope.
+    // Not gated on the earlier prop patterns having failed: the spread call
+    // site is a distinct shape that simply does not exist on pre-2.1.245
+    // bundles, so it self-selects and pre-2.1.245 builds keep their counts.
+    {
+      const storeSelectorPattern = new RegExp(
+        `(${identifierPattern})=(${identifierPattern})\\((${identifierPattern})\\?\\.stream,${identifierPattern}\\)\\?\\?${identifierPattern},`,
+        "g"
+      );
+
+      for (const selectorRead of [...output.matchAll(storeSelectorPattern)]) {
+        const toolUsesLocal = selectorRead[1];
+        const storeHook = selectorRead[2];
+        const turnLocal = selectorRead[3];
+        const escapedToolUses = escapeRegExp(toolUsesLocal);
+        const memoCallPattern = new RegExp(
+          `let (${identifierPattern});if\\((${identifierPattern})\\[\\d+\\]!==[^)]*?\\)\\1=${identifierPattern}\\(${identifierPattern},\\{\\.\\.\\.${identifierPattern},[^{}]*streamingToolUses:${escapedToolUses}[^{}]*\\}\\),[^;]*?,\\2\\[(\\d+)\\]=\\1;`
+        );
+        const memoCall = output.slice(selectorRead.index).match(memoCallPattern);
+        if (!memoCall || memoCall[0].includes("streamingThinking:")) {
+          continue;
+        }
+
+        const cacheLocal = memoCall[2];
+        const cacheAllocPattern = new RegExp(
+          `let ${escapeRegExp(cacheLocal)}=(${identifierPattern})\\((\\d+)\\)([,;])`
+        );
+        const functionStart = output.lastIndexOf("function ", selectorRead.index);
+        const cacheAlloc =
+          functionStart === -1
+            ? null
+            : output.slice(functionStart, selectorRead.index).match(cacheAllocPattern);
+        if (!cacheAlloc) {
+          continue;
+        }
+
+        const cacheSize = Number(cacheAlloc[2]);
+        const resultSlot = Number(memoCall[3]);
+        if (!Number.isInteger(cacheSize) || resultSlot >= cacheSize) {
+          continue;
+        }
+
+        propCandidates += 1;
+
+        const thinkingLocal = "__cc_streamingThinking";
+        const selectorName = "__cc_streamingThinkingSelector";
+        const grownCall = memoCall[0]
+          .replace(
+            new RegExp(`\\)${escapeRegExp(memoCall[1])}=`),
+            () => `||${cacheLocal}[${cacheSize}]!==${thinkingLocal})${memoCall[1]}=`
+          )
+          .replace(
+            new RegExp(`streamingToolUses:${escapedToolUses}`),
+            () => `streamingToolUses:${toolUsesLocal},streamingThinking:${thinkingLocal}`
+          )
+          .replace(
+            new RegExp(`,${escapeRegExp(cacheLocal)}\\[${resultSlot}\\]=${escapeRegExp(memoCall[1])};$`),
+            () => `,${cacheLocal}[${cacheSize}]=${thinkingLocal},${cacheLocal}[${resultSlot}]=${memoCall[1]};`
+          );
+
+        // Every edit here is applied to the one enclosing function, spliced
+        // back by offset. A plain `output.replace(text, …)` would rewrite the
+        // FIRST occurrence in the whole joined bundle, and minified names are
+        // not unique across chunks: `function kC(` occurs four times in
+        // 2.1.245, so the selector declaration landed in chunk 25 while its use
+        // stayed in chunk 117 and the binary died at startup with
+        // "__cc_streamingThinkingSelector is not defined". The uniqueness
+        // assertions below keep the in-region replaces honest.
+        const regionStart = functionStart;
+        const regionEnd = selectorRead.index + memoCall.index + memoCall[0].length;
+        const region = output.slice(regionStart, regionEnd);
+        if (
+          region.split(cacheAlloc[0]).length - 1 !== 1 ||
+          region.split(selectorRead[0]).length - 1 !== 1 ||
+          region.split(memoCall[0]).length - 1 !== 1
+        ) {
+          continue;
+        }
+
+        const patchedRegion = region
+          .replace(
+            cacheAlloc[0],
+            () => `let ${cacheLocal}=${cacheAlloc[1]}(${cacheSize + 1})${cacheAlloc[3]}`
+          )
+          .replace(
+            selectorRead[0],
+            () =>
+              `${selectorRead[0]}${thinkingLocal}=${storeHook}(${turnLocal}?.stream,${selectorName})??null,`
+          )
+          .replace(memoCall[0], () => grownCall);
+
+        const nextOutput =
+          output.slice(0, regionStart) +
+          `function ${selectorName}(e){return e.streamingThinking}` +
+          patchedRegion +
+          output.slice(regionEnd);
+
+        if (nextOutput !== output) {
+          output = nextOutput;
+          propPatched += 1;
+        }
+        break;
+      }
+    }
   }
 
   candidates += propCandidates;
@@ -753,6 +922,52 @@ function patchThinkingStreaming(content) {
       return full;
     }
   );
+  // 2.1.245 hoists the display guard into its own local
+  // (`ws=so&&hh()&&fUr(d),Zr=ws?n.display:void 0`) instead of inlining it in
+  // the display assignment, so neither branch above reaches it. Without this
+  // the request enables thinking but never asks for summarized text, the API
+  // returns signature-only thinking blocks, and the UI shows the collapsed
+  // placeholder row with no thinking content at all.
+  const thinkingDisplayHoistedGuardPattern = new RegExp(
+    `(${identifierPattern})=(${identifierPattern})\\(process\\.env\\.CLAUDE_CODE_DISABLE_THINKING\\),` +
+      `(${identifierPattern})=(${identifierPattern})\\.type!=="disabled"&&!\\1,` +
+      `((${identifierPattern})=\\3&&${identifierPattern}\\(\\)&&${identifierPattern}\\(${identifierPattern}\\)),` +
+      `(${identifierPattern})=\\6\\?\\4\\.display(?:\\?\\?void 0)?:void 0,` +
+      `(${identifierPattern})=void 0;`,
+    "g"
+  );
+  output = output.replace(
+    thinkingDisplayHoistedGuardPattern,
+    (
+      full,
+      disableThinkingVar,
+      envFlagHelper,
+      enabledVar,
+      thinkingConfigVar,
+      guardAssignment,
+      guardVar,
+      displayVar,
+      requestVar
+    ) => {
+      displayCandidates += 1;
+      if (full.includes('display??"summarized"')) {
+        return full;
+      }
+
+      const replacement =
+        `${disableThinkingVar}=${envFlagHelper}(process.env.CLAUDE_CODE_DISABLE_THINKING),` +
+        `${enabledVar}=${thinkingConfigVar}.type!=="disabled"&&!${disableThinkingVar},` +
+        `${guardAssignment},` +
+        `${displayVar}=${guardVar}?${thinkingConfigVar}.display??"summarized":void 0,` +
+        `${requestVar}=void 0;`;
+      if (replacement !== full) {
+        displayPatched += 1;
+        return replacement;
+      }
+      return full;
+    }
+  );
+
   candidates += displayCandidates;
   patched += displayPatched;
 
@@ -831,11 +1046,11 @@ function patchThinkingStreaming(content) {
     return `let ${visibleVar}=!!(${streamVar}&&${streamVar}.isStreaming)`;
   });
   const promptLingerPattern =
-    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.useMemo\(\(\)=>\{if\(!([A-Za-z_$][\w$]*)\)return!1;if\(\3\.isStreaming\)return!0;if\(\3\.streamingEndedAt\)return Date\.now\(\)-\3\.streamingEndedAt<30000;return!1\},\[\3\]\)/g;
-  output = output.replace(promptLingerPattern, (_full, visibleVar, reactNs, streamVar) => {
+    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(\(\)=>\{if\(!([A-Za-z_$][\w$]*)\)return!1;if\(\3\.isStreaming\)return!0;if\(\3\.streamingEndedAt\)return Date\.now\(\)-\3\.streamingEndedAt<30000;return!1\},\[\3\]\)/g;
+  output = output.replace(promptLingerPattern, (_full, visibleVar, useMemoCallee, streamVar) => {
     lingerCandidates += 1;
     lingerPatched += 1;
-    return `${visibleVar}=${reactNs}.useMemo(()=>!!(${streamVar}&&${streamVar}.isStreaming),[${streamVar}])`;
+    return `${visibleVar}=${useMemoCallee}(()=>!!(${streamVar}&&${streamVar}.isStreaming),[${streamVar}])`;
   });
   candidates += lingerCandidates;
   patched += lingerPatched;
@@ -874,13 +1089,13 @@ function patchThinkingStreaming(content) {
     let inlineThinkingCandidates = 0;
     let inlineThinkingPatched = 0;
     const inlineThinkingPattern =
-      /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.useMemo\(\(\)=>([A-Za-z_$][\w$]*)\.flatMap\(\(([A-Za-z_$][\w$]*)\)=>\{let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{content:\[\4\.contentBlock\]\}\);return \5\.uuid=([A-Za-z_$][\w$]*)\(\4\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[\5\]\)\}\),\[\3\]\)/g;
+      /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(\(\)=>([A-Za-z_$][\w$]*)\.flatMap\(\(([A-Za-z_$][\w$]*)\)=>\{let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{content:\[\4\.contentBlock\]\}\);return \5\.uuid=([A-Za-z_$][\w$]*)\(\4\.contentBlock\.id,0\),([A-Za-z_$][\w$]*)\(\[\5\]\)\}\),\[\3\]\)/g;
     output = output.replace(
       inlineThinkingPattern,
       (
         _full,
         extrasVar,
-        reactNs,
+        useMemoCallee,
         streamingToolUsesVar,
         toolUseEntryVar,
         toolUseMessageVar,
@@ -891,7 +1106,7 @@ function patchThinkingStreaming(content) {
         inlineThinkingCandidates += 1;
         inlineThinkingPatched += 1;
         createVirtualMessageHelper = createMessageHelper;
-        return `${extrasVar}=${reactNs}.useMemo(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
+        return `${extrasVar}=${useMemoCallee}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
       }
     );
     candidates += inlineThinkingCandidates;
@@ -980,6 +1195,10 @@ function patchThinkingStreaming(content) {
       const eventParam = destructuredMatch[1];
       const optionsParam = destructuredMatch[2];
       const props = destructuredMatch[3];
+      const reducerMessageHelper = virtualMessageHelperAt(output, destructuredMatch.index ?? -1);
+      if (reducerMessageHelper === null) {
+        continue;
+      }
       const propVar = (name) => {
         const match = props.match(new RegExp(`${name}:([A-Za-z_$][\\w$]*)`));
         return match?.[1] ?? null;
@@ -1023,7 +1242,7 @@ function patchThinkingStreaming(content) {
       const thinkingStartAfter = `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
         eventParam,
         setStreamingThinkingParam,
-        createVirtualMessageHelper
+        reducerMessageHelper
       )},${setModeParam}("thinking");return;`;
 
       const textStartBefore = `case"text":${setModeParam}("responding");return;`;
@@ -1040,7 +1259,7 @@ function patchThinkingStreaming(content) {
       const thinkingDeltaBody = buildStreamingThinkingDeltaStatement(
         eventParam,
         setStreamingThinkingParam,
-        createVirtualMessageHelper
+        reducerMessageHelper
       );
       const thinkingDeltaAfter = `case"thinking_delta":{${thinkingDeltaBody}return;}`;
       const thinkingDeltaProgressPattern = new RegExp(
@@ -1117,6 +1336,13 @@ function patchThinkingStreaming(content) {
       const optionsParam = missingStreamingThinkingMatch[2];
       const props = missingStreamingThinkingMatch[3];
       const declarationSeparator = missingStreamingThinkingMatch[4];
+      const reducerMessageHelper = virtualMessageHelperAt(
+        output,
+        missingStreamingThinkingMatch.index ?? -1
+      );
+      if (reducerMessageHelper === null) {
+        continue;
+      }
       if (props.includes("onStreamingThinking:")) {
         continue;
       }
@@ -1156,7 +1382,7 @@ function patchThinkingStreaming(content) {
       const thinkingDeltaBody = buildStreamingThinkingDeltaStatement(
         eventParam,
         setStreamingThinkingParam,
-        createVirtualMessageHelper
+        reducerMessageHelper
       );
 
       const replacements = [
@@ -1185,7 +1411,7 @@ function patchThinkingStreaming(content) {
           `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
             eventParam,
             setStreamingThinkingParam,
-            createVirtualMessageHelper
+            reducerMessageHelper
           )},${setModeParam}?.("thinking");return;`,
         ],
         [
@@ -1193,7 +1419,7 @@ function patchThinkingStreaming(content) {
           `case"thinking":case"redacted_thinking":${buildStreamingThinkingStartExpression(
             eventParam,
             setStreamingThinkingParam,
-            createVirtualMessageHelper
+            reducerMessageHelper
           )},${setModeParam}?.("thinking");return;`,
         ],
         [
@@ -1812,11 +2038,14 @@ function patchWelcomePatchedBadge(content) {
   let patched = 0;
   let output = content;
 
+  // 2.1.242+ chunks destructure the JSX factory, so the callee is a bare local
+  // (`o(T,…)`) rather than `ns.createElement(...)`/`ns.jsx(...)`. Capture the
+  // whole callee expression and emit it back verbatim.
   output = output.replace(
-    /([A-Za-z_$][\w$]*)\.createElement\(([A-Za-z_$][\w$]*),\{bold:!0\},"Claude Code"\)/g,
-    (full, reactVar, textComponent) => {
+    /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(([A-Za-z_$][\w$]*),\{bold:!0\},"Claude Code"\)/g,
+    (full, jsxCallee, textComponent) => {
       candidates += 1;
-      const replacement = `${reactVar}.createElement(${textComponent},{bold:!0},"Calico Claude")`;
+      const replacement = `${jsxCallee}(${textComponent},{bold:!0},"Calico Claude")`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1826,10 +2055,10 @@ function patchWelcomePatchedBadge(content) {
   );
 
   output = output.replace(
-    /([A-Za-z_$][\w$]*)\.(jsx|jsxs)\(([A-Za-z_$][\w$]*),\{bold:!0,children:"Claude Code"\}\)/g,
-    (full, reactVar, jsxFactory, textComponent) => {
+    /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(([A-Za-z_$][\w$]*),\{bold:!0,children:"Claude Code"\}\)/g,
+    (full, jsxCallee, textComponent) => {
       candidates += 1;
-      const replacement = `${reactVar}.${jsxFactory}(${textComponent},{bold:!0,children:"Calico Claude"})`;
+      const replacement = `${jsxCallee}(${textComponent},{bold:!0,children:"Calico Claude"})`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -1939,7 +2168,13 @@ function patchCustomContextWindows(content) {
     candidates += 1;
     const helpers =
       'function __calico_context_window(e){try{let t=process.env.CALICO_MODEL_CONTEXT_WINDOWS;if(!t)return null;let r=JSON.parse(t);if(!r||typeof r!=="object"||Array.isArray(r)||!Object.hasOwn(r,e))return null;let n=r[e];if(!Number.isInteger(n)||n<100000||n>1000000)return null;return n}catch{return null}}' +
-      'function __calico_display_window(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)}';
+      // __calico_display_window is declared here but called from the status-line
+      // site below, which upstream 2.1.242+ places in a different Bun chunk.
+      // Chunks are separate ES module scopes, so this one helper has to live on
+      // globalThis; a bare declaration resolves at patch time and is undefined
+      // at runtime. __calico_context_window stays local because it is only
+      // called from the resolver body injected immediately after it.
+      'globalThis.__calico_display_window=function(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)};';
     const replacement =
       `${helpers}${functionStart}let __calico_window=__calico_context_window(e);` +
       `if(__calico_window!==null)return __calico_window;${originalBody}`;
@@ -1986,7 +2221,7 @@ function patchCustomContextWindows(content) {
     (full, contextFn, usage, windowValue) => {
       candidates += 1;
       patched += 1;
-      return `context_window:${contextFn}(${usage},__calico_display_window(${windowValue})),exceeds_200k_tokens:`;
+      return `context_window:${contextFn}(${usage},globalThis.__calico_display_window(${windowValue})),exceeds_200k_tokens:`;
     }
   );
 
@@ -2170,11 +2405,11 @@ function patchStatuslineCommittedUsage(content) {
     "g"
   );
   const legacyWrapperPattern = new RegExp(
-    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\}\\};`,
+    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\}\\};`,
     "g"
   );
   const effortWrapperPattern = new RegExp(
-    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
+    `let (${identifierPattern})=\\{message:\\{\\.\\.\\.(${identifierPattern}),content:(${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
     "g"
   );
   // 2.1.236+: batch tool-use destructuring wraps the content builder. The
@@ -2189,7 +2424,7 @@ function patchStatuslineCommittedUsage(content) {
   // 2.1.237 (no fifth arg) and 2.1.238 (one appended arg) matching, and to
   // tolerate a further appended argument without another edit.
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
@@ -2202,9 +2437,24 @@ function patchStatuslineCommittedUsage(content) {
   );
   const reducerMatches = [...content.matchAll(reducerPattern)];
   const reducerName = reducerMatches[0]?.[1];
+  // The reducer used to be identified at its call site by the name captured at
+  // its definition. That stopped working on 2.1.242+: the bundle is split into
+  // ES module chunks that import each other under per-chunk aliases, so the
+  // statusline function calls the reducer as `Bne` while it is declared as
+  // `Eze` elsewhere — and, worse, an unrelated chunk-local `Eze` exists, so
+  // minified names are no longer unique across the joined text and pinning one
+  // can match the wrong site entirely.
+  //
+  // Anchor on structure instead: the selector sits immediately after the
+  // `<local>=<settings>?.outputStyle||<default>,` assignment in the statusline
+  // payload builder, inside the one function that emits `context_window:`, and
+  // require exactly one such site. That is weaker than the name equality it
+  // replaces — it locates the call rather than proving its callee — but a name
+  // captured in another chunk cannot identify anything here, so position plus
+  // the surviving `exactly one reducer declaration` gate is what is left.
   const selectorPattern = reducerName
     ? new RegExp(
-        `(${identifierPattern})=${escapeRegExp(reducerName)}\\((${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern})\\(\\)\\)`,
+        `(${identifierPattern}=${identifierPattern}\\?\\.outputStyle\\|\\|[^,]{1,40},)(${identifierPattern})=(${identifierPattern})\\((${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern})\\(\\)\\)`,
         "g"
       )
     : null;
@@ -2278,7 +2528,15 @@ function patchStatuslineCommittedUsage(content) {
     const functionStart = content.lastIndexOf("function ", index);
     const functionEnd = content.indexOf("function ", index + match[0].length);
     const segment = content.slice(functionStart, functionEnd === -1 ? content.length : functionEnd);
-    return segment.includes("context_window:");
+    // Require the selected usage and the computed window to be exactly the two
+    // arguments the payload's `context_window:` is built from. This replaces
+    // the name equality with the reducer that chunking made uncheckable: it
+    // does not prove the callee is the reducer, but it does prove this site's
+    // result is what the status line reports, which is what the patch is for.
+    const consumption = new RegExp(
+      `context_window:${identifierPattern}\\(${escapeRegExp(match[2])},${escapeRegExp(match[5])}\\)`
+    );
+    return segment.includes("context_window:") && consumption.test(segment);
   });
   const cloneArray = cloneSyncMatches[0]?.[3];
   const cloneRegistrationPattern = cloneArray
@@ -2396,9 +2654,11 @@ function patchStatuslineCommittedUsage(content) {
     return { content: original, candidates, patched: 0 };
   }
 
-  const accountingHelper =
+  const predicateHelpers =
     'function __calicoUsageHasAccountingSignal(e){if(!e||typeof e!=="object")return!1;return["input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((t)=>typeof e[t]==="number"&&e[t]!==0)}' +
-    'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}' +
+    'function __calicoUsageIsExactAllZero(e){if(!e||typeof e!=="object")return!1;return e.input_tokens===0&&e.output_tokens===0&&(e.cache_creation_input_tokens===void 0||e.cache_creation_input_tokens===0)&&(e.cache_read_input_tokens===void 0||e.cache_read_input_tokens===0)&&(e.cache_creation?.ephemeral_1h_input_tokens===void 0||e.cache_creation?.ephemeral_1h_input_tokens===0)&&(e.cache_creation?.ephemeral_5m_input_tokens===void 0||e.cache_creation?.ephemeral_5m_input_tokens===0)}';
+  const accountingHelper =
+    predicateHelpers +
     'function __calicoStatuslineMessages(e){if(!Array.isArray(e))return e;return e.flatMap((t)=>{if(t?.type!=="assistant")return[t];let r=t.__calicoUsageState;if(r?.committed===!0&&r.usage)return[{...t,message:{...t.message,usage:r.usage}}];if(r===void 0&&t.message?.stop_reason!=null&&__calicoUsageHasAccountingSignal(t.message?.usage))return[t];return[]})}';
   const wrapperStateNeedle = ",...!1,";
   const wrapperReplacement = wrapperMatch.match[0].replace(
@@ -2419,7 +2679,11 @@ function patchStatuslineCommittedUsage(content) {
   const cloneSyncDestination = cloneSyncMatches[0][2];
   const cloneSyncReplacement = `for(let{src:${cloneSyncSource},dst:${cloneSyncDestination}}of ${cloneArray})${cloneSyncDestination}.message.usage=${cloneSyncSource}.message.usage,${cloneSyncDestination}.message.stop_reason=${cloneSyncSource}.message.stop_reason,${cloneSyncDestination}.message.stop_details=${cloneSyncSource}.message.stop_details,${cloneSyncDestination}.__calicoUsageState=${cloneSyncSource}.__calicoUsageState;`;
   const selectorMatch = selectorMatches[0];
-  const selectorReplacement = `${selectorMatch[1]}=${reducerName}(__calicoStatuslineMessages(${selectorMatch[2]})),${selectorMatch[3]}=${selectorMatch[4]}(${selectorMatch[5]},${selectorMatch[6]}())`;
+  // The reducer is called through whatever local name this chunk imported it
+  // under (selectorMatch[3]), not the name captured at its declaration site.
+  const selectorReplacement =
+    `${selectorMatch[1]}${selectorMatch[2]}=${selectorMatch[3]}(__calicoStatuslineMessages(${selectorMatch[4]}))` +
+    `,${selectorMatch[5]}=${selectorMatch[6]}(${selectorMatch[7]},${selectorMatch[8]}())`;
 
   // wrapperReplacement/terminalReplacement/cloneSyncReplacement interpolate
   // captured minified locals (terminalItem, terminalArray, cloneSyncSource,
@@ -2437,8 +2701,25 @@ function patchStatuslineCommittedUsage(content) {
     return { content: original, candidates, patched: 0 };
   }
 
-  output =
-    output.slice(0, functionStart) + accountingHelper + output.slice(functionStart);
+  // The terminal-commit loop calls the two predicates from a different Bun
+  // chunk than the status-line payload builder that carries the helper block,
+  // and neither chunk statically imports the other, so a single shared
+  // definition is not reliably evaluated first. Give that site its own copy of
+  // the two pure predicates; __calicoStatuslineMessages stays single because it
+  // is only called from the selector, in this same function.
+  const terminalCommitIndex = output.indexOf(terminalReplacement);
+  const terminalHelperStart =
+    terminalCommitIndex === -1 ? -1 : output.lastIndexOf("function ", terminalCommitIndex);
+  if (terminalHelperStart === -1) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  for (const [insertAt, helpers] of [
+    [functionStart, accountingHelper],
+    [terminalHelperStart, predicateHelpers],
+  ].sort((a, b) => b[0] - a[0])) {
+    output = output.slice(0, insertAt) + helpers + output.slice(insertAt);
+  }
   output = output.replace(selectorPattern, () => selectorReplacement);
 
   if (
@@ -2447,8 +2728,8 @@ function patchStatuslineCommittedUsage(content) {
     cloneReplacements.some((replacement) => output.split(replacement).length - 1 !== 1) ||
     output.split(cloneSyncReplacement).length - 1 !== 1 ||
     output.split(selectorReplacement).length - 1 !== 1 ||
-    output.split("function __calicoUsageHasAccountingSignal").length - 1 !== 1 ||
-    output.split("function __calicoUsageIsExactAllZero").length - 1 !== 1 ||
+    output.split("function __calicoUsageHasAccountingSignal").length - 1 !== 2 ||
+    output.split("function __calicoUsageIsExactAllZero").length - 1 !== 2 ||
     output.split("function __calicoStatuslineMessages").length - 1 !== 1
   ) {
     return { content: original, candidates, patched: 0 };
@@ -2627,7 +2908,7 @@ function patchGatewayFastMode(content) {
     "g"
   );
   const localJsxPattern =
-    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",get immediate\(\)\{return ([A-Za-z_$][\w$]*)\(\)\},requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
   const localPattern =
     /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\}/g;
   const builderPattern = new RegExp(
@@ -2681,11 +2962,17 @@ function patchGatewayFastMode(content) {
   const builder = builderMatches[0];
   const worker = workerMatches[0];
 
-  if (
-    interactive[5] !== thin[4] ||
-    interactive[6] !== thin[5] ||
-    local[3] !== local[4]
-  ) {
+  // The interactive and thin handlers used to be required to name the same
+  // availability helper and the same unavailable-message helper. On 2.1.242+
+  // they live in different chunks and reach those helpers through per-chunk
+  // import aliases (2.1.245: `po`/`q` against `a`/`n`), so the names differ
+  // while the target is the same and the equality can no longer be evaluated.
+  // What still holds is that each handler shape pins the literal
+  // "Fast mode is not available" and is required to occur exactly once in the
+  // whole bundle, and each site's replacement only re-emits identifiers it
+  // captured at that same site, so nothing crosses a chunk scope.
+  // local[3]/local[4] are both inside one object literal and stay checkable.
+  if (local[3] !== local[4]) {
     return { content: original, candidates, patched: 0 };
   }
 
@@ -2705,7 +2992,10 @@ function patchGatewayFastMode(content) {
     !interactiveSegment.includes("tengu_fast_mode_picker_shown") ||
     !interactiveSegment.includes(".getAppState") ||
     !interactiveSegment.includes(".setAppState") ||
-    !interactiveSegment.includes(".jsx(")
+    // Confirms the interactive handler renders a component. On 2.1.242+ the JSX
+    // factory is a destructured local, so match the call-with-props shape
+    // instead of a `.jsx(` literal.
+    !/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\([A-Za-z_$][\w$]*,\{[^}]*\}\)/.test(interactiveSegment)
   ) {
     return { content: original, candidates, patched: 0 };
   }
@@ -2718,7 +3008,12 @@ function patchGatewayFastMode(content) {
   if (
     thinStart === -1 ||
     !thinAction ||
-    thinAction !== interactiveAction ||
+    // Both handlers must reach the same apply-fast-mode action, but on 2.1.242+
+    // they are in different chunks and call it through different import
+    // aliases (2.1.245: `go` interactive, `i` thin), so the names cannot be
+    // compared. Each handler is still pinned by its own `"shortcut"` /
+    // `"bridge"` call shape plus the app-state and argument markers below, and
+    // neither capture is used outside the check itself.
     !thinSegment.includes(".options.fastMode") ||
     !thinSegment.includes("Unknown argument") ||
     !thinSegment.includes(".getAppState") ||
@@ -2810,6 +3105,12 @@ function patchGatewayFastMode(content) {
   }
   const dispatchRecord = dispatchRecords[0];
   const dispatchRecordLocal = dispatchRecord.match[1];
+  // 2.1.239 appended arguments to the dispatch call
+  // (`_0c(K)` became `_0c(K,!1,Date.now(),s)`), which is why this module has
+  // applied 0 changes since that release. Accept a trailing argument list, one
+  // level of call nesting deep so `Date.now()` does not terminate it early. The
+  // record local is still the required first argument.
+  const dispatchArguments = "(?:,(?:[^()]|\\([^()]*\\))*)?";
   const awaitedDispatchPattern = new RegExp(
     "\\},\\[,(" +
       identifier +
@@ -2817,12 +3118,13 @@ function patchGatewayFastMode(content) {
       identifier +
       ")\\(" +
       dispatchRecordLocal +
+      dispatchArguments +
       "\\)\\]\\)",
     "g"
   );
   const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
   const directDispatchPattern = new RegExp(
-    "(" + identifier + ")\\(" + dispatchRecordLocal + "\\)",
+    "(" + identifier + ")\\(" + dispatchRecordLocal + dispatchArguments + "\\)",
     "g"
   );
   const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
@@ -2852,7 +3154,7 @@ function __calicoGatewayFastPublish(e,t,r,n){let o=__calicoGatewayFastEnsure();i
 function __calicoGatewayFastCommandValue(e){let t=typeof e==="string"?e.trim().toLowerCase():"";if(t!==""&&t!=="on"&&t!=="off")return'Unknown argument "'+t+'". Use: /fast [on|off]';try{let r=__calicoGatewayFastRead(),n=Object.prototype.hasOwnProperty.call(process.env,"CLAUDE_CODE_EXTRA_BODY"),o=process.env.CLAUDE_CODE_EXTRA_BODY,i=__calicoGatewayFastParse(o),s;if(t==="on")s="on";else if(t==="off")s="off";else if(r==="on")s="off";else if(r==="off")s="on";else s=__calicoGatewayFastTier(i)?"off":"on";if(s==="on"){__calicoGatewayFastTier(i);i.service_tier="priority"}else delete i.service_tier;let a=JSON.stringify(i);__calicoGatewayFastPublish(s,a,n,o);return s==="on"?"Gateway priority mode ON (this session only)":"Gateway priority mode OFF (this session only)"}catch(r){return"Gateway priority mode error: "+(r&&r.message?r.message:String(r))}}
 function __calicoGatewayFastInteractive(e,t){e(__calicoGatewayFastCommandValue(t));return null}
 function __calicoGatewayFastThin(e){return{type:"text",value:__calicoGatewayFastCommandValue(e)}}
-function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r}
+function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};
 `;
 
   const interactiveReplacement = interactive[0].replace(
@@ -2911,17 +3213,33 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
   output = output.replace(builderSegment, builderReplacement);
   output = output.replace(worker[0], workerReplacement);
 
-  const helperIndex = output.indexOf(interactiveReplacement);
-  if (helperIndex === -1) {
+  // The three consumers of these helpers — the interactive handler, the thin
+  // handler and the request extra-body builder — are in three different Bun
+  // chunks on 2.1.242+, and none of them statically imports the others, so a
+  // single shared definition is not reliably evaluated before it is used. A
+  // 2.1.245 build published them on globalThis and died on every request with
+  // "globalThis.__calicoGatewayFastApply is not a function". Each consumer
+  // therefore gets its own module-scoped copy: the block is self-contained, and
+  // the copies reconcile through CALICO_GATEWAY_FAST_STATE_FILE and the state
+  // file itself, so whichever runs first creates the state and the rest adopt
+  // it. On a pre-2.1.242 monolith all three land in one scope, where repeated
+  // function and `var` declarations are legal and Ensure() is idempotent.
+  const helperIndexes = [interactiveReplacement, thinReplacement, builderReplacement].map(
+    (replacement) => output.indexOf(replacement)
+  );
+  if (helperIndexes.some((index) => index === -1)) {
     return { content: original, candidates, patched: 0 };
   }
-  output = output.slice(0, helperIndex) + helperBlock + output.slice(helperIndex);
+  // Insert from the last offset backwards so the earlier offsets stay valid.
+  for (const helperIndex of [...helperIndexes].sort((a, b) => b - a)) {
+    output = output.slice(0, helperIndex) + helperBlock + output.slice(helperIndex);
+  }
 
   if (
-    output.split("function __calicoGatewayFastEnsure").length - 1 !== 1 ||
-    output.split("function __calicoGatewayFastParse").length - 1 !== 1 ||
-    output.split("function __calicoGatewayFastCommandValue").length - 1 !== 1 ||
-    output.split("function __calicoGatewayFastApply").length - 1 !== 1 ||
+    output.split("function __calicoGatewayFastEnsure").length - 1 !== 3 ||
+    output.split("function __calicoGatewayFastParse").length - 1 !== 3 ||
+    output.split("function __calicoGatewayFastCommandValue").length - 1 !== 3 ||
+    output.split("function __calicoGatewayFastApply").length - 1 !== 3 ||
     output.split('if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastInteractive').length - 1 !== 1 ||
     output.split('if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin').length - 1 !== 1 ||
     output.split(`CALICO_GATEWAY_FAST_STATE_FILE:${worker[1]}.CALICO_GATEWAY_FAST_STATE_FILE`).length - 1 !== 1 ||
@@ -2946,15 +3264,19 @@ function patchActiveTurnPromptIdentity(content) {
   const legacyPromptGetterMatch = output.match(
     /function ([A-Za-z_$][\w$]*)\(\)\{return ([A-Za-z_$][\w$]*)\.promptId\}function [A-Za-z_$][\w$]*\(e\)\{\2\.promptId=e\}/
   );
+  // 2.1.242 chunking turned the module-level journal singleton into a lazy
+  // accessor call, so the receiver went from `br.requestJournal.` to
+  // `n().requestJournal.`. Accept either an identifier or a no-argument call as
+  // the head of the accessor chain; the backreference still pins the getter and
+  // setter to the same receiver expression.
   const journalPromptGetterMatch = output.match(
-    /function ([A-Za-z_$][\w$]*)\(\)\{return ((?:[A-Za-z_$][\w$]*\.)+)promptId\(\)\}function [A-Za-z_$][\w$]*\(e\)\{\2replacePromptId\(e\)\}/
+    /function ([A-Za-z_$][\w$]*)\(\)\{return ((?:[A-Za-z_$][\w$]*\(\)|[A-Za-z_$][\w$]*)(?:\.[A-Za-z_$][\w$]*)*\.)promptId\(\)\}function [A-Za-z_$][\w$]*\(e\)\{\2replacePromptId\(e\)\}/
   );
   if (!legacyPromptGetterMatch && !journalPromptGetterMatch) {
     return { content: original, candidates: 0, patched: 0 };
   }
-  const promptGetter = legacyPromptGetterMatch
-    ? legacyPromptGetterMatch[1]
-    : journalPromptGetterMatch[1];
+  const promptGetterMatch = legacyPromptGetterMatch ?? journalPromptGetterMatch;
+  const promptGetter = promptGetterMatch[1];
 
   // Reuse Claude's own query-source classifier so quota checks, token counts,
   // compaction, side queries, and other auxiliary traffic cannot enter the
@@ -2967,6 +3289,33 @@ function patchActiveTurnPromptIdentity(content) {
   }
   const sourceClassifier = sourceClassifierMatch[1];
 
+  // Both helpers are discovered at their definition sites and called from two
+  // other sites, and upstream 2.1.242+ puts all three in different Bun chunks
+  // (the getter, the AsyncLocalStorage entry point and the client factory land
+  // in separate chunks on 2.1.245). Chunks are separate ES module scopes that
+  // import each other under per-chunk aliases, so emitting the captured local
+  // name at another site references an identifier that does not exist there —
+  // and, because the prompt-getter call sits behind the REMORA_ACTIVE gate,
+  // neither the PTY smoke test nor the --print E2E test would reach it.
+  // Publish both through globalThis at their definition sites and call them
+  // through globalThis everywhere else, which also brings them under
+  // native-bun's module-scope guard.
+  const publish = (matchedText, globalName, localName) => {
+    if (output.includes(`globalThis.${globalName}=`)) {
+      return;
+    }
+    // matchedText and localName are minified names that may contain `$`, which
+    // String.replace would expand in a plain replacement string.
+    output = output.replace(
+      matchedText,
+      () => `${matchedText}globalThis.${globalName}=${localName};`
+    );
+  };
+  publish(promptGetterMatch[0], "__calicoPromptIdGet", promptGetter);
+  publish(sourceClassifierMatch[0], "__calicoQuerySource", sourceClassifier);
+  const promptGetterCall = "globalThis.__calicoPromptIdGet()";
+  const querySourceRef = "globalThis.__calicoQuerySource";
+
   // Every spawned agent enters the same AsyncLocalStorage boundary. Freeze
   // the current prompt id there so a background agent keeps its spawning turn
   // even after the main session accepts another user prompt.
@@ -2977,7 +3326,7 @@ function patchActiveTurnPromptIdentity(content) {
     (full, prefix, storage, suffix) => {
       agentCandidates += 1;
       agentPatched += 1;
-      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetter}()),${storage}.run(e,t)${suffix}`;
+      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetterCall}),${storage}.run(e,t)${suffix}`;
     }
   );
   const attributedAgentContextPattern =
@@ -2987,7 +3336,7 @@ function patchActiveTurnPromptIdentity(content) {
     (full, prefix, attribution, storage, run, suffix) => {
       agentCandidates += 1;
       agentPatched += 1;
-      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetter}());${attribution}${storage}${run}${suffix}`;
+      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetterCall});${attribution}${storage}${run}${suffix}`;
     }
   );
 
@@ -3045,7 +3394,7 @@ function patchActiveTurnPromptIdentity(content) {
     let nextSegment = segment.replace(
       localsPattern,
       () =>
-        `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${sourceClassifier}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetter}()):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
+        `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${querySourceRef}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetterCall}):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
     );
     nextSegment = nextSegment.replace(
       new RegExp(

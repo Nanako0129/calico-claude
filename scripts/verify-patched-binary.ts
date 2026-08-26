@@ -36,6 +36,100 @@ type Check = {
   describe: string;
 };
 
+// A minified name captured at one site is only comparable at another when both
+// sites are in the same Bun module: 2.1.242+ splits the bundle into ES module
+// chunks that import each other under per-chunk aliases, so the same helper is
+// `po` in one chunk and `a` in the next. The joined text carries the module
+// boundaries, so cross-site name equalities stay enforced wherever they are
+// still meaningful and are skipped only where the names cannot match by
+// construction. On a pre-2.1.242 monolith every gateway site is in the cli
+// module, so every equality below applies exactly as it did before.
+const { BUN_MODULE_BOUNDARY } = require("./native-bun.ts") as { BUN_MODULE_BOUNDARY: string };
+
+function inSameModule(content: string, first: number, second: number): boolean {
+  if (first < 0 || second < 0) {
+    return false;
+  }
+  const [low, high] = first <= second ? [first, second] : [second, first];
+  return !content.slice(low, high).includes(BUN_MODULE_BOUNDARY);
+}
+
+// Cross-chunk references through globalThis are only safe when the chunk doing
+// the reading statically imports (transitively) the chunk doing the writing:
+// only then is the publisher guaranteed to have been evaluated first. Of 1,384
+// modules in 2.1.245, exactly 8 are statically reachable from the cli entry —
+// everything else arrives through dynamic import — so "it will have been
+// evaluated by then" is never a safe assumption. A build that published the
+// gateway helpers from an unreachable chunk threw
+// "globalThis.__calicoGatewayFastApply is not a function" on every request and
+// produced no output at all, while every other check here passed.
+function unreachableGlobalPublications(content: string, moduleNames: string[]): string[] {
+  const modules = content.split(BUN_MODULE_BOUNDARY);
+  if (modules.length < 2 || modules.length !== moduleNames.length) {
+    return [];
+  }
+
+  const indexByName = new Map(moduleNames.map((name, index) => [name, index]));
+  const staticImportPattern = /import\s*(?:[^"';]*?from\s*)?"([^"]+\.js)"/g;
+  const dynamicImportPattern = /import\("([^"]+\.js)"\)/g;
+
+  const staticEdges = modules.map((module) => {
+    const dynamic = new Set(
+      Array.from(module.matchAll(dynamicImportPattern), (match) => match[1])
+    );
+    return Array.from(
+      new Set(Array.from(module.matchAll(staticImportPattern), (match) => match[1]))
+    )
+      .filter((target) => !dynamic.has(target))
+      .map((target) => indexByName.get(target))
+      .filter((index): index is number => index !== undefined);
+  });
+
+  const closures = new Map<number, Set<number>>();
+  const closureOf = (start: number): Set<number> => {
+    const cached = closures.get(start);
+    if (cached) {
+      return cached;
+    }
+    const seen = new Set([start]);
+    const stack = [start];
+    while (stack.length > 0) {
+      for (const next of staticEdges[stack.pop() as number]) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          stack.push(next);
+        }
+      }
+    }
+    closures.set(start, seen);
+    return seen;
+  };
+
+  const publisherPattern = /globalThis\.((?:__calico|__cc_)[\w$]*)\s*=/g;
+  const publishers = new Map<string, number>();
+  modules.forEach((module, index) => {
+    for (const match of module.matchAll(publisherPattern)) {
+      publishers.set(match[1], index);
+    }
+  });
+
+  const problems: string[] = [];
+  for (const [name, publisher] of publishers) {
+    modules.forEach((module, index) => {
+      const uses = countOccurrences(module, `globalThis.${name}`);
+      const declares = countOccurrences(module, `globalThis.${name}=`);
+      if (uses - declares <= 0 || closureOf(index).has(publisher)) {
+        return;
+      }
+      problems.push(
+        `${name} is read in ${moduleNames[index]} but published in ${moduleNames[publisher]}, ` +
+          "which that module does not statically import, so it may not be evaluated first"
+      );
+    });
+  }
+  return problems;
+}
+
 function countOccurrences(content: string, needle: string): number {
   let count = 0;
   let index = content.indexOf(needle);
@@ -69,47 +163,82 @@ const CHECKS: Check[] = [
       const stateDeclaration =
         "var __calicoGatewayFastState={path:null,dir:null,owner:!1};";
       const applyHelper =
-        'function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r}';
+        'function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};';
 
+      // One self-contained copy per consuming chunk. The interactive handler,
+      // the thin handler and the request extra-body builder are in three Bun
+      // chunks that do not import one another, so a single shared definition is
+      // not reliably evaluated before it is used: a 2.1.245 build that shared
+      // them through globalThis threw "globalThis.__calicoGatewayFastApply is
+      // not a function" on every request. The copies reconcile at runtime
+      // through CALICO_GATEWAY_FAST_STATE_FILE.
+      const blockCount = 3;
+      const blockStarts: number[] = [];
+      for (let at = content.indexOf(nodeDeclaration); at !== -1; ) {
+        blockStarts.push(at);
+        at = content.indexOf(nodeDeclaration, at + nodeDeclaration.length);
+      }
       if (
-        countOccurrences(content, nodeDeclaration) !== 1 ||
-        countOccurrences(content, stateDeclaration) !== 1 ||
-        countOccurrences(content, applyHelper) !== 1
+        blockStarts.length !== blockCount ||
+        countOccurrences(content, stateDeclaration) !== blockCount ||
+        countOccurrences(content, applyHelper) !== blockCount
       ) {
-        return "gateway fast state or request helper is missing, duplicated, or not exact";
+        return `expected ${blockCount} gateway helper blocks, one per consuming chunk`;
       }
 
-      const helperStart = content.indexOf(nodeDeclaration);
-      const interactiveStartMarker = content.indexOf("\nasync function ", helperStart);
-      if (helperStart === -1 || interactiveStartMarker === -1) {
-        return "gateway helper block is not adjacent to the interactive handler";
+      const blocks = blockStarts.map((at) => {
+        const applyAt = content.indexOf(applyHelper, at);
+        return applyAt === -1 ? "" : content.slice(at, applyAt + applyHelper.length);
+      });
+      if (blocks.some((block) => block === "")) {
+        return "a gateway helper block is missing its request helper";
       }
-      const helperBlock = content.slice(helperStart, interactiveStartMarker);
-      if (!helperBlock.endsWith(applyHelper)) {
-        return "gateway helper block is commented, detached, or followed by alternate code";
+      if (blocks.some((block) => block !== blocks[0])) {
+        return "gateway helper blocks are not identical copies";
       }
+      // Each block must sit immediately before the function that uses it, so a
+      // detached or commented-out copy fails here.
+      for (const [index, at] of blockStarts.entries()) {
+        const after = content.slice(at + blocks[index].length).replace(/^\n/, "");
+        if (!after.startsWith("function ") && !after.startsWith("async function ")) {
+          return "a gateway helper block is commented, detached, or followed by alternate code";
+        }
+      }
+      const helperBlock = blocks[0];
 
-      const expectedReferences: Array<[string, number]> = [
-        ["__calicoGatewayFastNode", 4],
-        ["__calicoGatewayFastState", 10],
-        ["__calicoGatewayFastEnsure", 4],
-        ["__calicoGatewayFastRead", 3],
-        ["__calicoGatewayFastParse", 2],
-        ["__calicoGatewayFastTier", 3],
-        ["__calicoGatewayFastRestore", 2],
-        ["__calicoGatewayFastPublish", 2],
-        ["__calicoGatewayFastCommandValue", 3],
-        ["__calicoGatewayFastInteractive", 2],
-        ["__calicoGatewayFastThin", 2],
-        ["__calicoGatewayFastApply", 2],
+      // Per-block reference counts, plus the one external call site each of the
+      // three entry points has. Deriving the totals this way keeps the original
+      // no-stray-reference strength while staying copy-count agnostic.
+      const expectedReferences: Array<[string, number, number]> = [
+        ["__calicoGatewayFastNode", 4, 0],
+        ["__calicoGatewayFastState", 10, 0],
+        ["__calicoGatewayFastEnsure", 4, 0],
+        ["__calicoGatewayFastRead", 3, 0],
+        ["__calicoGatewayFastParse", 2, 0],
+        ["__calicoGatewayFastTier", 3, 0],
+        ["__calicoGatewayFastRestore", 2, 0],
+        ["__calicoGatewayFastPublish", 2, 0],
+        ["__calicoGatewayFastCommandValue", 3, 0],
+        ["__calicoGatewayFastInteractive", 1, 1],
+        ["__calicoGatewayFastThin", 1, 1],
+        ["__calicoGatewayFastApply", 1, 1],
       ];
-      for (const [name, expected] of expectedReferences) {
+      for (const [name, perBlock, external] of expectedReferences) {
+        if (countOccurrences(helperBlock, name) !== perBlock) {
+          return `expected ${perBlock} reference(s) to ${name} inside the helper block, found ${countOccurrences(helperBlock, name)}`;
+        }
+        const expected = perBlock * blockCount + external;
         const actual = countOccurrences(content, name);
         if (actual !== expected) {
           return `expected ${expected} total references to ${name}, found ${actual}`;
         }
       }
 
+      for (const name of expectedReferences.map(([n]) => n)) {
+        if (countOccurrences(content, `function ${name}`) !== blockCount) {
+          continue;
+        }
+      }
       for (const name of [
         "__calicoGatewayFastEnsure",
         "__calicoGatewayFastRead",
@@ -122,8 +251,8 @@ const CHECKS: Check[] = [
         "__calicoGatewayFastThin",
         "__calicoGatewayFastApply",
       ]) {
-        if (countOccurrences(content, `function ${name}`) !== 1) {
-          return `expected one function declaration for ${name}`;
+        if (countOccurrences(content, `function ${name}`) !== blockCount) {
+          return `expected ${blockCount} ${name} declarations, one per consuming chunk`;
         }
         const alternateBinding = new RegExp(
           `(?:var|let|const)\\s+${name}\\b|(?:^|[;,])${name}=`,
@@ -173,10 +302,18 @@ const CHECKS: Check[] = [
         `async function (${identifier})\\((${identifier}),(${identifier}),(${identifier})\\)\\{if\\(process\\.env\\.REMORA_ACTIVE==="1"\\)return __calicoGatewayFastInteractive\\(\\2,\\4\\);if\\(!(${identifier})\\(\\)\\)return \\2\\((${identifier})\\(\\)\\?\\?"Fast mode is not available"\\),null;`,
         "g"
       );
+      // Each consumer must be immediately preceded by its own helper block, so
+      // a copy that drifted away from the code that needs it fails here.
+      const precededByHelperBlock = (index: number): boolean =>
+        content
+          .slice(0, index)
+          .replace(/\n$/, "")
+          .endsWith(helperBlock);
+
       const interactiveMatches = [...content.matchAll(interactivePattern)];
       if (
         interactiveMatches.length !== 1 ||
-        interactiveMatches[0].index !== interactiveStartMarker + 1
+        !precededByHelperBlock(interactiveMatches[0].index ?? -1)
       ) {
         return "interactive remora branch is missing, duplicated, or not before the native gate";
       }
@@ -197,7 +334,11 @@ const CHECKS: Check[] = [
         !interactiveSegment.includes("tengu_fast_mode_picker_shown") ||
         !interactiveSegment.includes(".getAppState") ||
         !interactiveSegment.includes(".setAppState") ||
-        !interactiveSegment.includes(".jsx(")
+        // 2.1.242+ destructures the JSX factory, so match a component call
+        // shape rather than a `.jsx(` literal.
+        !/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\([A-Za-z_$][\w$]*,\{[^}]*\}\)/.test(
+          interactiveSegment
+        )
       ) {
         return "interactive native Fast action, picker, or app-state fallback is missing";
       }
@@ -207,7 +348,7 @@ const CHECKS: Check[] = [
         "g"
       );
       const thinMatches = [...content.matchAll(thinPattern)];
-      if (thinMatches.length !== 1) {
+      if (thinMatches.length !== 1 || !precededByHelperBlock(thinMatches[0].index ?? -1)) {
         return "thin-client remora branch is missing, duplicated, or not before the native gate";
       }
       const thin = thinMatches[0];
@@ -222,10 +363,17 @@ const CHECKS: Check[] = [
       const thinAction = thinSegment.match(
         /await ([A-Za-z_$][\w$]*)\([^;]*?"bridge"/
       )?.[1];
+      const handlersShareModule = inSameModule(
+        content,
+        interactive.index ?? -1,
+        thin.index ?? -1
+      );
       if (
-        interactive[5] !== thin[4] ||
-        interactive[6] !== thin[5] ||
-        thinAction !== interactiveAction ||
+        !thinAction ||
+        (handlersShareModule &&
+          (interactive[5] !== thin[4] ||
+            interactive[6] !== thin[5] ||
+            thinAction !== interactiveAction)) ||
         !/\.options\.fastMode(?![A-Za-z0-9_$])/.test(thinSegment) ||
         !thinSegment.includes("Unknown argument") ||
         !thinSegment.includes(".getAppState") ||
@@ -235,7 +383,7 @@ const CHECKS: Check[] = [
       }
 
       const localJsxPattern =
-        /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",get immediate\(\)\{return ([A-Za-z_$][\w$]*)\(\)\},requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+        /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
       const localPattern =
         /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>process\.env\.REMORA_ACTIVE==="1"\|\|([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\}/g;
       const localJsxMatches = [...content.matchAll(localJsxPattern)];
@@ -243,9 +391,14 @@ const CHECKS: Check[] = [
       if (localJsxMatches.length !== 1 || localMatches.length !== 1) {
         return "gateway-aware Fast command registrations are missing or duplicated";
       }
+      const registrationSharesInteractiveModule = inSameModule(
+        content,
+        localJsxMatches[0].index ?? -1,
+        interactive.index ?? -1
+      );
       if (
         localJsxMatches[0][2] !== localMatches[0][2] ||
-        localJsxMatches[0][3] !== interactive[5] ||
+        (registrationSharesInteractiveModule && localJsxMatches[0][3] !== interactive[5]) ||
         localMatches[0][3] !== localMatches[0][4]
       ) {
         return "Fast registrations changed native description or visibility gate ownership";
@@ -261,6 +414,9 @@ const CHECKS: Check[] = [
       }
       const builder = builderMatches[0];
       const builderStart = builder.index ?? -1;
+      if (!precededByHelperBlock(builderStart)) {
+        return "request extra-body builder is not preceded by its gateway helper block";
+      }
       const builderEndCandidate = content.indexOf("function ", builderStart + builder[0].length);
       const builderEnd = builderEndCandidate === -1 ? content.length : builderEndCandidate;
       const builderSegment = content.slice(builderStart, builderEnd);
@@ -364,13 +520,16 @@ const CHECKS: Check[] = [
       }
       const dispatchRecord = dispatchRecords[0];
       const dispatchRecordLocal = dispatchRecord.match[1];
+      // 2.1.239 appended arguments to the dispatch call; accept a trailing
+      // argument list one level of call nesting deep, matching the patcher.
+      const dispatchArguments = "(?:,(?:[^()]|\\([^()]*\\))*)?";
       const awaitedDispatchPattern = new RegExp(
-        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${dispatchRecordLocal}\\)\\]\\)`,
+        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${dispatchRecordLocal}${dispatchArguments}\\)\\]\\)`,
         "g"
       );
       const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
       const directDispatchPattern = new RegExp(
-        `(${identifier})\\(${dispatchRecordLocal}\\)`,
+        `(${identifier})\\(${dispatchRecordLocal}${dispatchArguments}\\)`,
         "g"
       );
       const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
@@ -401,9 +560,9 @@ const CHECKS: Check[] = [
         return `missing marker(s): ${missing.join(", ")}`;
       }
       const frozenAgentContext =
-        /process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*\.__calicoPromptId===void 0&&\([A-Za-z_$][\w$]*\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?[A-Za-z_$][\w$]*\(\)\),\1\.run\(/;
+        /process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*\.__calicoPromptId===void 0&&\([A-Za-z_$][\w$]*\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?globalThis\.__calicoPromptIdGet\(\)\),\1\.run\(/;
       const frozenJournalContext =
-        /function [A-Za-z_$][\w$]*\(e,t\)\{e&&process\.env\.REMORA_ACTIVE==="1"&&e\.__calicoPromptId===void 0&&\(e\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?[A-Za-z_$][\w$]*\(\)\);if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return \1\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\)/;
+        /function [A-Za-z_$][\w$]*\(e,t\)\{e&&process\.env\.REMORA_ACTIVE==="1"&&e\.__calicoPromptId===void 0&&\(e\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?globalThis\.__calicoPromptIdGet\(\)\);if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return \1\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\)/;
       if (!frozenAgentContext.test(content) && !frozenJournalContext.test(content)) {
         return "missing nested-agent prompt inheritance at AsyncLocalStorage boundary";
       }
@@ -712,12 +871,14 @@ const CHECKS: Check[] = [
       const stateCell = "__calicoUsageState:{committed:!1,usage:null}";
       const helperMarkers: Array<[string, number]> = [
         [stateCell, 1],
-        [accountingSignalHelper, 1],
-        [exactZeroHelper, 1],
+        // One copy per consuming chunk; see the patcher for why a single
+        // shared definition is not reliably evaluated first.
+        [accountingSignalHelper, 2],
+        [exactZeroHelper, 2],
         [statuslineHelper, 1],
-        ["__calicoUsageHasAccountingSignal(", 3],
-        ["__calicoUsageIsExactAllZero(", 2],
-        ["__calicoStatuslineMessages(", 2],
+        ["function __calicoUsageHasAccountingSignal", 2],
+        ["function __calicoUsageIsExactAllZero", 2],
+        ["function __calicoStatuslineMessages", 1],
       ];
       for (const [marker, expected] of helperMarkers) {
         const actual = countOccurrences(content, marker);
@@ -747,8 +908,11 @@ const CHECKS: Check[] = [
         return "statusline helper block is not executable code adjacent to its payload function";
       }
       for (const [name, expected] of [
-        ["__calicoUsageHasAccountingSignal", 3],
-        ["__calicoUsageIsExactAllZero", 2],
+        // 2 declarations + 1 use inside __calicoStatuslineMessages + 1 at the
+        // terminal commit; 2 declarations + 1 at the terminal commit; and
+        // 1 declaration + 1 at the selector.
+        ["__calicoUsageHasAccountingSignal", 4],
+        ["__calicoUsageIsExactAllZero", 3],
         ["__calicoStatuslineMessages", 2],
       ] as const) {
         const actual = countOccurrences(content, name);
@@ -758,11 +922,11 @@ const CHECKS: Check[] = [
       }
 
       const legacyWrapperPattern = new RegExp(
-        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\}\\};`,
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\}\\};`,
         "g"
       );
       const effortWrapperPattern = new RegExp(
-        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
         "g"
       );
       // 2.1.236+ batch tool-use destructured wrapper; see the matching
@@ -771,7 +935,7 @@ const CHECKS: Check[] = [
       // (`…messageId:Gr.id},i.storageV5)`), matched optionally so the patched
       // 2.1.237 and 2.1.238 binaries both verify.
       const batchWrapperPattern = new RegExp(
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})\\.randomUUID\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -941,10 +1105,12 @@ const CHECKS: Check[] = [
       if (usageReducerMatches.length !== 1) {
         return `expected 1 semantic statusline usage reducer, found ${usageReducerMatches.length}`;
       }
-      const usageReducer = usageReducerMatches[0][1];
-      const escapedUsageReducer = usageReducer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // The reducer is called through a per-chunk import alias on 2.1.242+, so
+      // it cannot be pinned by the name captured at its declaration. Mirror the
+      // patcher: anchor on the `?.outputStyle||` assignment that precedes the
+      // selector, inside the function that emits `context_window:`.
       const selectorPattern = new RegExp(
-        `(${identifier})=${escapedUsageReducer}\\(__calicoStatuslineMessages\\((${identifier})\\)\\),(${identifier})=(${identifier})\\((${identifier}),(${identifier})\\(\\)\\)`,
+        `${identifier}=${identifier}\\?\\.outputStyle\\|\\|[^,]{1,40},(${identifier})=${identifier}\\(__calicoStatuslineMessages\\((${identifier})\\)\\),(${identifier})=(${identifier})\\((${identifier}),(${identifier})\\(\\)\\)`,
         "g"
       );
       const selectorCandidates = [...content.matchAll(selectorPattern)];
@@ -956,7 +1122,15 @@ const CHECKS: Check[] = [
           functionStart,
           functionEnd === -1 ? content.length : functionEnd
         );
-        return segment.includes("context_window:");
+        // The selected usage and the computed window must be the two arguments
+        // the payload's `context_window:` is built from. custom-context-window
+        // runs after this module and wraps the window argument, so tolerate
+        // that wrapper here.
+        const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const consumption = new RegExp(
+          `context_window:${identifier}\\(${escape(match[1])},(?:globalThis\\.__calico_display_window\\()?${escape(match[3])}\\)`
+        );
+        return segment.includes("context_window:") && consumption.test(segment);
       });
       if (selectorMatches.length !== 1) {
         return `expected 1 reducer-bound statusline selector projection, found ${selectorMatches.length}`;
@@ -1176,11 +1350,86 @@ const CHECKS: Check[] = [
         const rendererCallSites = [...content.matchAll(rendererCallSitePattern)].filter(
           (match) => match[1] !== "__cc_streamingThinking"
         );
-        if (rendererCallSites.length !== 1) {
+        // 2.1.245 replaced the explicit prop list at the main call site with a
+        // rest spread inside a React-compiler memo cache, so that shape is the
+        // second accepted form.
+        const compilerCallSitePattern =
+          /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:__cc_streamingThinking[,}]/;
+        const usesCompilerCallSite = compilerCallSitePattern.test(content);
+        if (rendererCallSites.length !== 1 && !usesCompilerCallSite) {
           return `expected 1 renderer call-site streamingThinking prop, found ${rendererCallSites.length}`;
+        }
+
+        if (usesCompilerCallSite) {
+          // Passing the prop is not sufficient at a compiler-cached call site:
+          // the element is only rebuilt when one of the compared cache slots
+          // changes, so an injected value that occupies no slot would leave the
+          // renderer showing a stale element forever while every text-level
+          // check still passed. Pin the whole wiring — stable selector, one
+          // store read, and a guard slot that is written back and that lives
+          // inside a cache allocation grown to hold it.
+          if (
+            countOccurrences(
+              content,
+              "function __cc_streamingThinkingSelector(e){return e.streamingThinking}"
+            ) !== 1
+          ) {
+            return "expected exactly one stable __cc_streamingThinkingSelector declaration";
+          }
+          const storeReadPattern =
+            /__cc_streamingThinking=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\?\.stream,__cc_streamingThinkingSelector\)\?\?null,/g;
+          if ([...content.matchAll(storeReadPattern)].length !== 1) {
+            return "expected exactly one streamingThinking store read at the renderer call site";
+          }
+          const guards = [
+            ...content.matchAll(/([A-Za-z_$][\w$]*)\[(\d+)\]!==__cc_streamingThinking\)/g),
+          ];
+          if (guards.length !== 1) {
+            return `expected 1 memo-cache guard on __cc_streamingThinking, found ${guards.length}`;
+          }
+          const cacheLocal = guards[0][1];
+          const slot = Number(guards[0][2]);
+          if (countOccurrences(content, `${cacheLocal}[${slot}]=__cc_streamingThinking`) !== 1) {
+            return "expected the __cc_streamingThinking memo-cache slot to be written back";
+          }
+          const guardFunctionStart = content.lastIndexOf("function ", guards[0].index ?? -1);
+          const allocPattern = new RegExp(
+            `let ${cacheLocal.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}=[A-Za-z_$][\\w$]*\\((\\d+)\\)[,;]`
+          );
+          const alloc =
+            guardFunctionStart === -1
+              ? null
+              : content.slice(guardFunctionStart, guards[0].index).match(allocPattern);
+          if (!alloc || Number(alloc[1]) <= slot) {
+            return `expected the memo cache to be grown past slot ${slot} for __cc_streamingThinking`;
+          }
         }
         if (!content.includes("__cc_streamingThinkingExtras")) {
           return "expected inline streaming-thinking transcript extras";
+        }
+        // The stream reducer builds virtual thinking messages through
+        // upstream's create-message helper. That helper's name is a per-chunk
+        // import alias on 2.1.242+, so a name captured elsewhere resolves to a
+        // different function here: a 2.1.245 build called the wrong one and
+        // every turn with a thinking block rendered no assistant output, with
+        // no error surfaced. Require the called name to be declared in the
+        // reducer's own module.
+        const reducerCalls = [
+          ...content.matchAll(/__cc_streamingThinkingMessage=([A-Za-z_$][\w$]*)\(\{content:/g),
+        ];
+        // Presence is already covered by the threading and extras checks above;
+        // what this adds is that whatever the reducer calls resolves here.
+        for (const call of reducerCalls) {
+          const declaration = new RegExp(
+            `function ${call[1]}\\(\\{content:[A-Za-z_$][\\w$]*,usage:`,
+            "g"
+          );
+          const declared = [...content.matchAll(declaration)].some((match) =>
+            inSameModule(content, match.index ?? -1, call.index ?? -1)
+          );
+          if (!declared) {
+            return `stream reducer calls ${call[1]} to build virtual thinking messages, but that name is not the create-message helper declared in its own module`;
+          }
         }
       }
       return null;
@@ -1401,6 +1650,29 @@ async function main(): Promise<void> {
   const disableSet = new Set(opts.disable);
 
   const failures: { id: string; detail: string }[] = [];
+
+  // Evaluation-order check for every globalThis handoff the patcher installed.
+  // Runs once over the whole bundle rather than per module, because a helper
+  // published by one module and read by another is not any single module's
+  // property.
+  let moduleNames: string[] = [];
+  try {
+    moduleNames = (
+      require("./native-bun.ts") as { readClaudeJsModuleNames(path: string): string[] }
+    ).readClaudeJsModuleNames(inputPath);
+  } catch {
+    // Older container formats have no module table; the check is a no-op there.
+  }
+  const unreachable = unreachableGlobalPublications(content, moduleNames);
+  if (unreachable.length > 0) {
+    for (const problem of unreachable) {
+      console.log(`  FAIL cross-module-globals: ${problem}`);
+    }
+    failures.push({
+      id: "cross-module-globals",
+      detail: unreachable.join("; "),
+    });
+  }
   let verifiedCount = 0;
   let skippedCount = 0;
   for (const check of CHECKS) {

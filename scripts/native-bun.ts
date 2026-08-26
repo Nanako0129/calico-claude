@@ -42,9 +42,28 @@ type BunStorage =
       moduleStructSize: 36 | 52;
     };
 
+type BunJsModule = {
+  index: number;
+  name: string;
+  content: string;
+};
+
 type LIEFModule = typeof import("node-lief");
 
 const BUN_TRAILER = Buffer.from("\n---- Bun! ----\n");
+
+// Bun's loader tag for JavaScript module payloads. Claude 2.1.242 split the
+// single `/$bunfs/root/cli` bundle into ~1,380 `/$bunfs/root/chunk-*.js`
+// modules that the cli module now dynamically imports, so the patchable source
+// is spread across every JS module rather than living in one of them.
+const BUN_LOADER_JS = 1;
+
+// Joins the JS modules into the single text the patcher consumes, and marks
+// where to cut it back apart. A comment keeps the joined text parseable, and
+// the split asserts the marker count so a patch that ate one fails loudly
+// instead of silently merging two modules.
+const BUN_MODULE_BOUNDARY = "\n/*@@calico-bun-module-boundary@@*/\n";
+
 const ELF_PT_LOAD = 1;
 const ELF_SHT_NOBITS = 8;
 const ELF_SHF_ALLOC = 0x2;
@@ -279,29 +298,150 @@ function parseElfBunStorage(binary: import("node-lief").ELF.Binary): BunStorage 
   };
 }
 
-function findClaudeModuleContent(storage: BunStorage): Buffer {
+// Collect every JavaScript module in the container. Selecting on the loader tag
+// rather than on module names deliberately makes no assumption about upstream's
+// chunk naming: it returns the whole cli bundle on pre-2.1.242 binaries and the
+// cli loader plus all of its chunks on 2.1.242+, and survives upstream renaming
+// the chunk scheme again. The Claude entry-point name is still required so that
+// canNativeBunHandle keeps rejecting unrelated Bun binaries.
+function readClaudeJsModules(storage: BunStorage): BunJsModule[] {
   const moduleTable = sliceRange(storage.bunData, storage.bunOffsets.modulesPtr);
   const moduleCount = Math.floor(moduleTable.length / storage.moduleStructSize);
+  const jsModules: BunJsModule[] = [];
+  let sawClaudeEntryPoint = false;
 
   for (let index = 0; index < moduleCount; index += 1) {
     const moduleOffset = index * storage.moduleStructSize;
     const moduleRecord = readBunModule(moduleTable, moduleOffset, storage.moduleStructSize);
     const moduleName = sliceRange(storage.bunData, moduleRecord.name).toString("utf8");
 
-    if (!isClaudeModuleName(moduleName)) {
+    if (isClaudeModuleName(moduleName)) {
+      sawClaudeEntryPoint = true;
+    }
+
+    if (moduleRecord.loader !== BUN_LOADER_JS) {
       continue;
     }
 
-    return sliceRange(storage.bunData, moduleRecord.contents);
+    jsModules.push({
+      index,
+      name: moduleName,
+      content: sliceRange(storage.bunData, moduleRecord.contents).toString("utf8"),
+    });
   }
 
-  throw new Error("Could not find Claude JavaScript module in native binary");
+  if (!sawClaudeEntryPoint || jsModules.length === 0) {
+    throw new Error("Could not find Claude JavaScript module in native binary");
+  }
+
+  return jsModules;
+}
+
+function joinClaudeJsModules(jsModules: BunJsModule[]): string {
+  for (const jsModule of jsModules) {
+    if (jsModule.content.includes(BUN_MODULE_BOUNDARY)) {
+      throw new Error(`Module boundary marker already present in ${jsModule.name}`);
+    }
+  }
+
+  return jsModules.map((jsModule) => jsModule.content).join(BUN_MODULE_BOUNDARY);
+}
+
+// Every chunk is its own ES module scope, so an injected helper declared in one
+// chunk is not visible from another. A patch that spans chunks still passes
+// every text-level check and then fails at runtime with an undefined
+// identifier, so reject it here: a helper must either be declared in the same
+// chunk that references it, or be reached through globalThis.
+function assertInjectionsAreModuleScoped(parts: string[], jsModules: BunJsModule[]): void {
+  // Both prefixes this repo injects under. `__cc_` was missing here at first,
+  // which is how a `__cc_streamingThinkingSelector` declared in one chunk and
+  // referenced from another reached a built binary and killed it at startup.
+  // The prefix alone is not enough to identify our code: upstream generates a
+  // shell snippet containing `$__cc_name`, `__cc_set` and `read -r __cc_line`,
+  // so a name that already exists in the module's unpatched text is upstream's
+  // and is skipped below. That also narrows every check here to exactly what
+  // this patch run introduced into this module.
+  const injected = "(?:__calico|__cc_)[\\w$]*";
+  // A binding introduced by a patch: a declaration keyword, an assignment in a
+  // declarator list (`let a=…,__calicoX=…`), or a destructuring target
+  // (`{streamingThinking:__cc_state}=…`).
+  const declarationPattern = new RegExp(
+    `(?:function|var|let|const|class)\\s+(${injected})` +
+      `|[,;{(]\\s*(${injected})\\s*=(?!=)` +
+      `|:\\s*(${injected})\\s*(?=[,}])`,
+    "g"
+  );
+  // Arrow parameters bind too, but `(a,__cc_x)=>` and the call `f(a,__cc_x)`
+  // are textually identical up to the closing paren; the `=>` is the only thing
+  // separating a binding from a reference, and treating the second as the first
+  // is exactly the mistake this guard exists to catch, so require it.
+  const arrowParameterPattern = /\(([^()]*)\)\s*=>/g;
+  const injectedNamePattern = new RegExp(injected, "g");
+  // A reference that has to resolve in this module's scope. Property positions
+  // are excluded: a member access (`x.__calicoState`, and so also
+  // `globalThis.__calicoHelper`) and an object key (`__calicoState:{…}`) name a
+  // property, not a binding, so they are legal wherever they appear.
+  // `(?![\w$])` pins the name to its full extent first: without it the engine
+  // backtracks a character at a time to satisfy the `:` lookahead, so
+  // `__calicoUsageState:` would report a phantom `__calicoUsageStat` reference.
+  const referencePattern = new RegExp(`(?<![.\\w$])(${injected})(?![\\w$])(?!\\s*:)`, "g");
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const scoped = parts[index];
+    const preexisting = new Set(
+      Array.from(jsModules[index].content.matchAll(injectedNamePattern), (match) => match[0])
+    );
+    const declared = new Set(
+      Array.from(
+        scoped.matchAll(declarationPattern),
+        (match) => match[1] ?? match[2] ?? match[3]
+      )
+    );
+    for (const parameterList of scoped.matchAll(arrowParameterPattern)) {
+      for (const parameter of parameterList[1].matchAll(injectedNamePattern)) {
+        declared.add(parameter[0]);
+      }
+    }
+    const unresolved = new Set(
+      Array.from(scoped.matchAll(referencePattern), (match) => match[1]).filter(
+        (name) => !declared.has(name) && !preexisting.has(name)
+      )
+    );
+
+    if (unresolved.size > 0) {
+      throw new Error(
+        `Patched module ${jsModules[index].name} references injected identifier(s) it does not ` +
+          `declare: ${Array.from(unresolved).sort().join(", ")}. Bun chunks are separate ES module ` +
+          "scopes, so declare the helper in the same chunk that uses it or hang it off globalThis."
+      );
+    }
+  }
+}
+
+function splitClaudeJsModules(
+  patchedContent: string,
+  jsModules: BunJsModule[]
+): Map<number, Buffer> {
+  const parts = patchedContent.split(BUN_MODULE_BOUNDARY);
+
+  if (parts.length !== jsModules.length) {
+    throw new Error(
+      `Patched content has ${parts.length} module section(s) but the binary has ` +
+        `${jsModules.length}; a patch consumed or introduced a module boundary marker`
+    );
+  }
+
+  assertInjectionsAreModuleScoped(parts, jsModules);
+
+  return new Map(
+    jsModules.map((jsModule, index) => [jsModule.index, Buffer.from(parts[index], "utf8")])
+  );
 }
 
 function rebuildBunData(
   bunData: Buffer,
   bunOffsets: BunOffsets,
-  replacementContent: Buffer,
+  replacementContents: Map<number, Buffer>,
   moduleStructSize: 36 | 52
 ): Buffer {
   const rawBuffers: Buffer[] = [];
@@ -324,11 +464,11 @@ function rebuildBunData(
   for (let index = 0; index < moduleCount; index += 1) {
     const moduleOffset = index * moduleStructSize;
     const moduleRecord = readBunModule(moduleTable, moduleOffset, moduleStructSize);
-    const moduleName = sliceRange(bunData, moduleRecord.name).toString("utf8");
 
-    const nextContents = isClaudeModuleName(moduleName)
-      ? replacementContent
-      : sliceRange(bunData, moduleRecord.contents);
+    // Offsets and lengths for every module are recomputed below from the
+    // rebuilt layout, so replacement contents are free to change size.
+    const nextContents =
+      replacementContents.get(index) ?? sliceRange(bunData, moduleRecord.contents);
 
     const nextModule = {
       name: sliceRange(bunData, moduleRecord.name),
@@ -882,13 +1022,13 @@ function writeSectionBackedElfContent(
   writeBufferPreservingMode(binaryPath, nextBytes);
 }
 
-function writeElfBunContent(binaryPath: string, content: string): void {
+function writeElfBunContent(binaryPath: string, replacementContents: Map<number, Buffer>): void {
   const { binary } = parseElfBinary(binaryPath);
   const storage = parseElfBunStorage(binary);
   const rebuiltBunData = rebuildBunData(
     storage.bunData,
     storage.bunOffsets,
-    Buffer.from(content, "utf8"),
+    replacementContents,
     storage.moduleStructSize
   );
 
@@ -957,11 +1097,17 @@ function parseNativeBunStorage(
   };
 }
 
+function readClaudeJsModuleNames(binaryPath: string): string[] {
+  const { binary } = parseNativeBinary(binaryPath);
+  const storage = parseNativeBunStorage(binary);
+  return readClaudeJsModules(storage).map((jsModule) => jsModule.name);
+}
+
 function canNativeBunHandle(binaryPath: string): boolean {
   try {
     const { binary } = parseNativeBinary(binaryPath);
     const storage = parseNativeBunStorage(binary);
-    findClaudeModuleContent(storage);
+    readClaudeJsModules(storage);
     return true;
   } catch {
     return false;
@@ -971,7 +1117,7 @@ function canNativeBunHandle(binaryPath: string): boolean {
 function readNativeBunContent(binaryPath: string): string {
   const { binary } = parseNativeBinary(binaryPath);
   const storage = parseNativeBunStorage(binary);
-  return findClaudeModuleContent(storage).toString("utf8");
+  return joinClaudeJsModules(readClaudeJsModules(storage));
 }
 
 function writeMachOBunContent(
@@ -1025,15 +1171,16 @@ function writePeBunContent(
 function writeNativeBunContent(binaryPath: string, content: string): void {
   const { LIEF, binary } = parseNativeBinary(binaryPath);
   const storage = parseNativeBunStorage(binary);
+  const replacementContents = splitClaudeJsModules(content, readClaudeJsModules(storage));
   const rebuiltBunData = rebuildBunData(
     storage.bunData,
     storage.bunOffsets,
-    Buffer.from(content, "utf8"),
+    replacementContents,
     storage.moduleStructSize
   );
 
   if (binary.format === "ELF") {
-    writeElfBunContent(binaryPath, content);
+    writeElfBunContent(binaryPath, replacementContents);
     return;
   }
 
@@ -1050,4 +1197,16 @@ module.exports = {
   canNativeBunHandle,
   readNativeBunContent,
   writeNativeBunContent,
+  // Exported for tests: the join/split pair is the contract that keeps a
+  // chunked bundle reassemblable, and both failure modes are silent without it.
+  joinClaudeJsModules,
+  splitClaudeJsModules,
+  // Exported so scripts/verify-patched-binary.ts can tell whether two sites in
+  // the joined text live in the same Bun module, and therefore whether a
+  // minified name captured at one is comparable at the other.
+  BUN_MODULE_BOUNDARY,
+  // Module names in the same order joinClaudeJsModules emits their contents, so
+  // the verifier can resolve each chunk's import specifiers to a section of the
+  // joined text and reason about evaluation order.
+  readClaudeJsModuleNames,
 };

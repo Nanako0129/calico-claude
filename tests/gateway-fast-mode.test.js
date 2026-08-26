@@ -501,7 +501,7 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     patched.slice(interactiveStart);
   const alternateApply = patched.replace(
     applyHelper,
-    `var __calicoGatewayFastApply=()=>{};/*${applyHelper}*/`
+    `__calicoGatewayFastApply=()=>{};/*${applyHelper}*/`
   );
   const withoutThinBranch = patched.replace(
     'if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(e);',

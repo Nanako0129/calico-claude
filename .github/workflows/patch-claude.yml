@@ -211,6 +211,30 @@ jobs:
           CONFIG_DIR="$(mktemp -d)"
           export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
 
+          # Seed onboarding and folder-trust state so the launch reaches the main
+          # renderer. Without this the TUI stops at the theme picker and the
+          # fullscreen renderer never mounts, which is where a 2.1.245 build died
+          # with "__cc_streamingThinkingSelector is not defined" while this smoke
+          # test still passed: an injected helper had landed in the wrong Bun
+          # chunk, and nothing before the main renderer touches it.
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync(process.argv[1], JSON.stringify({
+              hasCompletedOnboarding: true,
+              theme: "dark",
+              numStartups: 9,
+              installMethod: "native",
+              projects: {
+                [process.argv[2]]: {
+                  hasTrustDialogAccepted: true,
+                  hasCompletedProjectOnboarding: true,
+                  allowedTools: [],
+                  history: [],
+                },
+              },
+            }));
+          ' "$CONFIG_DIR/.claude.json" "$PWD"
+
           # Launch the patched TUI under a pseudo-terminal so the welcome banner
           # renders. BSD (macOS) and util-linux `script` take different arguments.
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -264,6 +288,14 @@ jobs:
           # -a: the pty capture may contain control bytes that trip binary detection.
           if ! grep -aqiE "Calico ?Claude" "$CLEAN"; then
             echo "PTY smoke test failed: 'Calico Claude' branding not found in TUI output." >&2
+            exit 1
+          fi
+
+          # Branding alone renders before the main renderer mounts. The shortcut
+          # hint is drawn by the main renderer's status line, so it is what
+          # proves the fullscreen UI actually came up.
+          if ! grep -aqiE "for ?shortcuts" "$CLEAN"; then
+            echo "PTY smoke test failed: main renderer did not mount (no status-line hint)." >&2
             exit 1
           fi
 
