@@ -739,127 +739,132 @@ function patchThinkingStreaming(content) {
     );
     output = output.replace(jsxTranscriptRendererPropsPattern, injectStreamingThinking);
 
-    // 2.1.245 rewrote the main renderer call site: instead of an explicit prop
-    // list it spreads a rest object and reads the streaming state through store
-    // selectors, inside a React-compiler memo cache:
-    //
-    //   function kC(lh){let ju=v(19);…
-    //     let mh=Do(Wu,NC)??!1,ph=Do(Wu?.stream,EC)??_i,…
-    //     let qu;if(ju[10]!==Vu||…||ju[14]!==fh)
-    //       qu=o(Rh,{...nn,messages:Vu,isLoading:mh,streamingToolUses:ph,
-    //               onRateLimitAutoQueueContinue:fh}),
-    //       ju[10]=Vu,…,ju[14]=fh,ju[15]=qu;else qu=ju[15];
-    //
-    // Adding the prop alone is not enough: the cached element is only rebuilt
-    // when one of the compared slots changes, so a streamingThinking value that
-    // updates on its own would never reach the renderer. The injection
-    // therefore also claims one new cache slot — growing the allocation the way
-    // the compiler itself would — and adds it to both the guard and the
-    // write-back. `streamingThinking` is read through its own module-scoped
-    // selector declared beside the component, so the selector identity is
-    // stable across renders and nothing crosses a chunk scope.
-    // Not gated on the earlier prop patterns having failed: the spread call
-    // site is a distinct shape that simply does not exist on pre-2.1.245
-    // bundles, so it self-selects and pre-2.1.245 builds keep their counts.
-    {
-      const storeSelectorPattern = new RegExp(
-        `(${identifierPattern})=(${identifierPattern})\\((${identifierPattern})\\?\\.stream,${identifierPattern}\\)\\?\\?${identifierPattern},`,
-        "g"
+  }
+
+  // 2.1.245 rewrote the main renderer call site: instead of an explicit prop
+  // list it spreads a rest object and reads the streaming state through store
+  // selectors, inside a React-compiler memo cache:
+  //
+  //   function kC(lh){let ju=v(19);…
+  //     let mh=Do(Wu,NC)??!1,ph=Do(Wu?.stream,EC)??_i,…
+  //     let qu;if(ju[10]!==Vu||…||ju[14]!==fh)
+  //       qu=o(Rh,{...nn,messages:Vu,isLoading:mh,streamingToolUses:ph,
+  //               onRateLimitAutoQueueContinue:fh}),
+  //       ju[10]=Vu,…,ju[14]=fh,ju[15]=qu;else qu=ju[15];
+  //
+  // Adding the prop alone is not enough: the cached element is only rebuilt
+  // when one of the compared slots changes, so a streamingThinking value that
+  // updates on its own would never reach the renderer. The injection
+  // therefore also claims one new cache slot — growing the allocation the way
+  // the compiler itself would — and adds it to both the guard and the
+  // write-back. `streamingThinking` is read through its own module-scoped
+  // selector declared beside the component, so the selector identity is
+  // stable across renders and nothing crosses a chunk scope.
+  // Not gated on the earlier prop patterns having failed: the spread call
+  // site is a distinct shape that simply does not exist on pre-2.1.245
+  // bundles, so it self-selects and pre-2.1.245 builds keep their counts.
+  {
+    // 2.1.247 keeps this idiom but passes the store through a parenthesised
+    // expression rather than a plain local (`et((FM?Xr:null)?.stream,wv)??li`),
+    // and the `??default` tail is not always present. Capture the whole
+    // receiver so the injected read uses the same store the renderer does.
+    const storeSelectorPattern = new RegExp(
+      `(${identifierPattern})=(${identifierPattern})\\((${identifierPattern}|\\([^()]*\\))\\?\\.stream,${identifierPattern}\\)(?:\\?\\?${identifierPattern})?,`,
+      "g"
+    );
+
+    for (const selectorRead of [...output.matchAll(storeSelectorPattern)]) {
+      const toolUsesLocal = selectorRead[1];
+      const storeHook = selectorRead[2];
+      const storeReceiver = selectorRead[3];
+      const escapedToolUses = escapeRegExp(toolUsesLocal);
+      const memoCallPattern = new RegExp(
+        `let (${identifierPattern});if\\((${identifierPattern})\\[\\d+\\]!==[^)]*?\\)\\1=${identifierPattern}\\(${identifierPattern},\\{\\.\\.\\.${identifierPattern},[^{}]*streamingToolUses:${escapedToolUses}[^{}]*\\}\\),[^;]*?,\\2\\[(\\d+)\\]=\\1;`
       );
-
-      for (const selectorRead of [...output.matchAll(storeSelectorPattern)]) {
-        const toolUsesLocal = selectorRead[1];
-        const storeHook = selectorRead[2];
-        const turnLocal = selectorRead[3];
-        const escapedToolUses = escapeRegExp(toolUsesLocal);
-        const memoCallPattern = new RegExp(
-          `let (${identifierPattern});if\\((${identifierPattern})\\[\\d+\\]!==[^)]*?\\)\\1=${identifierPattern}\\(${identifierPattern},\\{\\.\\.\\.${identifierPattern},[^{}]*streamingToolUses:${escapedToolUses}[^{}]*\\}\\),[^;]*?,\\2\\[(\\d+)\\]=\\1;`
-        );
-        const memoCall = output.slice(selectorRead.index).match(memoCallPattern);
-        if (!memoCall || memoCall[0].includes("streamingThinking:")) {
-          continue;
-        }
-
-        const cacheLocal = memoCall[2];
-        const cacheAllocPattern = new RegExp(
-          `let ${escapeRegExp(cacheLocal)}=(${identifierPattern})\\((\\d+)\\)([,;])`
-        );
-        const functionStart = output.lastIndexOf("function ", selectorRead.index);
-        const cacheAlloc =
-          functionStart === -1
-            ? null
-            : output.slice(functionStart, selectorRead.index).match(cacheAllocPattern);
-        if (!cacheAlloc) {
-          continue;
-        }
-
-        const cacheSize = Number(cacheAlloc[2]);
-        const resultSlot = Number(memoCall[3]);
-        if (!Number.isInteger(cacheSize) || resultSlot >= cacheSize) {
-          continue;
-        }
-
-        propCandidates += 1;
-
-        const thinkingLocal = "__cc_streamingThinking";
-        const selectorName = "__cc_streamingThinkingSelector";
-        const grownCall = memoCall[0]
-          .replace(
-            new RegExp(`\\)${escapeRegExp(memoCall[1])}=`),
-            () => `||${cacheLocal}[${cacheSize}]!==${thinkingLocal})${memoCall[1]}=`
-          )
-          .replace(
-            new RegExp(`streamingToolUses:${escapedToolUses}`),
-            () => `streamingToolUses:${toolUsesLocal},streamingThinking:${thinkingLocal}`
-          )
-          .replace(
-            new RegExp(`,${escapeRegExp(cacheLocal)}\\[${resultSlot}\\]=${escapeRegExp(memoCall[1])};$`),
-            () => `,${cacheLocal}[${cacheSize}]=${thinkingLocal},${cacheLocal}[${resultSlot}]=${memoCall[1]};`
-          );
-
-        // Every edit here is applied to the one enclosing function, spliced
-        // back by offset. A plain `output.replace(text, …)` would rewrite the
-        // FIRST occurrence in the whole joined bundle, and minified names are
-        // not unique across chunks: `function kC(` occurs four times in
-        // 2.1.245, so the selector declaration landed in chunk 25 while its use
-        // stayed in chunk 117 and the binary died at startup with
-        // "__cc_streamingThinkingSelector is not defined". The uniqueness
-        // assertions below keep the in-region replaces honest.
-        const regionStart = functionStart;
-        const regionEnd = selectorRead.index + memoCall.index + memoCall[0].length;
-        const region = output.slice(regionStart, regionEnd);
-        if (
-          region.split(cacheAlloc[0]).length - 1 !== 1 ||
-          region.split(selectorRead[0]).length - 1 !== 1 ||
-          region.split(memoCall[0]).length - 1 !== 1
-        ) {
-          continue;
-        }
-
-        const patchedRegion = region
-          .replace(
-            cacheAlloc[0],
-            () => `let ${cacheLocal}=${cacheAlloc[1]}(${cacheSize + 1})${cacheAlloc[3]}`
-          )
-          .replace(
-            selectorRead[0],
-            () =>
-              `${selectorRead[0]}${thinkingLocal}=${storeHook}(${turnLocal}?.stream,${selectorName})??null,`
-          )
-          .replace(memoCall[0], () => grownCall);
-
-        const nextOutput =
-          output.slice(0, regionStart) +
-          `function ${selectorName}(e){return e.streamingThinking}` +
-          patchedRegion +
-          output.slice(regionEnd);
-
-        if (nextOutput !== output) {
-          output = nextOutput;
-          propPatched += 1;
-        }
-        break;
+      const memoCall = output.slice(selectorRead.index).match(memoCallPattern);
+      if (!memoCall || memoCall[0].includes("streamingThinking:")) {
+        continue;
       }
+
+      const cacheLocal = memoCall[2];
+      const cacheAllocPattern = new RegExp(
+        `let ${escapeRegExp(cacheLocal)}=(${identifierPattern})\\((\\d+)\\)([,;])`
+      );
+      const functionStart = output.lastIndexOf("function ", selectorRead.index);
+      const cacheAlloc =
+        functionStart === -1
+          ? null
+          : output.slice(functionStart, selectorRead.index).match(cacheAllocPattern);
+      if (!cacheAlloc) {
+        continue;
+      }
+
+      const cacheSize = Number(cacheAlloc[2]);
+      const resultSlot = Number(memoCall[3]);
+      if (!Number.isInteger(cacheSize) || resultSlot >= cacheSize) {
+        continue;
+      }
+
+      propCandidates += 1;
+
+      const thinkingLocal = "__cc_streamingThinking";
+      const selectorName = "__cc_streamingThinkingSelector";
+      const grownCall = memoCall[0]
+        .replace(
+          new RegExp(`\\)${escapeRegExp(memoCall[1])}=`),
+          () => `||${cacheLocal}[${cacheSize}]!==${thinkingLocal})${memoCall[1]}=`
+        )
+        .replace(
+          new RegExp(`streamingToolUses:${escapedToolUses}`),
+          () => `streamingToolUses:${toolUsesLocal},streamingThinking:${thinkingLocal}`
+        )
+        .replace(
+          new RegExp(`,${escapeRegExp(cacheLocal)}\\[${resultSlot}\\]=${escapeRegExp(memoCall[1])};$`),
+          () => `,${cacheLocal}[${cacheSize}]=${thinkingLocal},${cacheLocal}[${resultSlot}]=${memoCall[1]};`
+        );
+
+      // Every edit here is applied to the one enclosing function, spliced
+      // back by offset. A plain `output.replace(text, …)` would rewrite the
+      // FIRST occurrence in the whole joined bundle, and minified names are
+      // not unique across chunks: `function kC(` occurs four times in
+      // 2.1.245, so the selector declaration landed in chunk 25 while its use
+      // stayed in chunk 117 and the binary died at startup with
+      // "__cc_streamingThinkingSelector is not defined". The uniqueness
+      // assertions below keep the in-region replaces honest.
+      const regionStart = functionStart;
+      const regionEnd = selectorRead.index + memoCall.index + memoCall[0].length;
+      const region = output.slice(regionStart, regionEnd);
+      if (
+        region.split(cacheAlloc[0]).length - 1 !== 1 ||
+        region.split(selectorRead[0]).length - 1 !== 1 ||
+        region.split(memoCall[0]).length - 1 !== 1
+      ) {
+        continue;
+      }
+
+      const patchedRegion = region
+        .replace(
+          cacheAlloc[0],
+          () => `let ${cacheLocal}=${cacheAlloc[1]}(${cacheSize + 1})${cacheAlloc[3]}`
+        )
+        .replace(
+          selectorRead[0],
+          () =>
+            `${selectorRead[0]}${thinkingLocal}=${storeHook}(${storeReceiver}?.stream,${selectorName})??null,`
+        )
+        .replace(memoCall[0], () => grownCall);
+
+      const nextOutput =
+        output.slice(0, regionStart) +
+        `function ${selectorName}(e){return e.streamingThinking}` +
+        patchedRegion +
+        output.slice(regionEnd);
+
+      if (nextOutput !== output) {
+        output = nextOutput;
+        propPatched += 1;
+      }
+      break;
     }
   }
 
@@ -1076,13 +1081,21 @@ function patchThinkingStreaming(content) {
     transcriptToolUseHelpersMatch?.[1] ?? virtualMessageDeclarationMatch?.[1] ?? null;
   let transcriptStreamingThinkingVar = null;
   const rendererStreamingThinkingMatch = output.match(
-    /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),showAllInTranscript:/
+    // 2.1.247 dropped showAllInTranscript from the renderer's destructured
+    // params and moved isLoading up behind streamingToolUses, so neither the
+    // detection nor the injection below can pin what follows the parameter.
+    /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*)[,}]/
   );
   if (rendererStreamingThinkingMatch) {
     transcriptStreamingThinkingVar = rendererStreamingThinkingMatch[1];
-  } else if (streamingVar !== null) {
+  } else if (streamingVar !== null || propPatched > 0) {
+    // The gate is "is anything going to pass this prop", not "did the old
+    // store-snapshot discovery succeed". 2.1.247 dropped that destructuring
+    // entirely, so streamingVar is null there while the compiler-cached call
+    // site above does supply the prop — without this the renderer would receive
+    // a value it never destructures.
     const rendererSignaturePattern =
-      /(\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,)(showAllInTranscript:)/;
+      /(\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,)(?!streamingThinking:)([A-Za-z_$][\w$]*:)/;
     output = output.replace(rendererSignaturePattern, (full, beforeStreamingThinking, afterStreamingThinking) => {
       if (full.includes("streamingThinking:")) {
         return full;

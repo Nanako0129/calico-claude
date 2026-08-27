@@ -1376,8 +1376,10 @@ const CHECKS: Check[] = [
           ) {
             return "expected exactly one stable __cc_streamingThinkingSelector declaration";
           }
+          // The store receiver is a plain local on 2.1.245/246 and a
+          // parenthesised expression on 2.1.247.
           const storeReadPattern =
-            /__cc_streamingThinking=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\?\.stream,__cc_streamingThinkingSelector\)\?\?null,/g;
+            /__cc_streamingThinking=[A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*|\([^()]*\))\?\.stream,__cc_streamingThinkingSelector\)\?\?null,/g;
           if ([...content.matchAll(storeReadPattern)].length !== 1) {
             return "expected exactly one streamingThinking store read at the renderer call site";
           }

@@ -138,6 +138,16 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   injected value that occupies no slot leaves the renderer showing a stale element forever while the
   patch summary, `--assert-all` and the verifier all report success. Grow the allocation and claim a
   slot in both the guard and the write-back, and assert that wiring in the verifier.
+- **Anchor on the parameter, not on what follows it.** 2.1.247 dropped `showAllInTranscript` from
+  the renderer's destructured params and moved `isLoading` up behind `streamingToolUses`, which
+  killed an injection anchored on that suffix. The stable thing is the parameter you are inserting
+  next to; use a negative lookahead for your own inserted name to stay idempotent instead of pinning
+  a neighbour.
+- **Gate an injection on what it needs, not on how it used to be discovered.** The renderer-signature
+  injection was gated on the old store-snapshot discovery having succeeded. 2.1.247 removed that
+  destructuring entirely — the store is now read per field through selector calls — so the gate went
+  false while the call site above was still supplying the prop, and the renderer received a value it
+  never destructured. Ask "is anything going to pass this", not "did the previous mechanism match".
 - **Write back only the modules you changed.** Bun keeps bytecode in a
   position-sensitive pool, so rewriting every module — even with identical bytes — forces a full
   re-layout of the container. 2.1.245 tolerated that; 2.1.246 killed the process at exec with no

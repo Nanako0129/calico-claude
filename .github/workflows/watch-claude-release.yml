@@ -83,8 +83,63 @@ jobs:
 
           echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
 
-      - name: Dispatch patch workflow
+      # Gate the release on a cheap patch+verify of one platform first. Without
+      # it, upstream drift is only discovered when the release run fails on all
+      # five platforms, after the tags have already been attempted. One platform
+      # is not proof for the others — minified locals differ per build, and the
+      # release run still verifies each — but every drift seen so far has shown
+      # up identically everywhere, so this catches it a full release earlier and
+      # names the module.
+      - name: Check out the patcher
         if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing == '1'
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing == '1'
+        run: npm ci
+
+      - name: Verify the patcher against the new version
+        id: preflight
+        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing == '1'
+        continue-on-error: true
+        env:
+          VERSION: ${{ steps.latest.outputs.version }}
+          DISABLED_MODULES: tool-call-verbose
+        run: |
+          set -euo pipefail
+
+          bash scripts/download-native-from-installer.sh \
+            --platform linux-x64 \
+            --version "$VERSION" \
+            --output work/preflight.original \
+            --manifest-out work/preflight-manifest.json
+
+          cp work/preflight.original work/preflight.patched
+          chmod +x work/preflight.patched
+
+          node scripts/patch-native.ts \
+            --input work/preflight.patched \
+            --disable "$DISABLED_MODULES" \
+            --assert-all
+
+          node scripts/verify-patched-binary.ts \
+            --input work/preflight.patched \
+            --disable "$DISABLED_MODULES"
+
+          work/preflight.patched --version | tee work/preflight-version.txt
+          grep -F "(patched)" work/preflight-version.txt
+
+      - name: Report drift and stop
+        if: steps.preflight.outcome == 'failure'
+        env:
+          VERSION: ${{ steps.latest.outputs.version }}
+        run: |
+          echo "The patcher does not cleanly handle Claude $VERSION yet, so no release was dispatched." >&2
+          echo "See the preflight step above for the module that drifted." >&2
+          exit 1
+
+      - name: Dispatch patch workflow
+        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing == '1' && steps.preflight.outcome == 'success'
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
