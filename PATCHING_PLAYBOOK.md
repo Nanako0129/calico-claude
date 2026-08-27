@@ -143,6 +143,12 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   killed an injection anchored on that suffix. The stable thing is the parameter you are inserting
   next to; use a negative lookahead for your own inserted name to stay idempotent instead of pinning
   a neighbour.
+- **An object key can stop being a literal.** 2.1.248 hoisted the session-id header name into a
+  module-level constant, so `{"X-Claude-Code-Session-Id":qe(),…}` became `{[DDe]:q(),…}`. Three
+  modules used that literal as their "this is the Anthropic client factory" discriminator and all
+  went to zero candidates in the same build. Do not pin the new constant either — `DDe` names
+  `4*ODe` and `$d[9]` in other chunks of the same bundle. Match the key's *shape*
+  (`(?:"Literal"|\[<id>\])`) and keep the entry's position in the object as the real anchor.
 - **Gate an injection on what it needs, not on how it used to be discovered.** The renderer-signature
   injection was gated on the old store-snapshot discovery having succeeded. 2.1.247 removed that
   destructuring entirely — the store is now read per field through selector calls — so the gate went

@@ -3287,6 +3287,25 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
 
   return { content: output, candidates, patched: 6 };
 }
+// The Anthropic client factory is the shared anchor for active-turn identity,
+// compact-request-source and compact-body-policy. All three recognise it by the
+// session-id entry in the header object it builds.
+//
+// 2.1.248 hoisted that header's name into a module-level constant, so the key
+// went from the literal `"X-Claude-Code-Session-Id":` to a computed `[DDe]:`.
+// The constant is a per-chunk minified name and is not unique across chunks —
+// in 2.1.248 the same `DDe` also names `4*ODe` and `$d[9]` elsewhere — so match
+// the key's shape rather than its name, and keep accepting the literal so older
+// bundles still patch.
+const SESSION_ID_HEADER_KEY =
+  '(?:"X-Claude-Code-Session-Id"|\\[[A-Za-z_$][\\w$]*\\])';
+
+// `<session-id key>:<fn>(),...<custom headers>,` — the entry every one of the
+// three modules keys off, and the position each of them injects after.
+const SESSION_ID_HEADER_ENTRY = new RegExp(
+  `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,`
+);
+
 function patchActiveTurnPromptIdentity(content) {
   const original = content;
   let agentCandidates = 0;
@@ -3392,7 +3411,7 @@ function patchActiveTurnPromptIdentity(content) {
     const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
     const segment = output.slice(start, end);
     if (
-      !segment.includes('"X-Claude-Code-Session-Id"') ||
+      !SESSION_ID_HEADER_ENTRY.test(segment) ||
       !segment.includes('"x-claude-code-agent-id"') ||
       segment.includes('"x-calico-active-turn-version"')
     ) {
@@ -3435,7 +3454,7 @@ function patchActiveTurnPromptIdentity(content) {
     );
     nextSegment = nextSegment.replace(
       new RegExp(
-        `("X-Claude-Code-Session-Id":[A-Za-z_$][\\w$]*\\(\\),)(\\.\\.\\.${escapeRegExp(extraHeadersLocal)},)`
+        `(${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),)(\\.\\.\\.${escapeRegExp(extraHeadersLocal)},)`
       ),
       '$1$2...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},'
     );
@@ -3494,7 +3513,7 @@ function patchCompactRequestSource(content) {
     const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
     const segment = output.slice(start, end);
     if (
-      !segment.includes('"X-Claude-Code-Session-Id"') ||
+      !SESSION_ID_HEADER_ENTRY.test(segment) ||
       segment.includes('"x-calico-request-source"')
     ) {
       continue;
@@ -3524,7 +3543,7 @@ function patchCompactRequestSource(content) {
     // the source param — go through a callback so the capture is threaded
     // explicitly and sourceParam is emitted verbatim.
     nextSegment = nextSegment.replace(
-      /("X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,)/,
+      new RegExp(`(${SESSION_ID_HEADER_ENTRY.source})`),
       (_full, headerPrefix) =>
         `${headerPrefix}...process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"&&{"x-calico-request-source":"compact"},`
     );
@@ -3599,7 +3618,7 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
     const segment = output.slice(start, end);
     if (
-      !segment.includes('"X-Claude-Code-Session-Id"') ||
+      !SESSION_ID_HEADER_ENTRY.test(segment) ||
       segment.includes("__calicoCompactWrapFetch(")
     ) {
       continue;
