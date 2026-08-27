@@ -54,6 +54,16 @@ function inSameModule(content: string, first: number, second: number): boolean {
   return !content.slice(low, high).includes(BUN_MODULE_BOUNDARY);
 }
 
+// The session-id entry in the Anthropic client's header object is the anchor
+// the active-turn and compact-request-source injections sit behind. 2.1.248
+// hoisted the header's name into a module-level constant, turning the literal
+// key `"X-Claude-Code-Session-Id":` into a computed `[DDe]:`; that constant is
+// a per-chunk minified name that means something else in other chunks, so match
+// the key's shape, not its name. Kept in lockstep with SESSION_ID_HEADER_KEY in
+// patch-claude-display.ts.
+const SESSION_ID_HEADER_KEY =
+  '(?:"X-Claude-Code-Session-Id"|\\[[A-Za-z_$][\\w$]*\\])';
+
 // Cross-chunk references through globalThis are only safe when the chunk doing
 // the reading statically imports (transitively) the chunk doing the writing:
 // only then is the publisher guaranteed to have been evaluated first. Of 1,384
@@ -573,8 +583,9 @@ const CHECKS: Check[] = [
       }
       // Compact request-source may inject between custom headers and active-turn
       // Calico-owned headers when both modules apply (default module order).
-      const protectedHeaderOrder =
-        /"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,(?:\.\.\.process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*==="compact"&&\{"x-calico-request-source":"compact"\},)?\.\.\.__calicoPromptId&&\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\}/;
+      const protectedHeaderOrder = new RegExp(
+        `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,(?:\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\\w$]*==="compact"&&\\{"x-calico-request-source":"compact"\\},)?\\.\\.\\.__calicoPromptId&&\\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\\}`
+      );
       return protectedHeaderOrder.test(content)
         ? null
         : "Calico-owned headers are missing or can be overridden by custom headers";
@@ -616,8 +627,9 @@ const CHECKS: Check[] = [
       // shifts the extra-header local and header-object local by one letter
       // (`u=…(),p={` → `d=…(),f={`); the signature tail and both locals are
       // matched generically. The IIFE parameter stays the literal `u`.
-      const ownedFactory =
-        /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:[A-Za-z_$][\w$]*(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{(?:if\(process\.env\.REMORA_ACTIVE==="1"&&\2==="compact"\)\{\1=__calicoCompactWrapFetch\(\1\)\})?let [\s\S]*?[A-Za-z_$][\w$]*=\(\(u\)=>process\.env\.REMORA_ACTIVE==="1"\?__calicoOmitHeader\(u,"x-calico-request-source"\):u\)\([A-Za-z_$][\w$]*\(\)\),[A-Za-z_$][\w$]*=\{[\s\S]*?"X-Claude-Code-Session-Id":[A-Za-z_$][\w$]*\(\),\.\.\.[A-Za-z_$][\w$]*,\.\.\.process\.env\.REMORA_ACTIVE==="1"&&\2==="compact"&&\{"x-calico-request-source":"compact"\}/;
+      const ownedFactory = new RegExp(
+        `async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,maxRetries:[A-Za-z_$][\\w$]*,model:[A-Za-z_$][\\w$]*,fetchOverride:([A-Za-z_$][\\w$]*),source:([A-Za-z_$][\\w$]*),agentContext:[A-Za-z_$][\\w$]*(?:,[A-Za-z_$][\\w$]*:[A-Za-z_$][\\w$]*)*\\}\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&\\2==="compact"\\)\\{\\1=__calicoCompactWrapFetch\\(\\1\\)\\})?let [\\s\\S]*?[A-Za-z_$][\\w$]*=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\([A-Za-z_$][\\w$]*\\(\\)\\),[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\2==="compact"&&\\{"x-calico-request-source":"compact"\\}`
+      );
       if (!ownedFactory.test(content)) {
         return "compact request-source sanitize/header inject is not owned by Zie factory";
       }
