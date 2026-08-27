@@ -12,27 +12,25 @@ function jsModules(...contents) {
   }));
 }
 
-test("round-trips module contents through join and split", () => {
+// Only real edits are written back: rewriting untouched modules forces Bun to
+// re-lay-out a bytecode pool it keeps position-sensitive, which 2.1.246 rejects.
+test("writes nothing back when the patcher changed nothing", () => {
   const modules = jsModules("let a=1", "let b=2", "let c=3");
   const replacements = nativeBun.splitClaudeJsModules(
     nativeBun.joinClaudeJsModules(modules),
     modules
   );
 
-  assert.deepEqual([...replacements.keys()], [1, 3, 5]);
-  for (const module of modules) {
-    assert.equal(replacements.get(module.index).toString("utf8"), module.content);
-  }
+  assert.equal(replacements.size, 0);
 });
 
 test("keys replacements by container module index, not by position", () => {
   const modules = jsModules("let a=1", "let b=2");
-  const replacements = nativeBun.splitClaudeJsModules(
-    nativeBun.joinClaudeJsModules(modules),
-    modules
-  );
+  const patched = nativeBun.joinClaudeJsModules(modules).replace("let b=2", "let b=99");
+  const replacements = nativeBun.splitClaudeJsModules(patched, modules);
 
-  assert.equal(replacements.get(3).toString("utf8"), "let b=2");
+  assert.deepEqual([...replacements.keys()], [3]);
+  assert.equal(replacements.get(3).toString("utf8"), "let b=99");
   assert.equal(replacements.get(0), undefined);
 });
 
@@ -41,7 +39,7 @@ test("carries patched content back to the right module", () => {
   const patched = nativeBun.joinClaudeJsModules(modules).replace("let b=2", "let b=99");
   const replacements = nativeBun.splitClaudeJsModules(patched, modules);
 
-  assert.equal(replacements.get(1).toString("utf8"), "let a=1");
+  assert.equal(replacements.get(1), undefined);
   assert.equal(replacements.get(3).toString("utf8"), "let b=99");
 });
 

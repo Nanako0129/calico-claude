@@ -433,9 +433,87 @@ function splitClaudeJsModules(
 
   assertInjectionsAreModuleScoped(parts, jsModules);
 
-  return new Map(
-    jsModules.map((jsModule, index) => [jsModule.index, Buffer.from(parts[index], "utf8")])
-  );
+  // Only modules the patcher actually changed are written back. Bun keeps
+  // bytecode in a position-sensitive pool, so rewriting every module — even
+  // with identical bytes — forces a full re-layout that 2.1.246 rejects with a
+  // segfault. Restricting the map to real edits leaves the other ~1,400 modules
+  // and their bytecode untouched, and is what lets the offset-preserving
+  // rebuild path apply.
+  const replacements = new Map<number, Buffer>();
+  for (const [index, jsModule] of jsModules.entries()) {
+    if (parts[index] !== jsModule.content) {
+      replacements.set(jsModule.index, Buffer.from(parts[index], "utf8"));
+    }
+  }
+  return replacements;
+}
+
+// Bun's split bundles keep bytecode in a position-sensitive pool, so once any
+// module retains its bytecode the surrounding bytes cannot be re-laid-out. This
+// appends the replacement contents after the original data, repoints only the
+// affected module records, and clears their bytecode so the runtime falls back
+// to the patched source. Everything else stays byte-identical.
+//
+// Ported from upstream a-connoisseur/patch-claude-code (ec2c508, "fix: binary
+// shape"), keyed by container index rather than module name.
+function rebuildBunDataPreservingBytecodeOffsets(
+  bunData: Buffer,
+  bunOffsets: BunOffsets,
+  replacementContents: Map<number, Buffer>,
+  moduleStructSize: 36 | 52
+): Buffer {
+  const moduleTable = sliceRange(bunData, bunOffsets.modulesPtr);
+  const moduleCount = Math.floor(moduleTable.length / moduleStructSize);
+  const replacements: Array<{ index: number; contents: Buffer }> = [];
+  let replacementBytes = 0;
+
+  for (let index = 0; index < moduleCount; index += 1) {
+    const contents = replacementContents.get(index);
+    if (!contents) {
+      continue;
+    }
+    replacements.push({ index, contents });
+    replacementBytes += contents.length + 1;
+  }
+
+  const originalOffsetsOffset = bunData.length - BUN_TRAILER.length - 32;
+  const offsetsOffset = originalOffsetsOffset + replacementBytes;
+  const trailerOffset = offsetsOffset + 32;
+  const rebuilt = Buffer.alloc(trailerOffset + BUN_TRAILER.length);
+  bunData.copy(rebuilt, 0, 0, originalOffsetsOffset);
+
+  let contentsOffset = originalOffsetsOffset;
+  for (const replacement of replacements) {
+    replacement.contents.copy(rebuilt, contentsOffset);
+    const moduleRecordOffset =
+      bunOffsets.modulesPtr.offset + replacement.index * moduleStructSize;
+    rebuilt.writeUInt32LE(contentsOffset, moduleRecordOffset + 8);
+    rebuilt.writeUInt32LE(replacement.contents.length, moduleRecordOffset + 12);
+    // Clear the sourcemap and bytecode: both describe the unpatched source, so
+    // keeping them means stale mappings and stale code. The full-rebuild path
+    // below drops the same three ranges; this is the path every patch actually
+    // takes now that only real edits are written back.
+    rebuilt.writeUInt32LE(0, moduleRecordOffset + 16);
+    rebuilt.writeUInt32LE(0, moduleRecordOffset + 20);
+    rebuilt.writeUInt32LE(0, moduleRecordOffset + 24);
+    rebuilt.writeUInt32LE(0, moduleRecordOffset + 28);
+    if (moduleStructSize === 52) {
+      rebuilt.writeUInt32LE(0, moduleRecordOffset + 40);
+      rebuilt.writeUInt32LE(0, moduleRecordOffset + 44);
+    }
+    contentsOffset += replacement.contents.length + 1;
+  }
+
+  rebuilt.writeBigUInt64LE(BigInt(offsetsOffset), offsetsOffset);
+  rebuilt.writeUInt32LE(bunOffsets.modulesPtr.offset, offsetsOffset + 8);
+  rebuilt.writeUInt32LE(bunOffsets.modulesPtr.length, offsetsOffset + 12);
+  rebuilt.writeUInt32LE(bunOffsets.entryPointId, offsetsOffset + 16);
+  rebuilt.writeUInt32LE(bunOffsets.compileExecArgvPtr.offset, offsetsOffset + 20);
+  rebuilt.writeUInt32LE(bunOffsets.compileExecArgvPtr.length, offsetsOffset + 24);
+  rebuilt.writeUInt32LE(bunOffsets.flags, offsetsOffset + 28);
+  BUN_TRAILER.copy(rebuilt, trailerOffset);
+
+  return rebuilt;
 }
 
 function rebuildBunData(
@@ -461,22 +539,46 @@ function rebuildBunData(
   const moduleTable = sliceRange(bunData, bunOffsets.modulesPtr);
   const moduleCount = Math.floor(moduleTable.length / moduleStructSize);
 
+  // Relaying out the whole blob moves bytecode that other records point at. If
+  // any module keeps its bytecode, take the offset-preserving path instead: on
+  // 2.1.246 a full rebuild produced a container the runtime kills at exec with
+  // no output at all, while --assert-all and every verifier check passed.
+  for (let index = 0; index < moduleCount; index += 1) {
+    const moduleRecord = readBunModule(moduleTable, index * moduleStructSize, moduleStructSize);
+    if (moduleRecord.bytecode.length > 0 && !replacementContents.has(index)) {
+      return rebuildBunDataPreservingBytecodeOffsets(
+        bunData,
+        bunOffsets,
+        replacementContents,
+        moduleStructSize
+      );
+    }
+  }
+
   for (let index = 0; index < moduleCount; index += 1) {
     const moduleOffset = index * moduleStructSize;
     const moduleRecord = readBunModule(moduleTable, moduleOffset, moduleStructSize);
 
     // Offsets and lengths for every module are recomputed below from the
     // rebuilt layout, so replacement contents are free to change size.
-    const nextContents =
-      replacementContents.get(index) ?? sliceRange(bunData, moduleRecord.contents);
+    const replacement = replacementContents.get(index);
+    const nextContents = replacement ?? sliceRange(bunData, moduleRecord.contents);
 
+    // A replaced module's bytecode was compiled from the unpatched source, so
+    // keeping it means the runtime can execute the old code and the patch does
+    // nothing — or, on 2.1.246, the container is rejected outright and the
+    // binary is killed at exec with no output. Drop it so the patched source is
+    // the only thing left to run.
+    const EMPTY = Buffer.alloc(0);
     const nextModule = {
       name: sliceRange(bunData, moduleRecord.name),
       contents: nextContents,
-      sourcemap: sliceRange(bunData, moduleRecord.sourcemap),
-      bytecode: sliceRange(bunData, moduleRecord.bytecode),
+      sourcemap: replacement ? EMPTY : sliceRange(bunData, moduleRecord.sourcemap),
+      bytecode: replacement ? EMPTY : sliceRange(bunData, moduleRecord.bytecode),
       moduleInfo: sliceRange(bunData, moduleRecord.moduleInfo),
-      bytecodeOriginPath: sliceRange(bunData, moduleRecord.bytecodeOriginPath),
+      bytecodeOriginPath: replacement
+        ? EMPTY
+        : sliceRange(bunData, moduleRecord.bytecodeOriginPath),
       encoding: moduleRecord.encoding,
       loader: moduleRecord.loader,
       moduleFormat: moduleRecord.moduleFormat,

@@ -723,7 +723,7 @@ const CHECKS: Check[] = [
       }
       const identifier = "[A-Za-z_$][\\w$]*";
       const trackerPattern = new RegExp(
-        `function (${identifier})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:\\[\\],activeMessageId:null,responseOutputTokens:new Map\\}\\}`,
+        `function (${identifier})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:\\[\\](?:,[^{}]*?)?,activeMessageId:null,responseOutputTokens:new Map\\}\\}`,
         "g"
       );
       const trackerMatches = [...content.matchAll(trackerPattern)];
@@ -922,11 +922,11 @@ const CHECKS: Check[] = [
       }
 
       const legacyWrapperPattern = new RegExp(
-        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\}\\};`,
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
         "g"
       );
       const effortWrapperPattern = new RegExp(
-        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
         "g"
       );
       // 2.1.236+ batch tool-use destructured wrapper; see the matching
@@ -935,7 +935,7 @@ const CHECKS: Check[] = [
       // (`…messageId:Gr.id},i.storageV5)`), matched optionally so the patched
       // 2.1.237 and 2.1.238 binaries both verify.
       const batchWrapperPattern = new RegExp(
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1404,8 +1404,33 @@ const CHECKS: Check[] = [
             return `expected the memo cache to be grown past slot ${slot} for __cc_streamingThinking`;
           }
         }
+        // The inline extras memo materialises streamed thinking into the
+        // transcript. 2.1.246 restructured that memo away entirely, so the site
+        // no longer exists to patch there. Every version before it still has the
+        // site and still needs the marker: relaxing on the absence of an exact
+        // unpatched-shape regex would let a bundle whose shape merely drifted
+        // pass, approving a binary whose reducer updates state the UI never
+        // consumes. So the relaxation is version-gated, and even on 2.1.246+ a
+        // site that is still present un-patched is a failure.
+        const allowsMissingExtras =
+          version[0] > 2 ||
+          (version[0] === 2 &&
+            (version[1] > 1 || (version[1] === 1 && version[2] >= 246)));
+        const unpatchedExtrasMemo =
+          /=[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\(\)=>[A-Za-z_$][\w$]*\.flatMap\(\([A-Za-z_$][\w$]*\)=>\{let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\(\{content:\[[A-Za-z_$][\w$]*\.contentBlock\]\}\)/;
+        let extrasWaived = false;
         if (!content.includes("__cc_streamingThinkingExtras")) {
-          return "expected inline streaming-thinking transcript extras";
+          if (!allowsMissingExtras) {
+            return "expected inline streaming-thinking transcript extras";
+          }
+          if (unpatchedExtrasMemo.test(content)) {
+            return "inline streaming-thinking transcript extras site is present but was not patched";
+          }
+          // 2.1.246+ with the site genuinely gone. Nothing above then requires
+          // any stream-reducer injection, so the reducer check below stops being
+          // optional: without it a renderer-only build passes while no stream
+          // event ever populates the state it reads.
+          extrasWaived = true;
         }
         // The stream reducer builds virtual thinking messages through
         // upstream's create-message helper. That helper's name is a per-chunk
@@ -1417,8 +1442,12 @@ const CHECKS: Check[] = [
         const reducerCalls = [
           ...content.matchAll(/__cc_streamingThinkingMessage=([A-Za-z_$][\w$]*)\(\{content:/g),
         ];
-        // Presence is already covered by the threading and extras checks above;
-        // what this adds is that whatever the reducer calls resolves here.
+        // When the extras marker was waived this is the only thing left that
+        // proves the reducer was patched at all, so presence becomes mandatory.
+        // Otherwise presence is covered above and this only checks resolution.
+        if (extrasWaived && reducerCalls.length === 0) {
+          return "expected the stream reducer to build virtual thinking messages when inline extras are absent";
+        }
         for (const call of reducerCalls) {
           const declaration = new RegExp(
             `function ${call[1]}\\(\\{content:[A-Za-z_$][\\w$]*,usage:`,
