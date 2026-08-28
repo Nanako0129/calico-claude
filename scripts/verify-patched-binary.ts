@@ -46,6 +46,17 @@ type Check = {
 // module, so every equality below applies exactly as it did before.
 const { BUN_MODULE_BOUNDARY } = require("./native-bun.ts") as { BUN_MODULE_BOUNDARY: string };
 
+// Truncate a segment at the first Bun module boundary it contains. Segments cut
+// with `indexOf("async function ")` routinely run past the end of their chunk,
+// so a marker required of one handler can be satisfied by an entirely different
+// module. Mirrors boundedToModule in patch-claude-display.ts — the patcher
+// bounding its segments while the verifier did not is how a handler missing a
+// required invariant could still verify clean.
+function boundedToModule(segment: string): string {
+  const boundary = segment.indexOf(BUN_MODULE_BOUNDARY);
+  return boundary === -1 ? segment : segment.slice(0, boundary);
+}
+
 function inSameModule(content: string, first: number, second: number): boolean {
   if (first < 0 || second < 0) {
     return false;
@@ -387,9 +398,11 @@ const CHECKS: Check[] = [
         "async function ",
         (interactive.index ?? -1) + interactive[0].length
       );
-      const interactiveSegment = content.slice(
-        interactive.index ?? -1,
-        interactiveEnd === -1 ? content.length : interactiveEnd
+      const interactiveSegment = boundedToModule(
+        content.slice(
+          interactive.index ?? -1,
+          interactiveEnd === -1 ? content.length : interactiveEnd
+        )
       );
       // 2.1.251 restructured this handler: the `"shortcut"` apply call is gone,
       // on/off renders a component directly, and `.getAppState`/`.setAppState`
@@ -429,9 +442,8 @@ const CHECKS: Check[] = [
         "async function ",
         (thin.index ?? -1) + thin[0].length
       );
-      const thinSegment = content.slice(
-        thin.index ?? -1,
-        thinEnd === -1 ? content.length : thinEnd
+      const thinSegment = boundedToModule(
+        content.slice(thin.index ?? -1, thinEnd === -1 ? content.length : thinEnd)
       );
       const thinAction = thinSegment.match(
         /await ([A-Za-z_$][\w$]*)\([^;]*?"bridge"/
@@ -1902,7 +1914,7 @@ function evaluateDisabledPatchModule(id: string, content: string): string | null
     : null;
 }
 
-module.exports = { evaluateDisabledPatchModule, evaluatePatchModule };
+module.exports = { boundedToModule, evaluateDisabledPatchModule, evaluatePatchModule };
 
 if (require.main === module) {
   void main();

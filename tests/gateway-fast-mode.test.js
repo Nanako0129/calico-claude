@@ -605,3 +605,40 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     assert.notEqual(evaluatePatchModule("gateway-fast-mode", broken), null, name);
   }
 });
+
+// Segments cut with indexOf("async function ") run past the end of their Bun
+// chunk. Bounding them in the patcher while leaving the verifier unbounded is
+// how a handler that fails a required invariant can still verify clean: move
+// the picker event out of the handler and into the next module, and the
+// verifier finds it there.
+
+// Segments cut with indexOf("async function ") run past the end of their Bun
+// chunk, so a marker required of one handler can be satisfied by an entirely
+// different module. The patcher bounds its segments; the verifier did not,
+// which meant a handler failing a required invariant could still verify clean.
+//
+// This pins the truncation helper both verifier and patcher rely on. It does
+// not drive a whole bundle through evaluatePatchModule: every text insertion
+// that lands inside the unbounded slice also disturbs an invariant checked
+// earlier — helper-block adjacency, or the requirement that the helper copies
+// be byte-identical — so the verdict turns on that instead of on the boundary,
+// and the case proves nothing about bounding either way.
+test("module truncation stops at the first Bun module boundary", () => {
+  const { BUN_MODULE_BOUNDARY } = require("../scripts/native-bun.ts");
+  const { boundedToModule } = require("../scripts/verify-patched-binary.ts");
+
+  const handler = 'async function a(){return "tengu_fast_mode_picker_shown"}';
+  const neighbour = 'var b="tengu_fast_mode_picker_shown";';
+
+  assert.equal(boundedToModule(handler), handler, "a segment with no boundary is unchanged");
+  assert.equal(
+    boundedToModule(`${handler}${BUN_MODULE_BOUNDARY}${neighbour}`),
+    handler,
+    "everything from the boundary onward is dropped"
+  );
+  // The point of the truncation: the marker survives in the bundle but stops
+  // counting as evidence about the handler.
+  const spilled = `async function a(){return 1}${BUN_MODULE_BOUNDARY}${neighbour}`;
+  assert.ok(spilled.includes("tengu_fast_mode_picker_shown"));
+  assert.ok(!boundedToModule(spilled).includes("tengu_fast_mode_picker_shown"));
+});
