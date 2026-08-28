@@ -87,7 +87,14 @@ jobs:
         if: matrix.platform_label == 'macos-arm64'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.1"
+          # 1.4.1 does not exist. setup-bun builds the asset URL from the pin
+          # without checking the tag, so it 404s on the download and fails the
+          # whole macos-arm64 job at step 4 — before any patching runs, which
+          # makes it read like a patcher failure rather than a bad pin. 1.4.0 is
+          # the newest published release. The live-thinking test uses only
+          # Bun.serve, Bun.spawn and Bun.sleep, all long stable; it was
+          # developed and calibrated against 1.3.13 locally.
+          bun-version: "1.4.0"
 
       - name: Install dependencies
         id: dependencies

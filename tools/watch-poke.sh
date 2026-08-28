@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Dispatch watch-claude-release.yml when upstream has a version we have not
+# released yet.
+#
+# Why this exists: GitHub's scheduler is the only in-GitHub trigger for "upstream
+# published a new version and nothing happened in this repo", and it does not
+# honour the cron on this repository. Measured over 2026-08-26/27 the hourly
+# schedule drifted 30-50 minutes late, then skipped 2.3h, 4.3h, 10.3h and 10.7h;
+# tightening it to */15 produced zero scheduled runs in the 80 minutes after it
+# went live. Merges to main are covered by the workflow's `push` trigger, and
+# `liskin/gh-workflow-keepalive` covers schedules GitHub disables for
+# inactivity, but neither covers upstream drift. This does.
+#
+# It is deliberately not an unconditional poke: it resolves the current upstream
+# version and dispatches only when a platform release for it is missing, so a
+# machine that is awake all day produces no runs until there is actual work.
+#
+# Install as a LaunchAgent (hourly, plus once at load):
+#
+#   bash tools/watch-poke.sh --install
+#   launchctl list | grep calico-watch-poke
+#
+# Remove:
+#
+#   launchctl bootout gui/$(id -u)/com.calico.watch-poke
+#   rm ~/Library/LaunchAgents/com.calico.watch-poke.plist
+#
+# Logs to ~/Library/Logs/calico-watch-poke.log.
+
+set -uo pipefail
+
+REPO="${CALICO_WATCH_REPO:-Nanako0129/calico-claude}"
+WORKFLOW="watch-claude-release.yml"
+LABEL="com.calico.watch-poke"
+PLATFORMS=(linux-x64 linux-arm64 macos-arm64 win32-x64 win32-arm64)
+LOG_FILE="$HOME/Library/Logs/calico-watch-poke.log"
+
+# launchd hands a process a near-empty PATH, so Homebrew's gh and node are not
+# on it. Everything below runs through this PATH explicitly.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+log() {
+  printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$LOG_FILE"
+}
+
+install_agent() {
+  local script_path plist_path
+  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  plist_path="$HOME/Library/LaunchAgents/$LABEL.plist"
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+
+  cat > "$plist_path" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$script_path</string>
+  </array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$LOG_FILE</string>
+  <key>StandardErrorPath</key><string>$LOG_FILE</string>
+</dict>
+</plist>
+PLIST
+
+  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
+  launchctl bootstrap "gui/$(id -u)" "$plist_path" || {
+    echo "failed to bootstrap $LABEL" >&2
+    return 1
+  }
+  echo "installed $plist_path (hourly, runs once now)"
+  echo "log: $LOG_FILE"
+}
+
+if [ "${1:-}" = "--install" ]; then
+  install_agent
+  exit $?
+fi
+
+for tool in gh npm; do
+  command -v "$tool" >/dev/null 2>&1 || { log "missing $tool on PATH"; exit 1; }
+done
+
+VERSION="$(npm view @anthropic-ai/claude-code version 2>/dev/null)"
+if [ -z "$VERSION" ]; then
+  log "npm did not return an upstream version; skipping"
+  exit 0
+fi
+
+MISSING=0
+for suffix in "${PLATFORMS[@]}"; do
+  if ! gh release view "v${VERSION}-${suffix}" --repo "$REPO" >/dev/null 2>&1; then
+    MISSING=1
+    break
+  fi
+done
+
+if [ "$MISSING" -eq 0 ]; then
+  log "upstream $VERSION already released on all platforms; no dispatch"
+  exit 0
+fi
+
+# Do not pile dispatches on top of a run that is already working. The workflow
+# guards this too, but a queued no-op still costs a run and clutters the list.
+ACTIVE="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 10 \
+  --json status --jq '[.[] | select(.status != "completed")] | length' 2>/dev/null)"
+if [ -n "$ACTIVE" ] && [ "$ACTIVE" -gt 0 ]; then
+  log "upstream $VERSION missing releases, but $WORKFLOW already has $ACTIVE active run(s); skipping"
+  exit 0
+fi
+
+if gh workflow run "$WORKFLOW" --repo "$REPO" >/dev/null 2>&1; then
+  log "dispatched $WORKFLOW for upstream $VERSION"
+else
+  log "failed to dispatch $WORKFLOW for upstream $VERSION"
+  exit 1
+fi
