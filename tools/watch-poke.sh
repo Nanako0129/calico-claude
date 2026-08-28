@@ -51,11 +51,17 @@ xml_escape() {
 }
 
 install_agent() {
-  local script_path plist_path script_xml log_xml
+  local script_path plist_path script_xml log_xml repo_xml
   script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
   plist_path="$HOME/Library/LaunchAgents/$LABEL.plist"
   script_xml="$(xml_escape "$script_path")"
   log_xml="$(xml_escape "$LOG_FILE")"
+  # CALICO_WATCH_REPO is read at run time, and launchd starts the agent with a
+  # clean environment, so a fork owner installing with
+  # `CALICO_WATCH_REPO=owner/fork ... --install` would get an agent that quietly
+  # checks and dispatches against the default repo instead. Bake the resolved
+  # value into the plist so the installed agent targets what was configured.
+  repo_xml="$(xml_escape "$REPO")"
   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
   cat > "$plist_path" <<PLIST
@@ -69,6 +75,10 @@ install_agent() {
     <string>/bin/bash</string>
     <string>$script_xml</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CALICO_WATCH_REPO</key><string>$repo_xml</string>
+  </dict>
   <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>$log_xml</string>
