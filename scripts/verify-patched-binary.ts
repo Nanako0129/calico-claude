@@ -64,6 +64,61 @@ function inSameModule(content: string, first: number, second: number): boolean {
 const SESSION_ID_HEADER_KEY =
   '(?:"X-Claude-Code-Session-Id"|\\[[A-Za-z_$][\\w$]*\\])';
 
+// Kept in lockstep with the identically named helpers in
+// patch-claude-display.ts: the guard that owns a statement is the `if(` whose
+// condition closes immediately before it, not whichever `if(` is nearest.
+function closingParenIndex(text: string, openIndex: number): number {
+  let depth = 0;
+  for (let i = openIndex; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+function closingBraceIndex(text: string, openIndex: number): number {
+  let depth = 0;
+  for (let i = openIndex; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+function owningGuardIndex(text: string, statementIndex: number): number {
+  let search = text.lastIndexOf("if(", statementIndex);
+  while (search !== -1) {
+    const close = closingParenIndex(text, search + 2);
+    if (close !== -1) {
+      if (close + 1 === statementIndex) {
+        return search;
+      }
+      if (text[close + 1] === "{") {
+        const blockEnd = closingBraceIndex(text, close + 1);
+        if (blockEnd > statementIndex) {
+          return search;
+        }
+      }
+    }
+    search = search === 0 ? -1 : text.lastIndexOf("if(", search - 1);
+  }
+  return -1;
+}
+
 // Cross-chunk references through globalThis are only safe when the chunk doing
 // the reading statically imports (transitively) the chunk doing the writing:
 // only then is the publisher guaranteed to have been evaluated first. Of 1,384
@@ -1367,12 +1422,63 @@ const CHECKS: Check[] = [
         // second accepted form.
         const compilerCallSitePattern =
           /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:__cc_streamingThinking[,}]/;
-        const usesCompilerCallSite = compilerCallSitePattern.test(content);
+        const compilerCallSiteMatch = content.match(compilerCallSitePattern);
+        const usesCompilerCallSite = compilerCallSiteMatch !== null;
         if (rendererCallSites.length !== 1 && !usesCompilerCallSite) {
           return `expected 1 renderer call-site streamingThinking prop, found ${rendererCallSites.length}`;
         }
 
-        if (usesCompilerCallSite) {
+        // Upstream patch-claude-code solves the same compiler-cache problem a
+        // second way, and that path now runs first: it reads the store through
+        // an inline arrow selector and forces the cached element to rebuild by
+        // short-circuiting the guard to `if(!0||…)` instead of claiming a cache
+        // slot. Both wirings are legitimate — the slot-growing one below is
+        // still what fires on bundles this shape does not match — so recognise
+        // it here rather than demanding a selector declaration it never emits.
+        //
+        // Both halves have to sit in the same function as the compiler call
+        // site. A bare `content.includes("if(!0||")` would let an unrelated
+        // short-circuit anywhere in a 33MB bundle — or one the patcher spliced
+        // into the wrong nearby `if` — satisfy this branch, and the cache-slot
+        // checks below would then be skipped for a binary whose renderer memo
+        // is still stale.
+        const forcedRebuildWiring = (() => {
+          const callSiteIndex = compilerCallSiteMatch?.index ?? -1;
+          if (callSiteIndex < 0) {
+            return false;
+          }
+          const functionStart = content.lastIndexOf("function ", callSiteIndex);
+          if (functionStart === -1) {
+            return false;
+          }
+          const storeRead = content.match(
+            /__cc_streamingThinking=[A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*|\([^()]*\))\?\.stream,\(__cc_state\)=>__cc_state\.streamingThinking\)\?\?null,/
+          );
+          const storeReadIndex = storeRead?.index ?? -1;
+          if (storeReadIndex < functionStart || storeReadIndex > callSiteIndex) {
+            return false;
+          }
+          // The guard has to be the one that owns the renderer assignment, not
+          // the nearest `if(` before the call site: an intervening conditional
+          // would let a forced-true branch elsewhere stand in for the real memo
+          // guard, and the element would keep coming back stale. Locate the
+          // assignment whose props object carries the injected prop, then
+          // require the guard whose condition closes immediately before it to
+          // be the short-circuited one.
+          const assignPattern =
+            /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(([A-Za-z_$][\w$]*),\{/g;
+          let rendererAssignIndex = -1;
+          for (const assignMatch of content.slice(functionStart, callSiteIndex + 1).matchAll(assignPattern)) {
+            rendererAssignIndex = functionStart + (assignMatch.index ?? 0);
+          }
+          if (rendererAssignIndex === -1) {
+            return false;
+          }
+          const guardIndex = owningGuardIndex(content, rendererAssignIndex);
+          return guardIndex > functionStart && content.startsWith("if(!0||", guardIndex);
+        })();
+
+        if (usesCompilerCallSite && !forcedRebuildWiring) {
           // Passing the prop is not sufficient at a compiler-cached call site:
           // the element is only rebuilt when one of the compared cache slots
           // changes, so an injected value that occupies no slot would leave the

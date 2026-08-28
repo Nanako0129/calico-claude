@@ -7,7 +7,8 @@
   },
   "scripts": {
     "patch:native": "node scripts/patch-native.ts",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "test:integration": "bun test test/"
   },
   "dependencies": {
     "node-lief": "1.1.1",
