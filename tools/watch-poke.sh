@@ -43,10 +43,19 @@ log() {
   printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$LOG_FILE"
 }
 
+# `&`, `<` and `>` are all legal in a macOS path and all special in XML, so a
+# checkout under e.g. ~/src/claude&co would emit a malformed plist. launchctl
+# then refuses to bootstrap it and the watcher is silently never installed.
+xml_escape() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 install_agent() {
-  local script_path plist_path
+  local script_path plist_path script_xml log_xml
   script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
   plist_path="$HOME/Library/LaunchAgents/$LABEL.plist"
+  script_xml="$(xml_escape "$script_path")"
+  log_xml="$(xml_escape "$LOG_FILE")"
   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
   cat > "$plist_path" <<PLIST
@@ -58,12 +67,12 @@ install_agent() {
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>$script_path</string>
+    <string>$script_xml</string>
   </array>
   <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>$LOG_FILE</string>
-  <key>StandardErrorPath</key><string>$LOG_FILE</string>
+  <key>StandardOutPath</key><string>$log_xml</string>
+  <key>StandardErrorPath</key><string>$log_xml</string>
 </dict>
 </plist>
 PLIST
