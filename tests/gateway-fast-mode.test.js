@@ -507,7 +507,18 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     'if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(e);',
     ""
   );
-  const withoutNativeAction = patched.replace('"shortcut"', '"shortcut-broken"');
+  // Was `patched.replace('"shortcut"', '"shortcut-broken"')`. 2.1.251 removed the
+  // "shortcut" apply call from the interactive handler entirely — on/off now
+  // renders a component — so the verifier can no longer treat its absence as a
+  // defect without rejecting legitimate builds. The picker telemetry event is
+  // the invariant that survived the restructure and is what the verifier
+  // requires instead, so break that.
+  // Renaming to a superstring would not work: the verifier tests `includes`, so
+  // "..._shown_broken" still satisfies it.
+  const withoutPickerEvent = patched.replace(
+    '"tengu_fast_mode_picker_shown"',
+    '"tengu_fast_mode_picker_hidden"'
+  );
   const applyAfterBetaMerge = patched.replace(
     builderBlock,
     builderBlock
@@ -573,7 +584,7 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     ["comment-only helpers", commentOnlyHelpers],
     ["alternate apply binding", alternateApply],
     ["missing thin branch", withoutThinBranch],
-    ["missing native action", withoutNativeAction],
+    ["missing picker event", withoutPickerEvent],
     ["apply after beta merge", applyAfterBetaMerge],
     ["apply before native parse", applyBeforeNativeParse],
     ["apply inside native catch", applyInsideNativeCatch],
@@ -593,4 +604,41 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     assert.notEqual(broken, patched, `${name} mutation did not change the fixture`);
     assert.notEqual(evaluatePatchModule("gateway-fast-mode", broken), null, name);
   }
+});
+
+// Segments cut with indexOf("async function ") run past the end of their Bun
+// chunk. Bounding them in the patcher while leaving the verifier unbounded is
+// how a handler that fails a required invariant can still verify clean: move
+// the picker event out of the handler and into the next module, and the
+// verifier finds it there.
+
+// Segments cut with indexOf("async function ") run past the end of their Bun
+// chunk, so a marker required of one handler can be satisfied by an entirely
+// different module. The patcher bounds its segments; the verifier did not,
+// which meant a handler failing a required invariant could still verify clean.
+//
+// This pins the truncation helper both verifier and patcher rely on. It does
+// not drive a whole bundle through evaluatePatchModule: every text insertion
+// that lands inside the unbounded slice also disturbs an invariant checked
+// earlier — helper-block adjacency, or the requirement that the helper copies
+// be byte-identical — so the verdict turns on that instead of on the boundary,
+// and the case proves nothing about bounding either way.
+test("module truncation stops at the first Bun module boundary", () => {
+  const { BUN_MODULE_BOUNDARY } = require("../scripts/native-bun.ts");
+  const { boundedToModule } = require("../scripts/verify-patched-binary.ts");
+
+  const handler = 'async function a(){return "tengu_fast_mode_picker_shown"}';
+  const neighbour = 'var b="tengu_fast_mode_picker_shown";';
+
+  assert.equal(boundedToModule(handler), handler, "a segment with no boundary is unchanged");
+  assert.equal(
+    boundedToModule(`${handler}${BUN_MODULE_BOUNDARY}${neighbour}`),
+    handler,
+    "everything from the boundary onward is dropped"
+  );
+  // The point of the truncation: the marker survives in the bundle but stops
+  // counting as evidence about the handler.
+  const spilled = `async function a(){return 1}${BUN_MODULE_BOUNDARY}${neighbour}`;
+  assert.ok(spilled.includes("tengu_fast_mode_picker_shown"));
+  assert.ok(!boundedToModule(spilled).includes("tengu_fast_mode_picker_shown"));
 });
