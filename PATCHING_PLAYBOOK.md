@@ -12,7 +12,7 @@ Its job is to explain:
 
 ## Repo Mental Model
 
-This repo does not rebuild Claude Code from source. It patches the embedded JS bundle inside Anthropic's native binary.
+This repo does not rebuild Claude Code from source. It patches the embedded JavaScript modules inside Anthropic's native binary.
 
 The current flow is:
 
@@ -45,7 +45,8 @@ The important consequence: almost all real behavior lives in `patch-claude-displ
 - Every patch function takes bundle text and returns `{ content, candidates, patched }`.
 - `PATCH_MODULES` defines the patch order.
 - Patches run sequentially, so later patches see earlier rewrites.
-- The patcher prints a per-module summary but does not fail if nothing changed.
+- `patchContents()` applies that ordered pipeline to one or more module contents and aggregates the counts.
+- The native patch flow requires every supported patch to match unless it was explicitly disabled.
 - `main()` writes the file only when the final content differs from the original.
 
 That last point matters: `No changes needed.` is a successful exit, not a failure.
@@ -220,13 +221,19 @@ Important behavior:
 
 - if `patch-claude-display.ts` prints nonzero patch counts, the binary written by `native-bun.ts` is patched
 - if `patch-claude-display.ts` makes no changes, the script still succeeds and the output binary can remain equivalent to upstream
+- the Bun payload holds more than the module table describes. Upstream `patch-claude-code` found that
+  2.1.250 carries runtime data no module record points at, so a writer that rebuilds the payload from
+  the known module ranges alone drops it and the binary crashes at startup. Our writer appends
+  replacement contents after the original data and repoints only the affected records, so nothing
+  unreferenced is dropped — but any future change that compacts the payload has to preserve those
+  regions rather than rebuild from the module table.
 
 Linux note:
 
 - Claude native Linux builds changed format around 2.1.83 from the older Bun-at-EOF overlay layout to an ELF `.bun` section layout.
 - `scripts/native-bun.ts` supports both older ELF overlays and newer `.bun` sections.
 - For section-backed ELF binaries, `.bun` sits right before the ELF section-header table. Growing `.bun` content must move `e_shoff` forward and grow the containing `LOAD` segment; updating the section bytes alone overwrites section headers, detaches `.bun` from the segment table, and can produce runtime crashes on Linux x64.
-- Some Linux builds also keep non-allocated metadata sections such as `.comment`, `.note.stapsdt`, `.symtab`, `.strtab`, and `.shstrtab` after `.bun`. The vendored ELF writer may shift those payloads and update their section-header offsets when `.bun` grows. It should still refuse to shift later allocated sections, because that can change runtime mapping semantics.
+- Some Linux builds also keep non-allocated metadata sections such as `.comment`, `.note.stapsdt`, `.symtab`, `.strtab`, and `.shstrtab` after `.bun`. The ELF writer may shift those payloads and update their section-header offsets when `.bun` grows. It should still refuse to shift later allocated sections, because that can change runtime mapping semantics.
 
 Windows note:
 
@@ -255,6 +262,7 @@ Old bundle shape we match:
 - another build shape uses a block form `case"collapsed_read_search":{ ... }`
 - both forms contain a React renderer call with a `verbose:` prop
 - older builds use `createElement(...)`; 2.1.186-style builds use JSX-runtime calls like `.jsx(...)` or `.jsxs(...)`
+- 2.1.245-style split chunks can import the JSX factory directly and call it as a bare identifier
 
 What we rewrite:
 
@@ -682,6 +690,7 @@ Old bundle shape we match:
 - the `create` arm returns a simple write renderer with `{filePath,content,verbose}`
 - the `update` arm renders a richer diff component using `structuredPatch`
 - 2.1.186-style builds can use JSX-runtime calls like `.jsx(...)` and `.jsxs(...)` instead of `createElement(...)`
+- 2.1.245-style split chunks can call the imported JSX factory as a bare identifier
 
 What we rewrite:
 
@@ -740,6 +749,7 @@ Old bundle shape we match:
 - renderer props containing `isTranscriptMode:`
 - older builds also carry `hideInTranscript:`, but newer builds can omit it
 - renderer calls can be either `createElement(...)` or JSX-runtime `.jsx(...)` / `.jsxs(...)`
+- 2.1.245-style renderer calls can use a bare imported JSX factory, and the early null return can use a block body
 
 What we rewrite:
 
@@ -769,6 +779,7 @@ Old bundle shapes we match:
 - the thinking arm renders a component with `addMargin:`, `param:`, `isTranscriptMode:`, and `verbose:`
 - older builds use `createElement(...)` and carry `hideInTranscript:`
 - 2.1.186-style builds use `.jsx(...)` and can omit `hideInTranscript:`
+- 2.1.245-style split chunks use a bare imported JSX factory for both adjacent arms
 
 What we rewrite:
 
@@ -828,6 +839,11 @@ Old bundle shapes we match:
 - 2.1.236 moves streaming state from `useState` into a coalescing store class (`_snapshot={streamingToolUses:[],streamingThinking:null,…}` with `subscribe`/`getSnapshot`, the changelog's "event streams are no longer re-scanned" change). `onStreamingThinking:` is wired as `ctx.stream.setStreamingThinking` (member expression, so the identifier-only setter→useState rediscovery finds nothing and the whole renderer side — signature injection, inline extras, prop threading — silently cascades away, 12→8). The snapshot natively carries `streamingThinking`, so the patch widens the main component's `{streamingToolUses:X,userInputOnProcessing:Y}=hook(ctx.stream)` destructuring with `streamingThinking:__cc_streamingThinkingState` and threads that as the prop.
 - 2.1.236 also wraps the summarized-thinking completion callback in an already-streamed guard (`if(a&&a.type==="thinking")if(G!==null&&G(a))o?.(()=>null);else o?.(…)`); the redacted-summary rewrite preserves the guard but applies it only to thinking-typed blocks, since the guard was written against `.thinking`, not `.data`.
 - the binary verifier's bare `__cc_streamingThinking` containment is satisfied by the reducer-side `__cc_streamingThinkingMessage` plumbing alone (substring coincidence) — that is how the 2.1.236/237 renderer-side loss passed verification. From 2.1.234 the verifier additionally requires `streamingThinking:__cc_streamingThinking` (signature or store-snapshot threading) and `__cc_streamingThinkingExtras`.
+- 2.1.227-style UI reducers can continue the options-destructuring `let` statement with an `authoringProgressSurface` local instead of ending it with a semicolon. Their `message_stop` branch also conditionally resets authoring progress after finalizing display state, so preserve that side effect while injecting streaming-thinking cleanup.
+- 2.1.233-style main renderer calls can omit `showAllInTranscript:` between `streamingToolUses:` and `agentDefinitions:`. Prop threading must still inject `streamingThinking:` into that call; reducer matches alone can remain nonzero while live thinking stays invisible.
+- 2.1.237-style REPLs keep `streamingThinking` in a stream-store snapshot and destructure only `streamingToolUses` and `userInputOnProcessing`. Inject the thinking snapshot into that destructuring and thread it through renderer calls that no longer carry `agentDefinitions`; the separate transcript wrapper must receive the prop too, and its compiled renderer-element cache must not hide updates. Otherwise the reducer updates state but no inline renderer observes it.
+- 2.1.245-style split chunks move the stream store, event reducer, and transcript renderer into separate modules. The transcript wrapper selects `streamingToolUses` from `turn.stream`; select `streamingThinking` through the same path, thread it into the renderer, and allow a bare imported memo hook when building inline extras. The reducer can rediscover the virtual assistant-message constructor from its semantic `{content,isVirtual,uuid}` signature before adding thinking event updates.
+- 2.1.250-style transcript wrappers select streaming tool uses from a focused-turn expression such as `(isMain?turn:null)?.stream`, and their renderer signature can put `isLoading:` directly after `streamingToolUses:`. Match that conditional stream expression, invalidate the compiled renderer-element cache, and merge thinking messages into the newer deduplicated tool-use extras pipeline.
 - the duplicate live-thinking suppressor should match the semantic row shape around `param:{type:"thinking",thinking:<var>.thinking}` and the surrounding `marginTop:1` wrapper, not a specific wrapper component identifier
 
 Why this exists:
@@ -956,6 +972,7 @@ Old bundle shapes we match:
 
 - bold text node rendering `"Claude Code"`
 - JSX text props shaped like `{bold:!0,children:"Claude Code"}`
+- split chunks that call an imported JSX factory directly instead of through a runtime object
 - help/settings title template like ``title:(`Claude Code v${...VERSION}`),color:"professionalBlue",defaultTab:"general"``
 - welcome copy `"Welcome to Claude Code for "`
 - welcome copy `"Welcome to Claude Code"`
@@ -979,15 +996,15 @@ Likely break signs:
 
 When a Claude update breaks a patch, do this in order.
 
-1. Patch extracted JS in dry-run mode first.
+1. Patch the downloaded native binary in dry-run mode first.
 
 ```bash
-node patch-claude-display.ts --file ./content.js --dry-run
+node scripts/patch-native.ts --input ./work/claude.native.original --dry-run
 ```
 
 2. Note which module dropped from its usual nonzero count to `0`, or which module now has fewer hits than expected.
 
-3. Search the extracted bundle for the old semantic anchors, not the old minified names.
+3. Search the affected extracted module contents for the old semantic anchors, not the old minified names. Do not assume the entry module contains the UI after 2.1.245.
 
 Examples:
 
@@ -1007,7 +1024,7 @@ rg 'case"collapsed_read_search"|case"thinking"|case"thinking_delta"|spinnerTipsE
 
 Minimum validation for patch work:
 
-- run dry-run patching on extracted content
+- run native dry-run patching across all embedded JavaScript modules
 - patch a real native binary
 - run the patched binary with `--version` and verify `(patched)` appears
 - manually inspect the UI areas touched by the patch
@@ -1047,6 +1064,11 @@ For a version-wide release:
    obtain an explicit disposition instead of deleting, force-publishing, or claiming success
 5. download every released binary and `checksums.txt`, verify the digest, then verify the provenance
    attestation subject, source commit, signer workflow, and run ID against the accepted run
+## CI Validation
+
+The workflow asserts the `(patched)` version marker by running native-architecture builds and re-extracting cross-architecture builds. That proves the rewritten bundle was packed into the release binary, but it does not prove every UI patch still behaves correctly.
+
+When investigating release correctness, treat these as strong signals, in order:
 
 Do not report a partial set of platform Releases as a complete version release.
 

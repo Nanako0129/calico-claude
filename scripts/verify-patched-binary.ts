@@ -1372,7 +1372,19 @@ const CHECKS: Check[] = [
           return `expected 1 renderer call-site streamingThinking prop, found ${rendererCallSites.length}`;
         }
 
-        if (usesCompilerCallSite) {
+        // Upstream patch-claude-code solves the same compiler-cache problem a
+        // second way, and that path now runs first: it reads the store through
+        // an inline arrow selector and forces the cached element to rebuild by
+        // short-circuiting the guard to `if(!0||…)` instead of claiming a cache
+        // slot. Both wirings are legitimate — the slot-growing one below is
+        // still what fires on bundles this shape does not match — so recognise
+        // it here rather than demanding a selector declaration it never emits.
+        const forcedRebuildWiring =
+          /__cc_streamingThinking=[A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*|\([^()]*\))\?\.stream,\(__cc_state\)=>__cc_state\.streamingThinking\)\?\?null,/.test(
+            content
+          ) && content.includes("if(!0||");
+
+        if (usesCompilerCallSite && !forcedRebuildWiring) {
           // Passing the prop is not sufficient at a compiler-cached call site:
           // the element is only rebuilt when one of the compared cache slots
           // changes, so an injected value that occupies no slot would leave the

@@ -145,15 +145,13 @@ function patchCollapsedReadSearch(content, ctx = {}) {
     const end = endCandidates.length > 0 ? Math.min(...endCandidates) : output.length;
     const segment = output.slice(start, end);
 
-    const hasRendererCall =
-      segment.includes("createElement(") || segment.includes("jsx(") || segment.includes("jsxs(");
-    if (!hasRendererCall || !segment.includes("verbose:")) {
+    if (!segment.includes("verbose:")) {
       index = start + o7qCaseNeedle.length;
       continue;
     }
 
     const callMatch = segment.match(
-      /(?:createElement|jsx|jsxs)\([A-Za-z_$][\w$]*,\{message:[^}]*inProgressToolUseIDs:[^}]*shouldAnimate:[^}]*verbose:[^,}]+,tools:[^}]*lookups:[^}]*isActiveGroup:[^}]*\}\)/
+      /\{message:[^}]*inProgressToolUseIDs:[^}]*shouldAnimate:[^}]*verbose:[^,}]+,tools:[^}]*lookups:[^}]*isActiveGroup:[^}]*\}/
     );
     if (!callMatch) {
       index = start + o7qCaseNeedle.length;
@@ -396,7 +394,7 @@ function patchThinkingCase(content, ctx = {}) {
 
     let nextSegment = segment;
     nextSegment = nextSegment.replace(
-      /if\(![A-Za-z_$][\w$]*(?:&&![A-Za-z_$][\w$]*){1,2}\)return null;/,
+      /if\(![A-Za-z_$][\w$]*(?:&&![A-Za-z_$][\w$]*){1,2}\)(?:return null;|\{return null;?\})/,
       (full) => {
         if (!ctx.preserveLength) {
           return "";
@@ -601,12 +599,73 @@ function patchThinkingStreaming(content) {
   candidates += memoCandidates;
   patched += memoPatched;
 
+  const turnStreamSelectionPattern =
+    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(((?:[A-Za-z_$][\w$]*|\([A-Za-z_$][\w$]*\?[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*\)))\?\.stream,([A-Za-z_$][\w$]*)\)\?\?([A-Za-z_$][\w$]*),/g;
+  let turnStreamSelectionMatch;
+  while ((turnStreamSelectionMatch = turnStreamSelectionPattern.exec(output)) !== null) {
+    const streamingToolUsesVar = turnStreamSelectionMatch[1];
+    const selectorHook = turnStreamSelectionMatch[2];
+    const turnVar = turnStreamSelectionMatch[3];
+    const fnStart = output.lastIndexOf("function ", turnStreamSelectionMatch.index);
+    const fnEnd = output.indexOf("function ", turnStreamSelectionMatch.index + turnStreamSelectionMatch[0].length);
+    if (fnStart === -1 || fnEnd === -1) {
+      continue;
+    }
+
+    const wrapperSegment = output.slice(fnStart, fnEnd);
+    if (!wrapperSegment.includes(`streamingToolUses:${streamingToolUsesVar},`)) {
+      continue;
+    }
+
+    const rendererSignaturePattern =
+      /(streamingToolUses:[A-Za-z_$][\w$]*,)((?:showAllInTranscript|isLoading):)/;
+    if (!rendererSignaturePattern.test(output)) {
+      continue;
+    }
+
+    const streamingThinkingVar = "__cc_streamingThinking";
+    let nextWrapperSegment = wrapperSegment.replace(
+      turnStreamSelectionMatch[0],
+      `${turnStreamSelectionMatch[0]}${streamingThinkingVar}=${selectorHook}(${turnVar}?.stream,(__cc_state)=>__cc_state.streamingThinking)??null,`
+    );
+    nextWrapperSegment = nextWrapperSegment.replace(
+      `streamingToolUses:${streamingToolUsesVar},`,
+      `streamingToolUses:${streamingToolUsesVar},streamingThinking:${streamingThinkingVar},`
+    );
+
+    const propIndex = nextWrapperSegment.indexOf(`streamingThinking:${streamingThinkingVar},`);
+    const cacheIfIndex = nextWrapperSegment.lastIndexOf("if(", propIndex);
+    if (propIndex === -1 || cacheIfIndex === -1 || propIndex - cacheIfIndex > 1200) {
+      continue;
+    }
+    nextWrapperSegment =
+      nextWrapperSegment.slice(0, cacheIfIndex + 3) +
+      "!0||" +
+      nextWrapperSegment.slice(cacheIfIndex + 3);
+
+    let nextOutput = output.slice(0, fnStart) + nextWrapperSegment + output.slice(fnEnd);
+    nextOutput = nextOutput.replace(
+      rendererSignaturePattern,
+      `$1streamingThinking:${streamingThinkingVar},$2`
+    );
+    if (nextOutput !== output) {
+      candidates += 1;
+      patched += 1;
+      output = nextOutput;
+      turnStreamSelectionPattern.lastIndex = fnStart + nextWrapperSegment.length;
+    }
+  }
+
   let propCandidates = 0;
   let propPatched = 0;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
   const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let streamingVar =
-    output.match(/hidePastThinking:!0,streamingThinking:([A-Za-z_$][\w$]*)/)?.[1] ?? null;
+    output.match(/hidePastThinking:!0,streamingThinking:([A-Za-z_$][\w$]*)/)?.[1] ??
+    output.match(
+      /streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),(?:userInputOnProcessing|isLoading):/
+    )?.[1] ??
+    null;
 
   if (streamingVar === null) {
     const onStreamingThinkingPattern = /onStreamingThinking:([A-Za-z_$][\w$]*)/g;
@@ -671,6 +730,12 @@ function patchThinkingStreaming(content) {
       /(screen:[^,}]+,streamingToolUses:[^,}]+,)((?:agentDefinitions:[^,}]+,)?onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
     const jsxTranscriptRendererPropsPattern =
       /(screen:[^,}]+,agentDefinitions:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,isLoading:[^,}]+)/g;
+    const jsxStreamStoreMainRendererPropsPattern =
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+,hasStreamingText:[^,}]+,streamingPreview:[^,}]+,isBriefOnly:[^,}]+)/g;
+    const jsxStreamStoreTranscriptRendererPropsPattern =
+      /(screen:[^,}]+,streamingToolUses:[^,}]+,)(showAllInTranscript:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+,isLoading:[^,}]+)/g;
+    const jsxStreamStoreTranscriptWrapperPropsPattern =
+      /(focused:[^,}]+,tools:[^,}]+,commands:[^,}]+,streamingToolUses:[^,}]+,)(isLoading:[^,}]+,onOpenRateLimitOptions:[^,}]+,onRateLimitAutoQueueContinue:[^,}]+)/g;
 
     output = output.replace(createElementCallPattern, (full, component, props) => {
       if (!props.includes("streamingToolUses:")) {
@@ -1063,6 +1128,13 @@ function patchThinkingStreaming(content) {
     lingerPatched += 1;
     return `${visibleVar}=${useMemoCallee}(()=>!!(${streamVar}&&${streamVar}.isStreaming),[${streamVar}])`;
   });
+  const streamStoreLingerPattern =
+    /if\(([A-Za-z_$][\w$]*)&&!\1\.isStreaming&&\1\.streamingEndedAt\)\{let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*-\(Date\.now\(\)-\1\.streamingEndedAt\);if\(\2>0\)this\._cancelThinkingHide=this\._scheduleTimeout\(\(\)=>\{this\._cancelThinkingHide=null,this\.setStreamingThinking\(null\)\},\2\);else this\.setStreamingThinking\(null\)\}/g;
+  output = output.replace(streamStoreLingerPattern, (_full, streamVar) => {
+    lingerCandidates += 1;
+    lingerPatched += 1;
+    return `if(${streamVar}&&!${streamVar}.isStreaming&&${streamVar}.streamingEndedAt)this.setStreamingThinking(null)`;
+  });
   candidates += lingerCandidates;
   patched += lingerPatched;
 
@@ -1123,7 +1195,7 @@ function patchThinkingStreaming(content) {
       (
         _full,
         extrasVar,
-        useMemoCallee,
+        memoCall,
         streamingToolUsesVar,
         toolUseEntryVar,
         toolUseMessageVar,
@@ -1134,7 +1206,32 @@ function patchThinkingStreaming(content) {
         inlineThinkingCandidates += 1;
         inlineThinkingPatched += 1;
         createVirtualMessageHelper = createMessageHelper;
-        return `${extrasVar}=${useMemoCallee}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
+        return `${extrasVar}=${memoCall}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
+      }
+    );
+
+    const dedupedInlineThinkingPattern =
+      /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\(\)=>([A-Za-z_$][\w$]*)\.flatMap\(\(([A-Za-z_$][\w$]*)\)=>\{let\{id:([A-Za-z_$][\w$]*),minted:([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)\(\4\),([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{content:\[\6\?\{\.\.\.\4\.contentBlock,id:\5\}:\4\.contentBlock\]\}\);return \8\.uuid=\6\?\5:([A-Za-z_$][\w$]*)\(\5,0\),([A-Za-z_$][\w$]*)\(\[\8\]\)\}\),\[\3,\7\]\)/g;
+    output = output.replace(
+      dedupedInlineThinkingPattern,
+      (
+        _full,
+        extrasVar,
+        memoCall,
+        streamingToolUsesVar,
+        toolUseEntryVar,
+        toolUseIdVar,
+        mintedVar,
+        resolveToolUseIdHelper,
+        toolUseMessageVar,
+        createMessageHelper,
+        createUUIDHelper,
+        normalizeMessagesHelper
+      ) => {
+        inlineThinkingCandidates += 1;
+        inlineThinkingPatched += 1;
+        createVirtualMessageHelper = createMessageHelper;
+        return `${extrasVar}=${memoCall}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let{id:${toolUseIdVar},minted:${mintedVar}}=${resolveToolUseIdHelper}(${toolUseEntryVar}),${toolUseMessageVar}=${createMessageHelper}({content:[${mintedVar}?{...${toolUseEntryVar}.contentBlock,id:${toolUseIdVar}}:${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${mintedVar}?${toolUseIdVar}:${createUUIDHelper}(${toolUseIdVar},0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${resolveToolUseIdHelper},${transcriptStreamingThinkingVar}])`;
       }
     );
     candidates += inlineThinkingCandidates;
@@ -2087,6 +2184,19 @@ function patchWelcomePatchedBadge(content) {
     (full, jsxCallee, textComponent) => {
       candidates += 1;
       const replacement = `${jsxCallee}(${textComponent},{bold:!0,children:"Calico Claude"})`;
+      if (replacement !== full) {
+        patched += 1;
+        return replacement;
+      }
+      return full;
+    }
+  );
+
+  output = output.replace(
+    /([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),\{bold:!0,children:"Claude Code"\}\)/g,
+    (full, jsxFactory, textComponent) => {
+      candidates += 1;
+      const replacement = `${jsxFactory}(${textComponent},{bold:!0,children:"Connoisseur's Code"})`;
       if (replacement !== full) {
         patched += 1;
         return replacement;
@@ -3803,6 +3913,62 @@ function resolveSelectedPatchIds(opts) {
   return { selected };
 }
 
+function patchContents(contents, opts = {}) {
+  const { selected } = resolveSelectedPatchIds({
+    disable: opts.disable ?? [],
+    enable: opts.enable ?? [],
+  });
+  let currentContents = [...contents];
+  const patchResults = new Map();
+
+  for (const module of PATCH_MODULES) {
+    if (!selected.has(module.id)) {
+      patchResults.set(module.id, {
+        candidates: 0,
+        patched: 0,
+        skipped: true,
+        reason: "disabled",
+      });
+      continue;
+    }
+
+    let candidates = 0;
+    let patched = 0;
+    currentContents = currentContents.map((content) => {
+      const result = module.apply(content, { preserveLength: false });
+      candidates += result.candidates;
+      patched += result.patched;
+      return result.content;
+    });
+    patchResults.set(module.id, {
+      candidates,
+      patched,
+      skipped: false,
+      reason: null,
+    });
+  }
+
+  return { contents: currentContents, patchResults };
+}
+
+function printPatchSummary(patchResults) {
+  console.log("Patch summary:");
+  for (const module of PATCH_MODULES) {
+    const result = patchResults.get(module.id);
+    if (result.skipped) {
+      if (result.reason === "disabled") {
+        console.log(`  ${module.id} candidates: 0, patched: 0 (skipped)`);
+      } else {
+        console.log(
+          `  ${module.id} candidates: ${result.candidates}, patched: 0 (skipped: ${result.reason})`
+        );
+      }
+      continue;
+    }
+    console.log(`  ${module.id} candidates: ${result.candidates}, patched: ${result.patched}`);
+  }
+}
+
 function main() {
   let opts;
   try {
@@ -3873,7 +4039,6 @@ function main() {
       reason: result.skipped === true ? result.reason ?? "not applicable" : null,
     });
   }
-
   const nextContent = currentContent;
 
   console.log("Patch summary:");
