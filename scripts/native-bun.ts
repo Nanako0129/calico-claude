@@ -328,160 +328,72 @@ function rebuildBunData(
   replacementContents: ReadonlyMap<string, Buffer>,
   moduleStructSize: 36 | 52
 ): Buffer {
-  const rawBuffers: Buffer[] = [];
-  const modules: Array<{
-    name: Buffer;
-    contents: Buffer;
-    sourcemap: Buffer;
-    bytecode: Buffer;
-    moduleInfo: Buffer;
-    bytecodeOriginPath: Buffer;
-    encoding: number;
-    loader: number;
-    moduleFormat: number;
-    side: number;
-  }> = [];
-
   const moduleTable = sliceRange(bunData, bunOffsets.modulesPtr);
   const moduleCount = Math.floor(moduleTable.length / moduleStructSize);
+  const rebuilt = Buffer.from(bunData);
+  const replacements: Array<{
+    moduleName: string;
+    moduleOffset: number;
+    moduleRecord: BunModule;
+    content: Buffer;
+  }> = [];
 
   for (let index = 0; index < moduleCount; index += 1) {
     const moduleOffset = index * moduleStructSize;
     const moduleRecord = readBunModule(moduleTable, moduleOffset, moduleStructSize);
     const moduleName = sliceRange(bunData, moduleRecord.name).toString("utf8");
-    const hasReplacement = replacementContents.has(moduleName);
+    const replacement = replacementContents.get(moduleName);
+    if (replacement !== undefined) {
+      replacements.push({
+        moduleName,
+        moduleOffset,
+        moduleRecord,
+        content: replacement,
+      });
+    }
+  }
 
-    const nextContents = hasReplacement
-      ? replacementContents.get(moduleName)!
-      : sliceRange(bunData, moduleRecord.contents);
+  // Preserve Bun data that is not referenced by the module table and reuse only
+  // bytecode ranges whose records are cleared below.
+  const freeBytecodeRanges = replacements
+    .map(({ moduleRecord }) => ({ ...moduleRecord.bytecode }))
+    .filter((range) => range.length > 0);
 
-    const nextModule = {
-      name: sliceRange(bunData, moduleRecord.name),
-      contents: nextContents,
-      sourcemap: sliceRange(bunData, moduleRecord.sourcemap),
-      // Bun prefers embedded bytecode to source, so patched modules must be recompiled.
-      bytecode: hasReplacement ? Buffer.alloc(0) : sliceRange(bunData, moduleRecord.bytecode),
-      moduleInfo: sliceRange(bunData, moduleRecord.moduleInfo),
-      bytecodeOriginPath: hasReplacement
-        ? Buffer.alloc(0)
-        : sliceRange(bunData, moduleRecord.bytecodeOriginPath),
-      encoding: moduleRecord.encoding,
-      loader: moduleRecord.loader,
-      moduleFormat: moduleRecord.moduleFormat,
-      side: moduleRecord.side,
-    };
+  for (const { moduleName, moduleOffset, moduleRecord, content } of replacements) {
+    let contentTarget = moduleRecord.contents;
+    if (content.length > contentTarget.length) {
+      let bestRangeIndex = -1;
+      for (let index = 0; index < freeBytecodeRanges.length; index += 1) {
+        const range = freeBytecodeRanges[index];
+        if (range.length < content.length) {
+          continue;
+        }
+        if (bestRangeIndex === -1 || range.length < freeBytecodeRanges[bestRangeIndex].length) {
+          bestRangeIndex = index;
+        }
+      }
+      if (bestRangeIndex === -1) {
+        throw new Error(`No freed bytecode slot can hold patched module ${moduleName}`);
+      }
 
-    modules.push(nextModule);
+      const range = freeBytecodeRanges[bestRangeIndex];
+      contentTarget = { offset: range.offset, length: content.length };
+      range.offset += content.length;
+      range.length -= content.length;
+    }
+
+    content.copy(rebuilt, contentTarget.offset);
+    const recordOffset = bunOffsets.modulesPtr.offset + moduleOffset;
+    rebuilt.writeUInt32LE(contentTarget.offset, recordOffset + 8);
+    rebuilt.writeUInt32LE(content.length, recordOffset + 12);
+    rebuilt.writeUInt32LE(0, recordOffset + 24);
+    rebuilt.writeUInt32LE(0, recordOffset + 28);
 
     if (moduleStructSize === 52) {
-      rawBuffers.push(
-        nextModule.name,
-        nextModule.contents,
-        nextModule.sourcemap,
-        nextModule.bytecode,
-        nextModule.moduleInfo,
-        nextModule.bytecodeOriginPath
-      );
-    } else {
-      rawBuffers.push(nextModule.name, nextModule.contents, nextModule.sourcemap, nextModule.bytecode);
+      rebuilt.writeUInt32LE(0, recordOffset + 40);
+      rebuilt.writeUInt32LE(0, recordOffset + 44);
     }
   }
-
-  const rawBufferRanges: Range[] = [];
-  let cursor = 0;
-  for (const rawBuffer of rawBuffers) {
-    rawBufferRanges.push({ offset: cursor, length: rawBuffer.length });
-    cursor += rawBuffer.length + 1;
-  }
-
-  const moduleTableOffset = cursor;
-  const moduleTableLength = modules.length * moduleStructSize;
-  cursor += moduleTableLength;
-
-  const compileExecArgv = sliceRange(bunData, bunOffsets.compileExecArgvPtr);
-  const compileExecArgvOffset = cursor;
-  cursor += compileExecArgv.length + 1;
-
-  const offsetsOffset = cursor;
-  cursor += 32;
-
-  const trailerOffset = cursor;
-  cursor += BUN_TRAILER.length;
-
-  const rebuilt = Buffer.alloc(cursor);
-  let rawBufferIndex = 0;
-  for (const rawBufferRange of rawBufferRanges) {
-    const rawBuffer = rawBuffers[rawBufferIndex];
-    if (rawBuffer.length > 0) {
-      rawBuffer.copy(rebuilt, rawBufferRange.offset, 0, rawBufferRange.length);
-    }
-    rawBufferIndex += 1;
-  }
-
-  if (compileExecArgv.length > 0) {
-    compileExecArgv.copy(rebuilt, compileExecArgvOffset, 0, compileExecArgv.length);
-  }
-
-  const fieldsPerModule = moduleStructSize === 52 ? 6 : 4;
-  for (let moduleIndex = 0; moduleIndex < modules.length; moduleIndex += 1) {
-    const module = modules[moduleIndex];
-    const baseIndex = moduleIndex * fieldsPerModule;
-    const moduleRecord = {
-      name: rawBufferRanges[baseIndex],
-      contents: rawBufferRanges[baseIndex + 1],
-      sourcemap: rawBufferRanges[baseIndex + 2],
-      bytecode: rawBufferRanges[baseIndex + 3],
-      moduleInfo: moduleStructSize === 52 ? rawBufferRanges[baseIndex + 4] : { offset: 0, length: 0 },
-      bytecodeOriginPath:
-        moduleStructSize === 52 ? rawBufferRanges[baseIndex + 5] : { offset: 0, length: 0 },
-      encoding: module.encoding,
-      loader: module.loader,
-      moduleFormat: module.moduleFormat,
-      side: module.side,
-    };
-
-    let recordCursor = moduleTableOffset + moduleIndex * moduleStructSize;
-    rebuilt.writeUInt32LE(moduleRecord.name.offset, recordCursor);
-    rebuilt.writeUInt32LE(moduleRecord.name.length, recordCursor + 4);
-    recordCursor += 8;
-
-    rebuilt.writeUInt32LE(moduleRecord.contents.offset, recordCursor);
-    rebuilt.writeUInt32LE(moduleRecord.contents.length, recordCursor + 4);
-    recordCursor += 8;
-
-    rebuilt.writeUInt32LE(moduleRecord.sourcemap.offset, recordCursor);
-    rebuilt.writeUInt32LE(moduleRecord.sourcemap.length, recordCursor + 4);
-    recordCursor += 8;
-
-    rebuilt.writeUInt32LE(moduleRecord.bytecode.offset, recordCursor);
-    rebuilt.writeUInt32LE(moduleRecord.bytecode.length, recordCursor + 4);
-    recordCursor += 8;
-
-    if (moduleStructSize === 52) {
-      rebuilt.writeUInt32LE(moduleRecord.moduleInfo.offset, recordCursor);
-      rebuilt.writeUInt32LE(moduleRecord.moduleInfo.length, recordCursor + 4);
-      recordCursor += 8;
-
-      rebuilt.writeUInt32LE(moduleRecord.bytecodeOriginPath.offset, recordCursor);
-      rebuilt.writeUInt32LE(moduleRecord.bytecodeOriginPath.length, recordCursor + 4);
-      recordCursor += 8;
-    }
-
-    rebuilt.writeUInt8(moduleRecord.encoding, recordCursor);
-    rebuilt.writeUInt8(moduleRecord.loader, recordCursor + 1);
-    rebuilt.writeUInt8(moduleRecord.moduleFormat, recordCursor + 2);
-    rebuilt.writeUInt8(moduleRecord.side, recordCursor + 3);
-  }
-
-  rebuilt.writeBigUInt64LE(BigInt(offsetsOffset), offsetsOffset);
-  rebuilt.writeUInt32LE(moduleTableOffset, offsetsOffset + 8);
-  rebuilt.writeUInt32LE(moduleTableLength, offsetsOffset + 12);
-  rebuilt.writeUInt32LE(bunOffsets.entryPointId, offsetsOffset + 16);
-  rebuilt.writeUInt32LE(compileExecArgvOffset, offsetsOffset + 20);
-  rebuilt.writeUInt32LE(compileExecArgv.length, offsetsOffset + 24);
-  rebuilt.writeUInt32LE(bunOffsets.flags, offsetsOffset + 28);
-
-  BUN_TRAILER.copy(rebuilt, trailerOffset);
 
   return rebuilt;
 }
@@ -1031,6 +943,21 @@ function writeMachOBunContent(
   const section = segment?.getSection("__bun");
   if (!segment || !section) {
     throw new Error(`__BUN.__bun section not found in Mach-O binary: ${binaryPath}`);
+  }
+
+  if (wrappedSectionData.length === Number(section.size)) {
+    const originalBytes = fs.readFileSync(binaryPath);
+    const sectionOffset = Number(section.offset);
+    const sectionEnd = sectionOffset + wrappedSectionData.length;
+    if (sectionOffset < 0 || sectionEnd > originalBytes.length) {
+      throw new Error(`__BUN.__bun section is out of range in Mach-O binary: ${binaryPath}`);
+    }
+
+    const nextBytes = Buffer.from(originalBytes);
+    wrappedSectionData.copy(nextBytes, sectionOffset);
+    writeBufferPreservingMode(binaryPath, nextBytes);
+    execFileSync("codesign", ["-s", "-", "-f", binaryPath], { stdio: "ignore" });
+    return;
   }
 
   const growthBytes = wrappedSectionData.length - Number(section.size);

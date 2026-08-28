@@ -70,12 +70,14 @@ These rules are not style preferences. They are what keeps the patcher alive acr
 - reads the embedded Bun modules from Mach-O, ELF, or PE binaries
 - applies the display patch pipeline to every JavaScript module in memory
 - aggregates one patch summary across all modules
-- writes only changed module contents into the output binary with the format-specific `node-lief` path
+- writes only changed module contents into reclaimed source or bytecode storage in the output binary
 
 Important behavior:
 
 - a nonzero source patch count is not sufficient by itself: Bun can execute a module's embedded bytecode instead of its source
 - when a module's source changes, the writer removes its bytecode and bytecode origin path so Bun recompiles the patched source
+- the writer preserves the rest of the Bun payload at its original offsets; 2.1.250 includes runtime data that is not referenced by the module table, so compacting only the known module ranges produces a startup crash
+- if changed source outgrows its original source range, the writer allocates it from bytecode storage freed by any changed module
 - if a required patch matches nothing, the script fails before copying or rewriting the output binary
 - 2.1.233 names the entry module `/$bunfs/root/cli` on macOS/Linux and `B:/~BUN/root/cli` on Windows, so entry detection recognizes the stable `/root/cli` suffix in addition to older Claude entry names
 - 2.1.245 splits the application across more than a thousand `chunk-*.js` modules. Its `/root/cli` entry is only a small loader, so entry-module-only extraction produces misleading zero counts for UI patches.
@@ -289,6 +291,7 @@ Old bundle shapes we match:
 - 2.1.233-style main renderer calls can omit `showAllInTranscript:` between `streamingToolUses:` and `agentDefinitions:`. Prop threading must still inject `streamingThinking:` into that call; reducer matches alone can remain nonzero while live thinking stays invisible.
 - 2.1.237-style REPLs keep `streamingThinking` in a stream-store snapshot and destructure only `streamingToolUses` and `userInputOnProcessing`. Inject the thinking snapshot into that destructuring and thread it through renderer calls that no longer carry `agentDefinitions`; the separate transcript wrapper must receive the prop too, and its compiled renderer-element cache must not hide updates. Otherwise the reducer updates state but no inline renderer observes it.
 - 2.1.245-style split chunks move the stream store, event reducer, and transcript renderer into separate modules. The transcript wrapper selects `streamingToolUses` from `turn.stream`; select `streamingThinking` through the same path, thread it into the renderer, and allow a bare imported memo hook when building inline extras. The reducer can rediscover the virtual assistant-message constructor from its semantic `{content,isVirtual,uuid}` signature before adding thinking event updates.
+- 2.1.250-style transcript wrappers select streaming tool uses from a focused-turn expression such as `(isMain?turn:null)?.stream`, and their renderer signature can put `isLoading:` directly after `streamingToolUses:`. Match that conditional stream expression, invalidate the compiled renderer-element cache, and merge thinking messages into the newer deduplicated tool-use extras pipeline.
 - the duplicate live-thinking suppressor should match the semantic row shape around `param:{type:"thinking",thinking:<var>.thinking}` and the surrounding `marginTop:1` wrapper, not a specific wrapper component identifier
 
 Why this exists:

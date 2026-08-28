@@ -211,7 +211,7 @@ function patchWriteCreateDiffColors(content) {
       "(?:[A-Za-z_$][\\w$]*\\.(?:createElement|jsx|jsxs)|[A-Za-z_$][\\w$]*)";
     const createReturnMatch = createSegment.match(
       new RegExp(
-        `return (${rendererCallPattern})\\(([A-Za-z_$][\\w$]*),\\{filePath:([A-Za-z_$][\\w$]*),content:([A-Za-z_$][\\w$]*),verbose:([A-Za-z_$][\\w$]*)\\}\\)`
+        `return (${rendererCallPattern})\\(([A-Za-z_$][\\w$]*),\\{filePath:([A-Za-z_$][\\w$]*),content:([A-Za-z_$][\\w$]*),verbose:([A-Za-z_$][\\w$]*)(?:,replacedUndiffedContent:[A-Za-z_$][\\w$]*)?\\}\\)`
       )
     );
     if (!createReturnMatch) {
@@ -533,7 +533,7 @@ function patchThinkingStreaming(content) {
   patched += memoPatched;
 
   const turnStreamSelectionPattern =
-    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\?\.stream,([A-Za-z_$][\w$]*)\)\?\?([A-Za-z_$][\w$]*),/g;
+    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(((?:[A-Za-z_$][\w$]*|\([A-Za-z_$][\w$]*\?[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*\)))\?\.stream,([A-Za-z_$][\w$]*)\)\?\?([A-Za-z_$][\w$]*),/g;
   let turnStreamSelectionMatch;
   while ((turnStreamSelectionMatch = turnStreamSelectionPattern.exec(output)) !== null) {
     const streamingToolUsesVar = turnStreamSelectionMatch[1];
@@ -551,7 +551,7 @@ function patchThinkingStreaming(content) {
     }
 
     const rendererSignaturePattern =
-      /(streamingToolUses:[A-Za-z_$][\w$]*,)(showAllInTranscript:)/;
+      /(streamingToolUses:[A-Za-z_$][\w$]*,)((?:showAllInTranscript|isLoading):)/;
     if (!rendererSignaturePattern.test(output)) {
       continue;
     }
@@ -596,7 +596,7 @@ function patchThinkingStreaming(content) {
   let streamingVar =
     output.match(/hidePastThinking:!0,streamingThinking:([A-Za-z_$][\w$]*)/)?.[1] ??
     output.match(
-      /streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),userInputOnProcessing:/
+      /streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),(?:userInputOnProcessing|isLoading):/
     )?.[1] ??
     null;
 
@@ -896,13 +896,13 @@ function patchThinkingStreaming(content) {
     transcriptToolUseHelpersMatch?.[1] ?? virtualMessageHelperMatch?.[1] ?? null;
   let transcriptStreamingThinkingVar = null;
   const rendererStreamingThinkingMatch = output.match(
-    /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),showAllInTranscript:/
+    /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*),(?:showAllInTranscript|isLoading):/
   );
   if (rendererStreamingThinkingMatch) {
     transcriptStreamingThinkingVar = rendererStreamingThinkingMatch[1];
   } else if (streamingVar !== null) {
     const rendererSignaturePattern =
-      /(\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,)(showAllInTranscript:)/;
+      /(\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,)((?:showAllInTranscript|isLoading):)/;
     output = output.replace(rendererSignaturePattern, (full, beforeStreamingThinking, afterStreamingThinking) => {
       if (full.includes("streamingThinking:")) {
         return full;
@@ -942,6 +942,31 @@ function patchThinkingStreaming(content) {
         inlineThinkingPatched += 1;
         createVirtualMessageHelper = createMessageHelper;
         return `${extrasVar}=${memoCall}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let ${toolUseMessageVar}=${createMessageHelper}({content:[${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${createUUIDHelper}(${toolUseEntryVar}.contentBlock.id,0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${transcriptStreamingThinkingVar}])`;
+      }
+    );
+
+    const dedupedInlineThinkingPattern =
+      /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\(\)=>([A-Za-z_$][\w$]*)\.flatMap\(\(([A-Za-z_$][\w$]*)\)=>\{let\{id:([A-Za-z_$][\w$]*),minted:([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)\(\4\),([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{content:\[\6\?\{\.\.\.\4\.contentBlock,id:\5\}:\4\.contentBlock\]\}\);return \8\.uuid=\6\?\5:([A-Za-z_$][\w$]*)\(\5,0\),([A-Za-z_$][\w$]*)\(\[\8\]\)\}\),\[\3,\7\]\)/g;
+    output = output.replace(
+      dedupedInlineThinkingPattern,
+      (
+        _full,
+        extrasVar,
+        memoCall,
+        streamingToolUsesVar,
+        toolUseEntryVar,
+        toolUseIdVar,
+        mintedVar,
+        resolveToolUseIdHelper,
+        toolUseMessageVar,
+        createMessageHelper,
+        createUUIDHelper,
+        normalizeMessagesHelper
+      ) => {
+        inlineThinkingCandidates += 1;
+        inlineThinkingPatched += 1;
+        createVirtualMessageHelper = createMessageHelper;
+        return `${extrasVar}=${memoCall}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let{id:${toolUseIdVar},minted:${mintedVar}}=${resolveToolUseIdHelper}(${toolUseEntryVar}),${toolUseMessageVar}=${createMessageHelper}({content:[${mintedVar}?{...${toolUseEntryVar}.contentBlock,id:${toolUseIdVar}}:${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${mintedVar}?${toolUseIdVar}:${createUUIDHelper}(${toolUseIdVar},0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${resolveToolUseIdHelper},${transcriptStreamingThinkingVar}])`;
       }
     );
     candidates += inlineThinkingCandidates;
