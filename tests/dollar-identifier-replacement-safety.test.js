@@ -171,3 +171,36 @@ test("turn-stream thinking injection binds $$-named hook and turn locals verbati
   // `h$k`/`t$n` undefined and the call throws.
   assert.equal(context.lastProps.streamingThinking.messages[0], "THOUGHT");
 });
+
+// The forced-rebuild insertion must land on the guard that owns the renderer
+// assignment. Picking the nearest preceding `if(` forces an unrelated branch
+// true and leaves the real memo guard intact, so streamingThinking updates keep
+// returning the stale cached element while every text-level check still passes.
+// The intervening `if(` sits BETWEEN the memo guard and the props, which is
+// where `lastIndexOf("if(", propIndex)` goes wrong.
+const interveningIfFixture = `
+function wrapper(){let su=hk(tn?.stream,se)??li,x,pv;if(cache[0]!==su){if(mk(su))pv=1;x=o(C,{streamingToolUses:su,isLoading:pv}),cache[0]=su,cache[1]=x}else x=cache[1];return x}
+function next(){}
+`;
+
+test("forced rebuild lands on the guard owning the renderer assignment", () => {
+  const result = patchThinkingStreaming(interveningIfFixture);
+  assert.ok(result.patched > 0, "expected the turn-stream selection to patch");
+
+  // The renderer guard is forced; the intervening prop-computation guard is not.
+  assert.match(result.content, /if\(!0\|\|cache\[0\]!==su\)\{/);
+  assert.doesNotMatch(result.content, /if\(!0\|\|mk\(su\)\)/);
+
+  const context = { cache: [], lastProps: null };
+  vm.createContext(context);
+  vm.runInContext(
+    `var hk=(s,f)=>s?f(s):null;` +
+      `var tn={stream:{streamingToolUses:["tu"],streamingThinking:{messages:["THOUGHT"]}}};` +
+      `var se=(s)=>s.streamingToolUses,li=[],C={},mk=(v)=>!!v;` +
+      `function o(c,p){lastProps=p;return{c,p}}` +
+      result.content +
+      `;wrapper();`,
+    context
+  );
+  assert.equal(context.lastProps.streamingThinking.messages[0], "THOUGHT");
+});

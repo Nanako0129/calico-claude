@@ -568,6 +568,69 @@ function virtualMessageHelperAt(content, index) {
   return null;
 }
 
+// Index of the `)` that closes the `(` at openIndex, or -1.
+function closingParenIndex(text, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+// Index of the `}` that closes the `{` at openIndex, or -1.
+function closingBraceIndex(text, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+// Index of the innermost `if(` whose body contains statementIndex — the guard
+// that OWNS the statement, rather than whichever `if(` happens to be nearest.
+// A guard's body is either the single statement right after its `)`, or a
+// braced block; scanning backwards from the statement, the first candidate
+// satisfying either is the innermost. A sibling `if` earlier in the same block
+// fails both tests, which is the case that matters: forcing it true would leave
+// the real guard intact and the defect invisible. Returns -1 when nothing owns
+// the statement, and callers treat that as "do not patch" — declining is the
+// safe direction.
+function owningGuardIndex(text, statementIndex) {
+  let search = text.lastIndexOf("if(", statementIndex);
+  while (search !== -1) {
+    const close = closingParenIndex(text, search + 2);
+    if (close !== -1) {
+      if (close + 1 === statementIndex) {
+        return search;
+      }
+      if (text[close + 1] === "{") {
+        const blockEnd = closingBraceIndex(text, close + 1);
+        if (blockEnd > statementIndex) {
+          return search;
+        }
+      }
+    }
+    search = search === 0 ? -1 : text.lastIndexOf("if(", search - 1);
+  }
+  return -1;
+}
+
 function patchThinkingStreaming(content) {
   let output = content;
   let candidates = 0;
@@ -639,9 +702,33 @@ function patchThinkingStreaming(content) {
       () => `streamingToolUses:${streamingToolUsesVar},streamingThinking:${streamingThinkingVar},`
     );
 
+    // Force the compiler's memo guard to rebuild the element. The guard has to
+    // be the one that OWNS the renderer assignment, not merely the nearest
+    // preceding `if(`: any intervening conditional — a computed prop, a nested
+    // ternary lowered to a branch — would otherwise be forced true while the
+    // real guard stayed intact, leaving streamingThinking updates hidden behind
+    // the stale cached element with every text-level check still passing.
+    // Identify it structurally: find the assignment whose props object holds the
+    // injected prop, then take the `if(` whose condition closes immediately
+    // before that assignment starts.
     const propIndex = nextWrapperSegment.indexOf(`streamingThinking:${streamingThinkingVar},`);
-    const cacheIfIndex = nextWrapperSegment.lastIndexOf("if(", propIndex);
-    if (propIndex === -1 || cacheIfIndex === -1 || propIndex - cacheIfIndex > 1200) {
+    if (propIndex === -1) {
+      continue;
+    }
+    const rendererAssignPattern =
+      /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(([A-Za-z_$][\w$]*),\{/g;
+    let rendererAssign = null;
+    for (const assignMatch of nextWrapperSegment.matchAll(rendererAssignPattern)) {
+      if (assignMatch.index > propIndex) {
+        break;
+      }
+      rendererAssign = assignMatch;
+    }
+    if (rendererAssign === null) {
+      continue;
+    }
+    const cacheIfIndex = owningGuardIndex(nextWrapperSegment, rendererAssign.index);
+    if (cacheIfIndex === -1) {
       continue;
     }
     nextWrapperSegment =
