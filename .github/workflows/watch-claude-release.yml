@@ -1,8 +1,23 @@
 name: Watch Claude Code Releases
 
 on:
+  # GitHub does not honour this cadence; it is an upper bound on how often the
+  # schedule is *considered*. Observed firing on this repo: roughly hourly but
+  # always 30-50 minutes late, then degrading to 2.3h, 4.3h, 10.3h and 10.7h
+  # gaps over 2026-08-26/27, which left a merged 2.1.247 compat fix unreleased
+  # for hours. Asking every 15 minutes does not make GitHub punctual, it just
+  # gives four chances per hour instead of one. Every run past the first is a
+  # ~15s no-op: the release-existence check short-circuits before checkout.
   schedule:
-    - cron: "17 * * * *"
+    - cron: "*/15 * * * *"
+  # The schedule is a backstop, not the primary trigger. A compat fix landing on
+  # main is the event that should release, and it is observable immediately, so
+  # do not wait for a cron that may skip ten hours. Safe to fire on every push:
+  # the job no-ops when the releases already exist, when a patch run is already
+  # active, and never dispatches unless the preflight patch+verify passes.
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
