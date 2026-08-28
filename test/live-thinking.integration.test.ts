@@ -90,7 +90,20 @@ liveThinkingTest(
               index: 0,
               delta: { type: "thinking_delta", thinking: thinkingText },
             });
-            await Bun.sleep(1500);
+            // Hold the stream open until the parent has actually seen the
+            // thinking row come back through the PTY, rather than guessing how
+            // long that takes. A fixed delay is a false-negative gate: a loaded
+            // runner can need longer than the guess to paint and relay the row,
+            // and every observation after `finalEventSent` is rejected, so a
+            // correct build fails the release. Waiting on the observation is
+            // also faster in the healthy case, since it proceeds the moment the
+            // row appears. The cap only bounds a build that never renders
+            // thinking at all — there the assertion below is supposed to fail.
+            const observationDeadline = 15_000;
+            const pollInterval = 25;
+            for (let waited = 0; !sawThinkingBeforeFinalEvent && waited < observationDeadline; waited += pollInterval) {
+              await Bun.sleep(pollInterval);
+            }
             send("content_block_delta", {
               type: "content_block_delta",
               index: 0,
