@@ -624,13 +624,19 @@ function patchThinkingStreaming(content) {
     }
 
     const streamingThinkingVar = "__cc_streamingThinking";
+    // Both replacements interpolate captured minified names, and the matcher
+    // admits `$` in them. Passing that text as a replacement *string* would let
+    // `String.replace` expand a `$$` inside a name to a single `$`, silently
+    // renaming the local in the injected store read and in the re-emitted
+    // expression. Go through callbacks so the captures are emitted verbatim.
     let nextWrapperSegment = wrapperSegment.replace(
       turnStreamSelectionMatch[0],
-      `${turnStreamSelectionMatch[0]}${streamingThinkingVar}=${selectorHook}(${turnVar}?.stream,(__cc_state)=>__cc_state.streamingThinking)??null,`
+      () =>
+        `${turnStreamSelectionMatch[0]}${streamingThinkingVar}=${selectorHook}(${turnVar}?.stream,(__cc_state)=>__cc_state.streamingThinking)??null,`
     );
     nextWrapperSegment = nextWrapperSegment.replace(
       `streamingToolUses:${streamingToolUsesVar},`,
-      `streamingToolUses:${streamingToolUsesVar},streamingThinking:${streamingThinkingVar},`
+      () => `streamingToolUses:${streamingToolUsesVar},streamingThinking:${streamingThinkingVar},`
     );
 
     const propIndex = nextWrapperSegment.indexOf(`streamingThinking:${streamingThinkingVar},`);

@@ -128,3 +128,46 @@ test("compact-request-source injection binds a $1-named source verbatim", async 
   });
   assert.equal(mainHeaders["x-calico-request-source"], undefined);
 });
+
+// The 2.1.250 turn-stream rewrite re-emits the whole matched selection and the
+// captured hook/turn locals into its replacement. Passing that as a replacement
+// STRING would collapse a `$$` inside either name to a single `$`, so the
+// re-emitted expression and the injected store read would both reference a
+// binding that does not exist.
+const { patchThinkingStreaming } = require("../patch-claude-display.ts");
+
+const turnStreamFixture = `
+function wrapper(){let su=h$$k(t$$n?.stream,se)??li,x;if(cache[0]!==su)x=o(C,{streamingToolUses:su,isLoading:!1}),cache[0]=su,cache[1]=x;else x=cache[1];return x}
+function next(){}
+`;
+
+test("turn-stream thinking injection binds $$-named hook and turn locals verbatim", () => {
+  const result = patchThinkingStreaming(turnStreamFixture);
+  assert.ok(result.patched > 0, "expected the turn-stream selection to patch");
+
+  // A collapsed `$$` would leave `h$k(`/`t$n?.stream` in the output.
+  assert.match(result.content, /h\$\$k\(t\$\$n\?\.stream,\(__cc_state\)=>/);
+  assert.doesNotMatch(result.content, /h\$k\(/);
+  assert.doesNotMatch(result.content, /t\$n\?\./);
+
+  const thought = { messages: ["THOUGHT"] };
+  const context = {
+    "h$$k": undefined,
+    lastProps: null,
+    cache: [],
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    `var h$$k=(s,f)=>s?f(s):null;` +
+      `var t$$n={stream:{streamingToolUses:["tu"],streamingThinking:${JSON.stringify(thought)}}};` +
+      `var se=(s)=>s.streamingToolUses,li=[],C={};` +
+      `function o(c,p){lastProps=p;return{c,p}}` +
+      result.content +
+      `;wrapper();`,
+    context
+  );
+
+  // Reaching here at all proves both names survived: a collapsed `$$` makes
+  // `h$k`/`t$n` undefined and the call throws.
+  assert.equal(context.lastProps.streamingThinking.messages[0], "THOUGHT");
+});

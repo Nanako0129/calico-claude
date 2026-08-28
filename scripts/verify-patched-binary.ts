@@ -1367,7 +1367,8 @@ const CHECKS: Check[] = [
         // second accepted form.
         const compilerCallSitePattern =
           /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:__cc_streamingThinking[,}]/;
-        const usesCompilerCallSite = compilerCallSitePattern.test(content);
+        const compilerCallSiteMatch = content.match(compilerCallSitePattern);
+        const usesCompilerCallSite = compilerCallSiteMatch !== null;
         if (rendererCallSites.length !== 1 && !usesCompilerCallSite) {
           return `expected 1 renderer call-site streamingThinking prop, found ${rendererCallSites.length}`;
         }
@@ -1379,10 +1380,32 @@ const CHECKS: Check[] = [
         // slot. Both wirings are legitimate — the slot-growing one below is
         // still what fires on bundles this shape does not match — so recognise
         // it here rather than demanding a selector declaration it never emits.
-        const forcedRebuildWiring =
-          /__cc_streamingThinking=[A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*|\([^()]*\))\?\.stream,\(__cc_state\)=>__cc_state\.streamingThinking\)\?\?null,/.test(
-            content
-          ) && content.includes("if(!0||");
+        //
+        // Both halves have to sit in the same function as the compiler call
+        // site. A bare `content.includes("if(!0||")` would let an unrelated
+        // short-circuit anywhere in a 33MB bundle — or one the patcher spliced
+        // into the wrong nearby `if` — satisfy this branch, and the cache-slot
+        // checks below would then be skipped for a binary whose renderer memo
+        // is still stale.
+        const forcedRebuildWiring = (() => {
+          const callSiteIndex = compilerCallSiteMatch?.index ?? -1;
+          if (callSiteIndex < 0) {
+            return false;
+          }
+          const functionStart = content.lastIndexOf("function ", callSiteIndex);
+          if (functionStart === -1) {
+            return false;
+          }
+          const storeRead = content.match(
+            /__cc_streamingThinking=[A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*|\([^()]*\))\?\.stream,\(__cc_state\)=>__cc_state\.streamingThinking\)\?\?null,/
+          );
+          const storeReadIndex = storeRead?.index ?? -1;
+          if (storeReadIndex < functionStart || storeReadIndex > callSiteIndex) {
+            return false;
+          }
+          const guardIndex = content.lastIndexOf("if(!0||", callSiteIndex);
+          return guardIndex > functionStart && guardIndex < callSiteIndex;
+        })();
 
         if (usesCompilerCallSite && !forcedRebuildWiring) {
           // Passing the prop is not sufficient at a compiler-cached call site:
