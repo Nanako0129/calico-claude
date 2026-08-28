@@ -507,7 +507,18 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     'if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(e);',
     ""
   );
-  const withoutNativeAction = patched.replace('"shortcut"', '"shortcut-broken"');
+  // Was `patched.replace('"shortcut"', '"shortcut-broken"')`. 2.1.251 removed the
+  // "shortcut" apply call from the interactive handler entirely — on/off now
+  // renders a component — so the verifier can no longer treat its absence as a
+  // defect without rejecting legitimate builds. The picker telemetry event is
+  // the invariant that survived the restructure and is what the verifier
+  // requires instead, so break that.
+  // Renaming to a superstring would not work: the verifier tests `includes`, so
+  // "..._shown_broken" still satisfies it.
+  const withoutPickerEvent = patched.replace(
+    '"tengu_fast_mode_picker_shown"',
+    '"tengu_fast_mode_picker_hidden"'
+  );
   const applyAfterBetaMerge = patched.replace(
     builderBlock,
     builderBlock
@@ -573,7 +584,7 @@ test("binary verifier rejects detached helpers and broken gateway ownership", ()
     ["comment-only helpers", commentOnlyHelpers],
     ["alternate apply binding", alternateApply],
     ["missing thin branch", withoutThinBranch],
-    ["missing native action", withoutNativeAction],
+    ["missing picker event", withoutPickerEvent],
     ["apply after beta merge", applyAfterBetaMerge],
     ["apply before native parse", applyBeforeNativeParse],
     ["apply inside native catch", applyInsideNativeCatch],

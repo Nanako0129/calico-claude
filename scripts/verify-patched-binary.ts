@@ -391,21 +391,29 @@ const CHECKS: Check[] = [
         interactive.index ?? -1,
         interactiveEnd === -1 ? content.length : interactiveEnd
       );
+      // 2.1.251 restructured this handler: the `"shortcut"` apply call is gone,
+      // on/off renders a component directly, and `.getAppState`/`.setAppState`
+      // moved out. Those were evidence that the segment is the fast-mode
+      // interactive handler, not properties of the injection — and the
+      // signature matched above already pins the function far harder. Kept in
+      // lockstep with the gate in patch-claude-display.ts.
+      //
+      // Still captured, because when both handlers live in one module and both
+      // still call an apply action, requiring them to call the SAME one is a
+      // real ownership proof. It is now conditional on both being present
+      // rather than required.
       const interactiveAction = interactiveSegment.match(
         /await ([A-Za-z_$][\w$]*)\([^;]*?"shortcut"/
       )?.[1];
       if (
-        !interactiveAction ||
         !interactiveSegment.includes("tengu_fast_mode_picker_shown") ||
-        !interactiveSegment.includes(".getAppState") ||
-        !interactiveSegment.includes(".setAppState") ||
         // 2.1.242+ destructures the JSX factory, so match a component call
         // shape rather than a `.jsx(` literal.
         !/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\([A-Za-z_$][\w$]*,\{[^}]*\}\)/.test(
           interactiveSegment
         )
       ) {
-        return "interactive native Fast action, picker, or app-state fallback is missing";
+        return "interactive native Fast picker or component render is missing";
       }
 
       const thinPattern = new RegExp(
@@ -438,7 +446,7 @@ const CHECKS: Check[] = [
         (handlersShareModule &&
           (interactive[5] !== thin[4] ||
             interactive[6] !== thin[5] ||
-            thinAction !== interactiveAction)) ||
+            (interactiveAction !== undefined && thinAction !== interactiveAction))) ||
         !/\.options\.fastMode(?![A-Za-z0-9_$])/.test(thinSegment) ||
         !thinSegment.includes("Unknown argument") ||
         !thinSegment.includes(".getAppState") ||
@@ -1002,7 +1010,7 @@ const CHECKS: Check[] = [
       // (`…messageId:Gr.id},i.storageV5)`), matched optionally so the patched
       // 2.1.237 and 2.1.238 binaries both verify.
       const batchWrapperPattern = new RegExp(
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
         "g"
       );
       const wrapperMatches = [

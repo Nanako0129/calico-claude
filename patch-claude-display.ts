@@ -585,6 +585,15 @@ function closingParenIndex(text, openIndex) {
   return -1;
 }
 
+// Truncate a segment at the first Bun module boundary it contains. Segments cut
+// with `indexOf("function ")` routinely run past the end of their chunk, so
+// evidence gathered from them can come from a module the matched code cannot
+// even see.
+function boundedToModule(segment) {
+  const boundary = segment.indexOf(BUN_MODULE_BOUNDARY);
+  return boundary === -1 ? segment : segment.slice(0, boundary);
+}
+
 // Index of the `}` that closes the `{` at openIndex, or -1.
 function closingBraceIndex(text, openIndex) {
   let depth = 0;
@@ -2663,8 +2672,13 @@ function patchStatuslineCommittedUsage(content) {
   // 2.1.246 appends `,...{}` after the effort spread. Match any trailing spread
   // entries so the wrapper still matches; the replacement is derived from the
   // matched text, so whatever upstream appended is carried across unchanged.
+  // 2.1.251 appends a third argument to the batch content builder itself — a
+  // callback, `j2t(Uq([…],o,d.agentId,{…},d.storageV5),o,(a,b)=>p0(a,b,…))` —
+  // so the call no longer closes right after the second argument. Accept a
+  // trailing argument list, one level of call nesting deep so the callback body
+  // does not terminate it early.
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
@@ -2992,16 +3006,45 @@ function patchStatuslineRateLimitWindows(content) {
   const window = (local, key) =>
     `...${local}.${key}&&{${key}:{used_percentage:${local}.${key}.utilization*100,resets_at:${local}.${key}.resets_at}}`;
 
-  const projectionPattern = new RegExp(
-    `\\{\\.\\.\\.(${identifier})\\.five_hour&&\\{five_hour:\\{used_percentage:\\1\\.five_hour\\.utilization\\*100,resets_at:\\1\\.five_hour\\.resets_at\\}\\},\\.\\.\\.\\1\\.seven_day&&\\{seven_day:\\{used_percentage:\\1\\.seven_day\\.utilization\\*100,resets_at:\\1\\.seven_day\\.resets_at\\}\\}\\}`,
+  // Match the projection object by its opening entries only, and find its end
+  // by brace matching. 2.1.251 appended a third entry —
+  // `...X()==="gateway"&&L.overage&&{spend_limit:{…}}` — so a pattern that
+  // required `}` right after seven_day stopped matching and the module went to
+  // zero candidates. Enumerating the new entry would only invite the next one,
+  // and rewriting the object without it would silently drop an upstream field:
+  // capture whatever follows seven_day and re-emit it verbatim.
+  const projectionPrefixPattern = new RegExp(
+    `\\{\\.\\.\\.(${identifier})\\.five_hour&&\\{five_hour:\\{used_percentage:\\1\\.five_hour\\.utilization\\*100,resets_at:\\1\\.five_hour\\.resets_at\\}\\},\\.\\.\\.\\1\\.seven_day&&\\{seven_day:\\{used_percentage:\\1\\.seven_day\\.utilization\\*100,resets_at:\\1\\.seven_day\\.resets_at\\}\\}`,
     "g"
   );
+  // The guard was `(L.five_hour||L.seven_day)` and is `(L.five_hour||
+  // L.seven_day||L.spend_limit)` on 2.1.251. The replacement below tests
+  // `Object.keys(L).length>0`, which subsumes any number of alternatives, so
+  // accept an open-ended chain rather than the exact pair.
   const guardPattern = new RegExp(
-    `\\.\\.\\.\\((${identifier})\\.five_hour\\|\\|\\1\\.seven_day\\)&&\\{rate_limits:\\1\\}`,
+    `\\.\\.\\.\\((${identifier})\\.five_hour(?:\\|\\|\\1\\.[\\w$]+)+\\)&&\\{rate_limits:\\1\\}`,
     "g"
   );
 
-  const projectionMatches = [...content.matchAll(projectionPattern)];
+  // Expand each prefix match to the full object literal it opens, so the rest
+  // of this function can go on treating a projection match as {text, index,
+  // local} and additionally knows what trailing entries to carry across.
+  const projectionMatches = [...content.matchAll(projectionPrefixPattern)].flatMap((match) => {
+    const start = match.index ?? -1;
+    const end = start === -1 ? -1 : closingBraceIndex(content, start);
+    if (start === -1 || end === -1) {
+      return [];
+    }
+    return [
+      {
+        text: content.slice(start, end + 1),
+        index: start,
+        local: match[1],
+        // Everything upstream appended after seven_day, closing `}` excluded.
+        tail: content.slice(start + match[0].length, end),
+      },
+    ];
+  });
   const guardMatches = [...content.matchAll(guardPattern)];
   const candidates = projectionMatches.length + guardMatches.length;
 
@@ -3009,7 +3052,7 @@ function patchStatuslineRateLimitWindows(content) {
     return { content: original, candidates, patched: 0 };
   }
 
-  const projectionLocal = projectionMatches[0][1];
+  const projectionLocal = projectionMatches[0].local;
   const guardLocal = guardMatches[0][1];
 
   // Global counts alone do not prove the two anchors belong to each other: an
@@ -3019,7 +3062,7 @@ function patchStatuslineRateLimitWindows(content) {
   // recurs across functions:
   //   1. both anchors sit inside the same function
   //   2. the projection literal is the initializer of the very local the guard reads
-  const projectionIndex = projectionMatches[0].index ?? -1;
+  const projectionIndex = projectionMatches[0].index;
   const guardIndex = guardMatches[0].index ?? -1;
   const projectionFunctionStart =
     projectionIndex === -1 ? -1 : content.lastIndexOf("function ", projectionIndex);
@@ -3047,7 +3090,7 @@ function patchStatuslineRateLimitWindows(content) {
   // closes a bracket it did not open — that is, the guard is reached without
   // leaving the block the projection lives in.
   const projectionEnd =
-    projectionIndex === -1 ? -1 : projectionIndex + projectionMatches[0][0].length;
+    projectionIndex === -1 ? -1 : projectionIndex + projectionMatches[0].text.length;
   let leftProjectionScope = projectionEnd === -1 || guardIndex < projectionEnd;
   if (!leftProjectionScope) {
     let depth = 0;
@@ -3088,6 +3131,10 @@ function patchStatuslineRateLimitWindows(content) {
   ) {
     return { content: original, candidates, patched: 0 };
   }
+  // Carry upstream's trailing entries across verbatim. Rewriting the object
+  // without them would silently drop a field the statusline payload is supposed
+  // to carry — 2.1.251's `spend_limit` being the first one.
+  const projectionTail = projectionMatches[0].tail;
   const projectionReplacement = `{${[
     "five_hour",
     "seven_day",
@@ -3095,13 +3142,20 @@ function patchStatuslineRateLimitWindows(content) {
     "overage",
   ]
     .map((key) => window(projectionLocal, key))
-    .join(",")}}`;
+    .join(",")}${projectionTail}}`;
   const guardReplacement = `...Object.keys(${guardLocal}).length>0&&{rate_limits:${guardLocal}}`;
 
   // projectionReplacement/guardReplacement interpolate the captured
   // projectionLocal/guardLocal names; use callbacks so a captured `$1`-style
   // name cannot be read back as a backreference against these regexes.
-  let output = original.replace(projectionPattern, () => projectionReplacement);
+  // Splice by offset rather than String.replace: the matched text is the whole
+  // object literal, located by brace matching, and re-searching for it would
+  // rewrite the first textual occurrence anywhere in the joined bundle.
+  const projectionText = projectionMatches[0].text;
+  let output =
+    original.slice(0, projectionIndex) +
+    projectionReplacement +
+    original.slice(projectionIndex + projectionText.length);
   output = output.replace(guardPattern, () => guardReplacement);
 
   if (
@@ -3222,16 +3276,26 @@ function patchGatewayFastMode(content) {
     interactiveStart + interactive[0].length
   );
   const interactiveEnd = interactiveEndCandidate === -1 ? content.length : interactiveEndCandidate;
-  const interactiveSegment = content.slice(interactiveStart, interactiveEnd);
-  const interactiveAction = interactiveSegment.match(
-    /await ([A-Za-z_$][\w$]*)\([^;]*?"shortcut"/
-  )?.[1];
+  // Stop at the chunk the handler lives in. `indexOf("async function ")` walks
+  // past the module boundary — on 2.1.250 this segment ran 49KB while the
+  // handler was 434 bytes — so every marker below could have been satisfied by
+  // an unrelated chunk. It happened to be honest there, which is precisely the
+  // kind of luck that stops holding without warning.
+  const interactiveSegment = boundedToModule(
+    content.slice(interactiveStart, interactiveEnd)
+  );
   if (
     interactiveStart === -1 ||
-    !interactiveAction ||
+    // What the injection needs is this handler, not the way it used to be
+    // recognised. 2.1.251 restructured the body: the `"shortcut"` apply call is
+    // gone, on/off now renders a component directly, and `.getAppState` /
+    // `.setAppState` moved out entirely — three markers vanished at once and
+    // the module went to 0 patched while still finding all 6 candidates. The
+    // signature already pins this function hard (three parameters, the
+    // availability guard, and the "Fast mode is not available" literal); the
+    // picker telemetry event and a component render are what remain
+    // characteristic of the interactive path.
     !interactiveSegment.includes("tengu_fast_mode_picker_shown") ||
-    !interactiveSegment.includes(".getAppState") ||
-    !interactiveSegment.includes(".setAppState") ||
     // Confirms the interactive handler renders a component. On 2.1.242+ the JSX
     // factory is a destructured local, so match the call-with-props shape
     // instead of a `.jsx(` literal.
@@ -3243,21 +3307,15 @@ function patchGatewayFastMode(content) {
   const thinStart = thin.index ?? -1;
   const thinEndCandidate = content.indexOf("async function ", thinStart + thin[0].length);
   const thinEnd = thinEndCandidate === -1 ? content.length : thinEndCandidate;
-  const thinSegment = content.slice(thinStart, thinEnd);
-  const thinAction = thinSegment.match(/await ([A-Za-z_$][\w$]*)\([^;]*?"bridge"/)?.[1];
+  const thinSegment = boundedToModule(content.slice(thinStart, thinEnd));
   if (
     thinStart === -1 ||
-    !thinAction ||
-    // Both handlers must reach the same apply-fast-mode action, but on 2.1.242+
-    // they are in different chunks and call it through different import
-    // aliases (2.1.245: `go` interactive, `i` thin), so the names cannot be
-    // compared. Each handler is still pinned by its own `"shortcut"` /
-    // `"bridge"` call shape plus the app-state and argument markers below, and
-    // neither capture is used outside the check itself.
+    // The thin handler kept its argument parsing across 2.1.251, so its own
+    // markers still hold. Both handlers reach the same apply-fast-mode action,
+    // but on 2.1.242+ they sit in different chunks and call it through
+    // different import aliases, so the names were never comparable anyway.
     !thinSegment.includes(".options.fastMode") ||
-    !thinSegment.includes("Unknown argument") ||
-    !thinSegment.includes(".getAppState") ||
-    !thinSegment.includes(".setAppState")
+    !thinSegment.includes("Unknown argument")
   ) {
     return { content: original, candidates, patched: 0 };
   }
