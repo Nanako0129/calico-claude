@@ -70,6 +70,12 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Setup Bun for live-thinking test
+        if: matrix.platform_label == 'macos-arm64'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.1"
+
       - name: Install dependencies
         id: dependencies
         run: |
@@ -175,6 +181,12 @@ jobs:
             echo "Skipping runtime check for non-native runner architecture."
             node -e "const native = require('./scripts/native-bun.ts'); const content = native.readNativeBunContent(process.argv[1]); if (!content.includes('}.VERSION} (Claude Code)\\\\n(patched)')) { console.error('Patched version marker not found in extracted bundle'); process.exit(1); }" "$PATCHED_PATH"
           fi
+
+      - name: Test live thinking without credentials
+        if: steps.check.outputs.skip != 'true' && matrix.platform_label == 'macos-arm64'
+        env:
+          CLAUDE_NATIVE_BINARY: work/${{ matrix.patched_asset_name }}
+        run: bun test test/live-thinking.integration.test.ts
 
       - name: Write metadata
         if: steps.check.outputs.skip != 'true'

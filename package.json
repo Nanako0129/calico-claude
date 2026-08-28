@@ -6,7 +6,8 @@
     "node": ">=23.6.0"
   },
   "scripts": {
-    "patch:native": "node scripts/patch-native.ts"
+    "patch:native": "node scripts/patch-native.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "node-lief": "^1.0.0"
