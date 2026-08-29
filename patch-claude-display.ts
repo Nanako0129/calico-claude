@@ -3000,6 +3000,102 @@ function patchStatuslineCommittedUsage(content) {
 // seven_day_overage_included "Fable 5 limit"; overage is the usage-credit window.
 // Both keep their upstream key names so a future upstream projection is a
 // drop-in replacement for this patch.
+// Restore the fullscreen sticky prompt header, which stopped rendering in
+// 2.1.247 and is still broken in 2.1.251 (anthropics/claude-code#90299).
+//
+// Through 2.1.246 the sticky-prompt component read the viewport on every
+// render. 2.1.247 rewrote the same reads under compiler-style memoization keyed
+// on the viewport HANDLE:
+//
+//   if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];
+//
+// `ot.handle` keeps the same object identity for the lifetime of the list, so
+// each read is evaluated once at mount — while the view is still pinned to the
+// bottom, so isSticky() returns true — and that value is reused forever. The
+// prompt-scan that fills the header is gated on `!isSticky`, so it never runs.
+// getScrollTop and getPendingDelta are frozen on the same key, which also
+// freezes the derived offset the scan compares against.
+//
+// The scroll subscription still triggers re-renders; they just reuse the stale
+// cache. The "Jump to bottom" pill is unaffected because it calls
+// handle.isSticky() directly inside a callback rather than through the memo,
+// which is why scroll state looks correctly detected while the header is blank.
+//
+// Force the three guards instead of removing the memo: the cache writes stay
+// well-formed, the downstream scan memo keyed on the derived offset invalidates
+// on its own once these recompute, and the edit is one insertion per site.
+// Bundles that never memoized these reads report skipped rather than failing
+// --assert-all, since the feature works there without help.
+function patchStickyPromptHeader(content) {
+  const original = content;
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const memoizedViewportRead = new RegExp(
+    `if\\((${identifier})\\[(\\d+)\\]!==(${identifier})\\.handle\\)(${identifier})=\\3\\.handle\\?\\.(isSticky|getScrollTop|getPendingDelta)\\(\\)\\?\\?(?:!0|0),\\1\\[\\2\\]=\\3\\.handle,\\1\\[(\\d+)\\]=\\4;else \\4=\\1\\[\\6\\];`,
+    "g"
+  );
+  const matches = [...content.matchAll(memoizedViewportRead)];
+  const candidates = matches.length;
+
+  if (candidates === 0) {
+    return {
+      content: original,
+      candidates: 0,
+      patched: 0,
+      skipped: true,
+      reason: "viewport reads are not memoized on the handle in this bundle",
+    };
+  }
+
+  // All three reads belong to one component. Requiring them to share the cache
+  // local, the viewport local and the enclosing function is what stops this
+  // from forcing a guard in some other memoized component that happens to read
+  // a `.handle`.
+  const [first] = matches;
+  const cacheLocal = first[1];
+  const viewportLocal = first[3];
+  const kinds = new Set(matches.map((match) => match[5]));
+  const functionStarts = new Set(
+    matches.map((match) => content.lastIndexOf("function ", match.index ?? -1))
+  );
+  const owningFunctionStart = functionStarts.values().next().value;
+  const owningFunction =
+    owningFunctionStart === undefined || owningFunctionStart === -1
+      ? ""
+      : boundedToModule(content.slice(owningFunctionStart, (first.index ?? 0) + 4000));
+
+  if (
+    candidates !== 3 ||
+    kinds.size !== 3 ||
+    !matches.every((match) => match[1] === cacheLocal && match[3] === viewportLocal) ||
+    functionStarts.size !== 1 ||
+    owningFunctionStart === -1 ||
+    // The component that owns the header publishes it through this setter, and
+    // the literal occurs twice in the whole bundle. Nothing weaker identifies
+    // the sticky-prompt component; the memo shape alone is a compiler idiom.
+    !owningFunction.includes("setStickyPrompt")
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  let output = content;
+  let patched = 0;
+  // Splice from the last match backwards so earlier offsets stay valid.
+  for (const match of [...matches].sort((a, b) => (b.index ?? 0) - (a.index ?? 0))) {
+    const start = match.index ?? -1;
+    if (start === -1 || !output.startsWith("if(", start)) {
+      return { content: original, candidates, patched: 0 };
+    }
+    output = `${output.slice(0, start + 3)}!0||${output.slice(start + 3)}`;
+    patched += 1;
+  }
+
+  if (output.split("!0||").length - 1 - (content.split("!0||").length - 1) !== 3) {
+    return { content: original, candidates, patched: 0 };
+  }
+
+  return { content: output, candidates, patched };
+}
+
 function patchStatuslineRateLimitWindows(content) {
   const original = content;
   const identifier = "[A-Za-z_$][\\w$]*";
@@ -3971,6 +4067,11 @@ const PATCH_MODULES = [
     apply: patchStatuslineRateLimitWindows,
   },
   {
+    id: "sticky-prompt-header",
+    description: "Restore the fullscreen sticky prompt header frozen by handle-keyed memoization",
+    apply: patchStickyPromptHeader,
+  },
+  {
     id: "custom-context-window",
     description: "Allow exact opt-in custom model context windows",
     apply: patchCustomContextWindows,
@@ -4248,6 +4349,7 @@ function main() {
 
 module.exports = {
   patchDisableUsageWrapUpHints,
+  patchStickyPromptHeader,
   patchGatewayFastMode,
   patchActiveTurnPromptIdentity,
   patchCompactRequestSource,

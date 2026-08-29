@@ -11,7 +11,11 @@
 set -uo pipefail
 
 BINARY="${1:-}"
-PORT="${2:-8787}"
+# Default to 0 so the OS picks a free port. A fixed port made back-to-back runs
+# fail with EADDRINUSE when the previous mock had not released the socket yet,
+# and the summary reports that as a harness failure indistinguishable at a
+# glance from a broken binary.
+PORT="${2:-0}"
 if [ -z "$BINARY" ] || [ ! -x "$BINARY" ]; then
   echo "usage: bash tools/local-verify/run.sh <claude-binary> [port]" >&2
   exit 2
@@ -59,7 +63,11 @@ for _ in $(seq 1 40); do
   sleep 0.25
 done
 grep -q "mock listening" "$WORK/mock.err" 2>/dev/null || {
-  echo "mock API failed to start:" >&2; cat "$WORK/mock.err" >&2; exit 1; }
+  echo "HARNESS PROBLEM (not the binary): mock API failed to start" >&2
+  cat "$WORK/mock.err" >&2; exit 1; }
+# With PORT=0 the chosen port is only known once the mock is listening.
+PORT="$(sed -n 's/.*mock listening on \([0-9][0-9]*\).*/\1/p' "$WORK/mock.err" | head -1)"
+[ -n "$PORT" ] || { echo "HARNESS PROBLEM (not the binary): could not read the mock port" >&2; exit 1; }
 
 expect "$HERE/tui.exp" "$BINARY" "$WORK/tui.raw" "$CONFIG" "http://127.0.0.1:$PORT" >/dev/null 2>&1
 STATUS=$?

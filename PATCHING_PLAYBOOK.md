@@ -139,6 +139,20 @@ These rules are not style preferences. They are what keeps the patcher alive acr
   injected value that occupies no slot leaves the renderer showing a stale element forever while the
   patch summary, `--assert-all` and the verifier all report success. Grow the allocation and claim a
   slot in both the guard and the write-back, and assert that wiring in the verifier.
+- **A memo key that never changes freezes a live read.** The same compiler pass also memoizes plain
+  reads, and when it keys them on an object whose identity is stable for the component's lifetime the
+  value is captured once at mount and reused forever. 2.1.247 did this to the sticky prompt header
+  (`if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,…;else iS=Eo[3]`): `ot.handle` never changes, so
+  `isSticky()` stayed at its mount-time `true`, the scan gated on `!isSticky` never ran, and the
+  header rendered blank from 2.1.247 through 2.1.251 — upstream
+  [#90299](https://github.com/anthropics/claude-code/issues/90299). Sibling reads through the same
+  handle froze with it, and the one read that bypassed the memo (a callback calling
+  `handle.isSticky()` directly) kept working, which is why scroll state looked correctly detected
+  while the feature was dead. Forcing the guard (`if(!0||…)`) restores per-render evaluation and
+  leaves the cache writes well-formed; downstream memos keyed on the values these derive then
+  invalidate on their own. When a bundle predates the memo the module must report skipped, and the
+  verifier must version-gate the waiver rather than accept absence, or a drifted shape passes as
+  "not applicable".
 - **Anchor on the parameter, not on what follows it.** 2.1.247 dropped `showAllInTranscript` from
   the renderer's destructured params and moved `isLoading` up behind `streamingToolUses`, which
   killed an injection anchored on that suffix. The stable thing is the parameter you are inserting
