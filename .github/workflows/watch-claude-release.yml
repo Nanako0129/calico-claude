@@ -140,7 +140,14 @@ jobs:
           VERSION: ${{ steps.latest.outputs.version }}
         run: |
           set -euo pipefail
-          PATCH_SOURCES="patch-claude-display.ts scripts/native-bun.ts scripts/patch-native.ts scripts/native-content.ts scripts/vendored-elf-native.ts"
+          # The release workflow is part of the build definition, not just its
+          # runner: DISABLED_MODULES there decides which patches reach the
+          # published binaries, so a change to it changes the artifact while no
+          # patcher source moves. Tracking the whole file means an unrelated
+          # edit to it can trigger a rebuild; that is the cheap direction, since
+          # the alternative is leaving users on artifacts built with a different
+          # module selection until the next upstream version.
+          PATCH_SOURCES="patch-claude-display.ts scripts/native-bun.ts scripts/patch-native.ts scripts/native-content.ts scripts/vendored-elf-native.ts .github/workflows/patch-claude.yml"
           STALE=0
 
           for SUFFIX in linux-x64 linux-arm64 macos-arm64 win32-x64 win32-arm64; do
