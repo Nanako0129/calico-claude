@@ -131,8 +131,16 @@ jobs:
       # docs-only ones. Compare only the sources that can change the patched
       # output: if none of them moved since the release was built, the release is
       # current no matter how far main has advanced.
+      # Not gated on every release existing. A matrix run can leave one platform
+      # unpublished — that happened today when a bad bun pin took out macos-arm64
+      # while four platforms published — and if build inputs move before the
+      # retry, skipping this check would dispatch without force. The release
+      # workflow then skips the platforms that already have tags and builds only
+      # the missing one, leaving a mix of old and current artifacts until some
+      # later scheduled run notices. Platforms with no release to compare are
+      # simply skipped inside the loop.
       - name: Check whether the released build is stale
-        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing != '1'
+        if: steps.active.outputs.skip != 'true'
         id: stale
         env:
           GH_REPO: ${{ github.repository }}
@@ -237,14 +245,20 @@ jobs:
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-          MISSING: ${{ steps.releases.outputs.missing }}
+          STALE: ${{ steps.stale.outputs.stale }}
         run: |
           set -euo pipefail
-          # Republishing a version that already has releases needs force, which
-          # publishes under a -N suffix tag; install-patched-claude.sh already
-          # prefers the highest suffix over the base tag.
+          # Force is keyed on staleness, not on whether anything is missing.
+          # Without force the release workflow skips every platform that already
+          # has a tag, so a run that is both missing a platform and stale on the
+          # others would publish one current artifact beside four old ones.
+          # Forcing rebuilds all five from this commit; publishing under a -N
+          # suffix tag is fine because install-patched-claude.sh already prefers
+          # the highest suffix over the base tag. When nothing is stale and a
+          # platform is merely missing, no force: fill the gap and leave the
+          # rest alone.
           FORCE_ARGS=()
-          if [ "$MISSING" != "1" ]; then
+          if [ "$STALE" = "1" ]; then
             FORCE_ARGS=(-f force=true)
           fi
           gh workflow run "$PATCH_WORKFLOW_FILE" \
