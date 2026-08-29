@@ -114,16 +114,74 @@ jobs:
       # up identically everywhere, so this catches it a full release earlier and
       # names the module.
       - name: Check out the patcher
-        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing == '1'
+        if: steps.active.outputs.skip != 'true'
         uses: actions/checkout@v5
+        with:
+          # The staleness check below diffs the commit a release was built from
+          # against this one, so the shallow default is not enough.
+          fetch-depth: 0
+
+      # A release existing is not the same as it being current. "Was this
+      # version released?" is what the check above asks, and it answered yes for
+      # 2.1.250 while every release predated the live-thinking fix, and again for
+      # 2.1.251 while they predated the sticky-header fix. Both times the fix sat
+      # on main and reached nobody until a force dispatch by hand.
+      #
+      # Comparing commits alone would republish on every merge, including
+      # docs-only ones. Compare only the sources that can change the patched
+      # output: if none of them moved since the release was built, the release is
+      # current no matter how far main has advanced.
+      - name: Check whether the released build is stale
+        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing != '1'
+        id: stale
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.latest.outputs.version }}
+        run: |
+          set -euo pipefail
+          PATCH_SOURCES="patch-claude-display.ts scripts/native-bun.ts scripts/patch-native.ts scripts/native-content.ts scripts/vendored-elf-native.ts"
+          STALE=0
+
+          for SUFFIX in linux-x64 linux-arm64 macos-arm64 win32-x64 win32-arm64; do
+            # Newest tag for this platform: the base tag, or the highest -N rebuild.
+            TAG="$(gh release list --limit 100 --json tagName --jq \
+              "[.[].tagName | select(startswith(\"v${VERSION}-${SUFFIX}\"))] | sort_by(sub(\"^.*-\";\"\") | tonumber? // 1) | last")"
+            if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+              echo "$SUFFIX: no release to compare"
+              continue
+            fi
+
+            BUILT_FROM="$(gh release download "$TAG" --pattern metadata.txt --output - 2>/dev/null \
+              | sed -n 's/^source_commit=//p' | head -1)"
+            if [ -z "$BUILT_FROM" ]; then
+              echo "$SUFFIX: $TAG records no source_commit; treating as current"
+              continue
+            fi
+            if ! git cat-file -e "${BUILT_FROM}^{commit}" 2>/dev/null; then
+              echo "$SUFFIX: $TAG was built from $BUILT_FROM, which is not in this history; treating as current"
+              continue
+            fi
+
+            CHANGED="$(git diff --name-only "$BUILT_FROM" HEAD -- $PATCH_SOURCES)"
+            if [ -n "$CHANGED" ]; then
+              echo "$SUFFIX: $TAG built from ${BUILT_FROM:0:7}; patch sources changed since:"
+              echo "$CHANGED" | sed 's/^/    /'
+              STALE=1
+            else
+              echo "$SUFFIX: $TAG built from ${BUILT_FROM:0:7}; patch sources unchanged"
+            fi
+          done
+
+          echo "stale=$STALE" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
-        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing == '1'
+        if: steps.active.outputs.skip != 'true' && (steps.releases.outputs.missing == '1' || steps.stale.outputs.stale == '1')
         run: npm ci
 
       - name: Verify the patcher against the new version
         id: preflight
-        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing == '1'
+        if: steps.active.outputs.skip != 'true' && (steps.releases.outputs.missing == '1' || steps.stale.outputs.stale == '1')
         continue-on-error: true
         env:
           VERSION: ${{ steps.latest.outputs.version }}
@@ -162,22 +220,31 @@ jobs:
           exit 1
 
       - name: Dispatch patch workflow
-        if: steps.active.outputs.skip != 'true' && steps.releases.outputs.missing == '1' && steps.preflight.outcome == 'success'
+        if: steps.active.outputs.skip != 'true' && (steps.releases.outputs.missing == '1' || steps.stale.outputs.stale == '1') && steps.preflight.outcome == 'success'
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          MISSING: ${{ steps.releases.outputs.missing }}
         run: |
           set -euo pipefail
+          # Republishing a version that already has releases needs force, which
+          # publishes under a -N suffix tag; install-patched-claude.sh already
+          # prefers the highest suffix over the base tag.
+          FORCE_ARGS=()
+          if [ "$MISSING" != "1" ]; then
+            FORCE_ARGS=(-f force=true)
+          fi
           gh workflow run "$PATCH_WORKFLOW_FILE" \
-            -f native_version="${{ steps.latest.outputs.version }}"
-          echo "Dispatched patch workflow for version ${{ steps.latest.outputs.version }}"
+            -f native_version="${{ steps.latest.outputs.version }}" \
+            "${FORCE_ARGS[@]}"
+          echo "Dispatched patch workflow for version ${{ steps.latest.outputs.version }} (force=${FORCE_ARGS:+true}${FORCE_ARGS:-false})"
 
       - name: No action needed
-        if: steps.active.outputs.skip == 'true' || steps.releases.outputs.missing != '1'
+        if: steps.active.outputs.skip == 'true' || (steps.releases.outputs.missing != '1' && steps.stale.outputs.stale != '1')
         run: |
           set -euo pipefail
           if [ "${{ steps.active.outputs.skip }}" = "true" ]; then
             echo "No action needed while patch workflow is already running."
           else
-            echo "All platform releases already exist for ${{ steps.latest.outputs.version }}."
+            echo "All platform releases exist for ${{ steps.latest.outputs.version }} and were built from the current patch sources."
           fi
