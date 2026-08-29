@@ -21,6 +21,13 @@ log_file -noappend $logfile
 set env(ANTHROPIC_BASE_URL) $baseurl
 set env(ANTHROPIC_API_KEY) "sk-ant-mock"
 set env(CLAUDE_CONFIG_DIR) $configdir
+# Without this the binary routes 127.0.0.1 through a proxy and the request never
+# reaches the mock: "request NEVER SENT", which reads as a dead binary rather
+# than an unreachable endpoint. Port 8787 happened to work and every other port
+# did not, so the harness looked port-sensitive for days when it was proxy
+# configuration all along.
+set env(NO_PROXY) "127.0.0.1,localhost"
+set env(no_proxy) "127.0.0.1,localhost"
 
 spawn -noecho $binary
 # Wait for the status line the main renderer draws, then for the input

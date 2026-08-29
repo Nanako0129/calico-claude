@@ -1286,6 +1286,77 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "sticky-prompt-header",
+    kind: "custom",
+    describe: "fullscreen sticky prompt header re-reads the viewport on every render",
+    disabledMarker: /if\(!0\|\|[A-Za-z_$][\w$]*\[\d+\]!==[A-Za-z_$][\w$]*\.handle\)/,
+    run: (content: string): string | null => {
+      const identifier = "[A-Za-z_$][\\w$]*";
+      const forced = new RegExp(
+        `if\\(!0\\|\\|(${identifier})\\[(\\d+)\\]!==(${identifier})\\.handle\\)(${identifier})=\\3\\.handle\\?\\.(isSticky|getScrollTop|getPendingDelta)\\(\\)`,
+        "g"
+      );
+      const stale = new RegExp(
+        `if\\((${identifier})\\[(\\d+)\\]!==(${identifier})\\.handle\\)(${identifier})=\\3\\.handle\\?\\.(isSticky|getScrollTop|getPendingDelta)\\(\\)`,
+        "g"
+      );
+      const forcedMatches = [...content.matchAll(forced)];
+      const staleMatches = [...content.matchAll(stale)];
+
+      // 2.1.247 introduced the handle-keyed memo; before it the reads were
+      // straight-line and the header worked unaided, so absence there is
+      // correct rather than a missing patch. Version-gate the waiver instead of
+      // waiving on absence alone: on 2.1.247+ a read still keyed on the handle
+      // is the defect this module exists to remove.
+      const versionMatch = content.match(
+        /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/
+      );
+      const version = versionMatch?.slice(1).map(Number);
+      if (version === undefined) {
+        return "expected parseable Claude Code VERSION metadata";
+      }
+      const memoizedHere =
+        version[0] > 2 ||
+        (version[0] === 2 &&
+          (version[1] > 1 || (version[1] === 1 && version[2] >= 247)));
+
+      if (!memoizedHere) {
+        return forcedMatches.length === 0 && staleMatches.length === 0
+          ? null
+          : "unexpected handle-keyed viewport memo on a bundle that predates it";
+      }
+
+      if (staleMatches.length > 0) {
+        return `found ${staleMatches.length} viewport read(s) still frozen on the handle identity`;
+      }
+      if (forcedMatches.length !== 3) {
+        return `expected 3 forced viewport reads, found ${forcedMatches.length}`;
+      }
+      const kinds = new Set(forcedMatches.map((match) => match[5]));
+      if (kinds.size !== 3) {
+        return `expected isSticky, getScrollTop and getPendingDelta, found ${[...kinds].join(", ")}`;
+      }
+      const cacheLocals = new Set(forcedMatches.map((match) => match[1]));
+      const viewportLocals = new Set(forcedMatches.map((match) => match[3]));
+      if (cacheLocals.size !== 1 || viewportLocals.size !== 1) {
+        return "forced viewport reads do not share one memo cache and viewport";
+      }
+      // The header is published through this setter, and the literal occurs
+      // twice in the whole bundle. Without it the memo shape alone would accept
+      // a forced guard in any other compiled component reading a `.handle`.
+      const owner = content.lastIndexOf("function ", forcedMatches[0].index ?? -1);
+      if (
+        owner === -1 ||
+        !boundedToModule(content.slice(owner, (forcedMatches[0].index ?? 0) + 4000)).includes(
+          "setStickyPrompt"
+        )
+      ) {
+        return "forced viewport reads are not inside the sticky-prompt component";
+      }
+      return null;
+    },
+  },
+  {
     id: "statusline-rate-limit-windows",
     kind: "custom",
     describe:
