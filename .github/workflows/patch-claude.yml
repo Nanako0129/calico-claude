@@ -429,3 +429,34 @@ jobs:
             work/metadata.txt \
             work/checksums.txt \
             "$PATCHED_PATH"
+
+  # Failure notification to the community Discord's #github channel.
+  # This lives INSIDE the pipeline because workflow_run cannot see these runs:
+  # the watcher dispatches this workflow with the repo GITHUB_TOKEN, and GitHub
+  # suppresses events created by GITHUB_TOKEN-triggered runs (anti-recursion),
+  # so a separate workflow_run-triggered notifier never fires for them.
+  # Success needs no job here: a successful run publishes releases, and the
+  # repo's Discord webhook (push + release events) already announces those.
+  notify-failure:
+    needs: patch-platform
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Post failure to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::error::DISCORD_WEBHOOK secret is not set; cannot notify" && exit 1
+          fi
+          jq -n \
+            --arg title "❌ Patch Claude Native #$RUN_NUMBER — failure" \
+            --arg url "$RUN_URL" \
+            --arg desc "calico-claude · \`$BRANCH\` · \`${SHA:0:7}\`" \
+            '{embeds: [{title: $title, url: $url, description: $desc, color: 15158332}]}' \
+          | curl -sfS -H 'Content-Type: application/json' -d @- "$WEBHOOK"
