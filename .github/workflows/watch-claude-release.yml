@@ -161,7 +161,15 @@ jobs:
           # reach the binary. Docs, tests, the harness, the verifier (which gates
           # releases but never edits the bundle), the installers, this workflow,
           # and the bun lockfile used only by the test runner.
-          NON_BUILD_PATHS='^(docs/|test/|tests/|tools/local-verify/|tools/watch-poke\.sh$|scripts/verify-patched-binary\.ts$|install-patched-claude\.|\.github/workflows/watch-claude-release\.yml$|bun\.lock$|\.gitignore$|.*\.md$)'
+          # .github/ is excluded wholesale and patch-claude.yml added back below.
+          # Naming only watch-claude-release.yml here meant every other workflow
+          # counted as a build input: adding discord-ci-notify.yml republished all
+          # five platforms as v2.1.251-*-3 for a notification workflow that cannot
+          # reach the binary. Of everything under .github/, only patch-claude.yml
+          # is part of the build definition — it runs the patcher and sets
+          # DISABLED_MODULES. The rest decide when to build, or do not build.
+          NON_BUILD_PATHS='^(docs/|test/|tests/|tools/local-verify/|tools/watch-poke\.sh$|scripts/verify-patched-binary\.ts$|install-patched-claude\.|\.github/|bun\.lock$|\.gitignore$|.*\.md$)'
+          BUILD_WORKFLOW='.github/workflows/patch-claude.yml'
           STALE=0
 
           for SUFFIX in linux-x64 linux-arm64 macos-arm64 win32-x64 win32-arm64; do
@@ -184,7 +192,12 @@ jobs:
               continue
             fi
 
-            CHANGED="$(git diff --name-only "$BUILT_FROM" HEAD | grep -Ev "$NON_BUILD_PATHS" || true)"
+            CHANGED="$(
+              {
+                git diff --name-only "$BUILT_FROM" HEAD | grep -Ev "$NON_BUILD_PATHS" || true
+                git diff --name-only "$BUILT_FROM" HEAD -- "$BUILD_WORKFLOW"
+              } | sort -u
+            )"
             if [ -n "$CHANGED" ]; then
               echo "$SUFFIX: $TAG built from ${BUILT_FROM:0:7}; build inputs changed since:"
               echo "$CHANGED" | sed 's/^/    /'
