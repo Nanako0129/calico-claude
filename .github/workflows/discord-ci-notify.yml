@@ -1,14 +1,19 @@
 name: Discord CI Notify
 
-# Posts CI status to the community Discord's #github channel.
+# Posts watcher failures to the community Discord's #github channel.
 #
-# Notification policy (deliberate, to keep the channel readable):
-#   - "Patch Claude Native": notify on success AND failure — this is the real
-#     build/release pipeline, both outcomes are signal.
-#   - "Watch Claude Code Releases": notify on failure ONLY — it fires every
-#     15 minutes by cron plus on every push, and almost every run is a ~15s
-#     no-op; success notifications would flood the channel.
-#   - cancelled/skipped runs are never reported.
+# Scope (deliberate, after observing 2026-08-31 run behavior):
+#   - "Watch Claude Code Releases": failure ONLY — it fires every 15 minutes
+#     by cron plus on every push and almost every run is a ~15s no-op, so
+#     success notifications would flood the channel.
+#   - "Patch Claude Native" is NOT handled here and cannot be: the watcher
+#     dispatches it with the repo GITHUB_TOKEN, and GitHub suppresses events
+#     created by GITHUB_TOKEN-triggered runs (anti-recursion), so its
+#     completion never fires workflow_run. Verified empirically: run
+#     17368… (2026-08-31 06:32 UTC) completed with this file on main and
+#     triggered nothing. Patch outcomes are covered instead by:
+#       success → release published → repo webhook announces it
+#       failure → notify-failure job inside patch-claude.yml itself
 #
 # Requires the DISCORD_WEBHOOK repo secret: a plain Discord webhook URL
 # (https://discord.com/api/webhooks/<id>/<token> — no /github suffix; the
@@ -17,7 +22,6 @@ name: Discord CI Notify
 on:
   workflow_run:
     workflows:
-      - "Patch Claude Native"
       - "Watch Claude Code Releases"
     types: [completed]
 
@@ -25,10 +29,7 @@ permissions: {}
 
 jobs:
   notify:
-    if: >-
-      github.event.workflow_run.conclusion == 'failure' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.name == 'Patch Claude Native')
+    if: github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     steps:
       - name: Post CI status to Discord
@@ -44,15 +45,9 @@ jobs:
           if [ -z "$WEBHOOK" ]; then
             echo "::error::DISCORD_WEBHOOK secret is not set; cannot notify" && exit 1
           fi
-          if [ "$CONCLUSION" = "success" ]; then
-            icon="✅"; color=3066993
-          else
-            icon="❌"; color=15158332
-          fi
           jq -n \
-            --arg title "$icon $RUN_NAME #$RUN_NUMBER — $CONCLUSION" \
+            --arg title "❌ $RUN_NAME #$RUN_NUMBER — $CONCLUSION" \
             --arg url "$RUN_URL" \
             --arg desc "calico-claude · \`$BRANCH\` · \`${SHA:0:7}\`" \
-            --argjson color "$color" \
-            '{embeds: [{title: $title, url: $url, description: $desc, color: $color}]}' \
+            '{embeds: [{title: $title, url: $url, description: $desc, color: 15158332}]}' \
           | curl -sfS -H 'Content-Type: application/json' -d @- "$WEBHOOK"
