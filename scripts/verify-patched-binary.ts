@@ -1426,6 +1426,16 @@ const CHECKS: Check[] = [
       if (!injectedLookup.test(content)) {
         return "custom context-window lookup is not wired into the resolver";
       }
+      // Separate injection, separate check. Replacing the old literal marker
+      // with the resolver check above left the precompute bypass unverified: if
+      // precomputePattern drifts, an explicitly mapped window silently gets the
+      // upstream precompute buffer subtracted from it and everything still
+      // reports clean. Parameter-agnostic, since those names are minified.
+      const precomputeBypass =
+        /if\(process\.env\.CALICO_MODEL_CONTEXT_WINDOWS\)return [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\);return Math\.min\(/;
+      if (!precomputeBypass.test(content)) {
+        return "precompute buffer is not bypassed for explicitly mapped context windows";
+      }
       // The effective-window gate reads `CALICO_MODEL_CONTEXT_WINDOWS?<window>:<window>-<reserve>`,
       // where both are minified locals that differ per platform build of the
       // same version (arm64 swaps the reserve/ctx bindings, yielding `?o:o-n`
