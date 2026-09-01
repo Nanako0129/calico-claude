@@ -646,8 +646,10 @@ const CHECKS: Check[] = [
       }
       const frozenAgentContext =
         /process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*\.__calicoPromptId===void 0&&\([A-Za-z_$][\w$]*\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?globalThis\.__calicoPromptIdGet\(\)\),\1\.run\(/;
+      // The parameter names are minified and were pinned as `e`/`t` here as well;
+      // 2.1.257 renamed the second to `n`. Capture them and backreference.
       const frozenJournalContext =
-        /function [A-Za-z_$][\w$]*\(e,t\)\{e&&process\.env\.REMORA_ACTIVE==="1"&&e\.__calicoPromptId===void 0&&\(e\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?globalThis\.__calicoPromptIdGet\(\)\);if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return \1\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\)/;
+        /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{\1&&process\.env\.REMORA_ACTIVE==="1"&&\1\.__calicoPromptId===void 0&&\(\1\.__calicoPromptId=([A-Za-z_$][\w$]*)\.getStore\(\)\?\.__calicoPromptId\?\?globalThis\.__calicoPromptIdGet\(\)\);if\(!\("turnAttributionKey"in \1\)\)\1\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return \3\.run\(\1,\(\)=>[A-Za-z_$][\w$]*\(\1\.turnAttributionKey,\2\)\)/;
       if (!frozenAgentContext.test(content) && !frozenJournalContext.test(content)) {
         return "missing nested-agent prompt inheritance at AsyncLocalStorage boundary";
       }
@@ -810,7 +812,10 @@ const CHECKS: Check[] = [
       }
       const identifier = "[A-Za-z_$][\\w$]*";
       const trackerPattern = new RegExp(
-        `function (${identifier})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:\\[\\](?:,[^{}]*?)?,activeMessageId:null,responseOutputTokens:new Map\\}\\}`,
+        // Upstream adds fields on both sides of recentActivities (2.1.246 after,
+        // 2.1.257 before). Kept in lockstep with trackerPattern in
+        // patch-claude-display.ts.
+        `function (${identifier})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0(?:,[^{}\\[\\]]*?)?,recentActivities:\\[\\](?:,[^{}]*?)?,activeMessageId:null,responseOutputTokens:new Map\\}\\}`,
         "g"
       );
       const trackerMatches = [...content.matchAll(trackerPattern)];
@@ -937,8 +942,13 @@ const CHECKS: Check[] = [
       }
 
       const oldAssistantOnlyTracker =
-        'if(t.type!=="assistant")return;let o=t.message.usage;e.latestInputTokens=o.input_tokens+(o.cache_creation_input_tokens??0)+(o.cache_read_input_tokens??0),e.cumulativeOutputTokens+=o.output_tokens;';
-      return content.includes(oldAssistantOnlyTracker)
+        // 2.1.257 folds these two assignments into the head of an `if(...)` comma
+        // expression, so the trailing `;` is a `,` there. Match the assignments,
+        // not the statement boundary.
+        /if\([A-Za-z_$][\w$]*\.type!=="assistant"\)return;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\.message\.usage;(?:if\()?[A-Za-z_$][\w$]*\.latestInputTokens=\1\.input_tokens\+\(\1\.cache_creation_input_tokens\?\?0\)\+\(\1\.cache_read_input_tokens\?\?0\),[A-Za-z_$][\w$]*\.cumulativeOutputTokens\+=\1\.output_tokens[;,]/;
+      // .test, not .includes: a RegExp handed to includes() is stringified and
+      // never matches, which would silently disable this guard.
+      return oldAssistantOnlyTracker.test(content)
         ? "original assistant-only usage tracker is still present"
         : null;
     },
@@ -1022,7 +1032,10 @@ const CHECKS: Check[] = [
       // (`…messageId:Gr.id},i.storageV5)`), matched optionally so the patched
       // 2.1.237 and 2.1.238 binaries both verify.
       const batchWrapperPattern = new RegExp(
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\),(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
+        // 2.1.257 inserts statements between the destructuring and the message
+        // object, and adds fields to the object before `requestId`. Kept in
+        // lockstep with batchWrapperPattern in patch-claude-display.ts.
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{}]*(?:\\{[^{}]*\\})?)*?,requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1399,11 +1412,19 @@ const CHECKS: Check[] = [
         "CALICO_CONTEXT_DISPLAY_PERCENT",
         "__calico_context_window",
         "__calico_display_window",
-        "if(process.env.CALICO_MODEL_CONTEXT_WINDOWS)return",
       ];
       const missing = required.filter((marker) => !content.includes(marker));
       if (missing.length > 0) {
         return `missing marker(s): ${missing.join(", ")}`;
+      }
+      // The injected lookup reads the resolver's own first parameter, whose
+      // minified name changes between versions (2.1.257 renamed the second one),
+      // so pin the call shape rather than a literal `(e)`. Requiring the early
+      // return keeps this a check on the wiring, not just on the helper existing.
+      const injectedLookup =
+        /let __calico_window=__calico_context_window\(([A-Za-z_$][\w$]*)\);if\(__calico_window!==null\)return __calico_window;/;
+      if (!injectedLookup.test(content)) {
+        return "custom context-window lookup is not wired into the resolver";
       }
       // The effective-window gate reads `CALICO_MODEL_CONTEXT_WINDOWS?<window>:<window>-<reserve>`,
       // where both are minified locals that differ per platform build of the
@@ -1491,7 +1512,11 @@ const CHECKS: Check[] = [
       if (requiresRendererThreading) {
         // The renderer must declare the streamingThinking parameter…
         const rendererSignaturePattern =
-          /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:[A-Za-z_$][\w$]*,/;
+          // 2.1.257 moved the destructuring out of the parameter list
+          // (`function f(p){let c=_(203),{messages:…}=p`), so the opener is a
+          // comma there and a paren before. Kept in lockstep with the anchors in
+          // patch-claude-display.ts.
+          /[(,]\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:[A-Za-z_$][\w$]*,/;
         if (!rendererSignaturePattern.test(content)) {
           return "expected renderer signature to declare a streamingThinking parameter";
         }
