@@ -369,18 +369,21 @@ jobs:
         with:
           subject-path: work/${{ matrix.patched_asset_name }}
       # Reports, does not block. This test is the only check that can see live
-      # thinking actually rendering, and it is worth keeping — but it runs on
-      # macos-arm64 only, so when it fails for a reason unrelated to the patcher
-      # it takes that one platform's release with it. That is what happened on
-      # 2.1.257 and 2.1.258: the mock endpoint is what the new client no longer
-      # renders from (the *unpatched* binary fails it identically), yet macOS
-      # published nothing while the other four platforms shipped, leaving users
-      # on a version that only exists for some platforms.
+      # thinking actually rendering, and it runs on macos-arm64 only, so when it
+      # fails for a reason unrelated to the patcher it takes that one platform's
+      # release with it. That is what happened on 2.1.257 and 2.1.258: the client
+      # no longer renders thinking from this mock (the *unpatched* binary fails
+      # identically), yet macOS published nothing while four platforms shipped.
       #
-      # A cross-platform release is worth more than this one signal blocking it.
-      # The failure is still visible in the run and in the Discord notification,
-      # and the same test gates PRs through the regression harness, where a real
-      # patcher regression is caught before merge rather than after.
+      # Be clear about what this costs: there is NO pre-merge equivalent. The
+      # regression harness that runs this test is a local script, not CI, and no
+      # PR workflow sets CLAUDE_NATIVE_BINARY. So while this step is tolerated,
+      # a genuine live-thinking regression can reach a release. One cannot be
+      # added yet either: the test is currently red for environmental reasons, so
+      # gating PRs on it would block every PR. This is a deliberate, temporary
+      # reduction in coverage to stop shipping versions that exist for four
+      # platforms out of five — to be reverted once the mock incompatibility is
+      # understood and the test is green again.
       - name: Test live thinking without credentials
         id: live_thinking
         continue-on-error: true
@@ -389,14 +392,29 @@ jobs:
           CLAUDE_NATIVE_BINARY: work/${{ matrix.patched_asset_name }}
         run: bun test test/live-thinking.integration.test.ts
 
+      # continue-on-error leaves the job and the workflow successful, so the
+      # notify-failure job (if: failure()) never runs for this. Post to the
+      # webhook here or the failure is an Actions warning nobody reads.
       - name: Report live-thinking result
         if: steps.check.outputs.skip != 'true' && matrix.platform_label == 'macos-arm64'
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERSION: ${{ steps.native.outputs.version }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [ "${{ steps.live_thinking.outcome }}" = "success" ]; then
             echo "live thinking verified on the patched binary"
-          else
-            echo "::warning title=live-thinking::The live-thinking integration test failed on this build. The release still published; check whether the mock endpoint or the patcher is at fault before trusting live thinking on this version." >&2
+            exit 0
+          fi
+          echo "::warning title=live-thinking::The live-thinking integration test failed on this build. The release still published; live thinking is unverified for this version." >&2
+          if [ -n "${WEBHOOK:-}" ]; then
+            jq -n --arg v "$VERSION" --arg u "$RUN_URL" '{embeds:[{
+              title:"live thinking unverified (release still published)",
+              description:("macos-arm64 build for Claude " + $v + " published, but the live-thinking integration test failed. Check whether the mock endpoint or the patcher is at fault."),
+              url:$u, color:16098851}]}' \
+              | curl -sfS -X POST -H "content-type: application/json" -d @- "$WEBHOOK" >/dev/null \
+              || echo "::warning::could not post the live-thinking warning to Discord" >&2
           fi
 
       - name: Write metadata
