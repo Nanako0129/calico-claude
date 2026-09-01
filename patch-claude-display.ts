@@ -1258,7 +1258,10 @@ function patchThinkingStreaming(content) {
     // 2.1.247 dropped showAllInTranscript from the renderer's destructured
     // params and moved isLoading up behind streamingToolUses, so neither the
     // detection nor the injection below can pin what follows the parameter.
-    /\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*)[,}]/
+    // 2.1.257 stopped destructuring in the parameter list: the compiler now emits
+    // `function f(p){let c=_(203),{messages:…}=p`. Anchor on the destructuring
+    // itself, which is `({messages:` in one form and `,{messages:` in the other.
+    /[(,]\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:([A-Za-z_$][\w$]*)[,}]/
   );
   if (rendererStreamingThinkingMatch) {
     transcriptStreamingThinkingVar = rendererStreamingThinkingMatch[1];
@@ -1269,7 +1272,7 @@ function patchThinkingStreaming(content) {
     // site above does supply the prop — without this the renderer would receive
     // a value it never destructures.
     const rendererSignaturePattern =
-      /(\(\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,)(?!streamingThinking:)([A-Za-z_$][\w$]*:)/;
+      /([(,]\{messages:[^}]*?streamingToolUses:[A-Za-z_$][\w$]*,)(?!streamingThinking:)([A-Za-z_$][\w$]*:)/;
     output = output.replace(rendererSignaturePattern, (full, beforeStreamingThinking, afterStreamingThinking) => {
       if (full.includes("streamingThinking:")) {
         return full;
@@ -2401,10 +2404,16 @@ function patchCustomContextWindows(content) {
   // window. Calico keeps that default unless a launcher supplies an exact,
   // validated model-to-window map. Exact matching is intentional: a typo must
   // fail closed to Claude's stock behavior instead of widening another model.
+  // The two parameters were pinned as `e` and `t`, and the injected lookup
+  // emitted `e` verbatim. They are minified names: 2.1.257 renamed the second to
+  // `n`, which took this module from 4 candidates to 1. That still passed
+  // --assert-all, since it only fails at zero — a silent loss of coverage.
+  // Capture both and emit the captures.
   const resolverPattern =
-    /(function [A-Za-z_$][\w$]*\(e,t\)\{)(if\([A-Za-z_$][\w$]*\(e\)\)return 1e6;if\(t\?\.includes\()/g;
+    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\(\3\?\.includes\()/g;
 
-  output = output.replace(resolverPattern, (full, functionStart, originalBody) => {
+  output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
+    const functionStart = `${functionOpen}${modelParam},${headersParam}${brace}`;
     candidates += 1;
     const helpers =
       'function __calico_context_window(e){try{let t=process.env.CALICO_MODEL_CONTEXT_WINDOWS;if(!t)return null;let r=JSON.parse(t);if(!r||typeof r!=="object"||Array.isArray(r)||!Object.hasOwn(r,e))return null;let n=r[e];if(!Number.isInteger(n)||n<100000||n>1000000)return null;return n}catch{return null}}' +
@@ -2416,7 +2425,7 @@ function patchCustomContextWindows(content) {
       // called from the resolver body injected immediately after it.
       'globalThis.__calico_display_window=function(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)};';
     const replacement =
-      `${helpers}${functionStart}let __calico_window=__calico_context_window(e);` +
+      `${helpers}${functionStart}let __calico_window=__calico_context_window(${modelParam});` +
       `if(__calico_window!==null)return __calico_window;${originalBody}`;
     patched += 1;
     return replacement;
@@ -2430,24 +2439,25 @@ function patchCustomContextWindows(content) {
   // → `return o-n`; elsewhere `let r=Math.min(...),n=...` → `return o-r`), so
   // capture the window and reserve locals instead of pinning `o`/`r`.
   const effectiveWindowPattern =
-    /(function [A-Za-z_$][\w$]*\(e,t\)\{let ([A-Za-z_$][\w$]*)=Math\.min\([A-Za-z_$][\w$]*\(e\),[A-Za-z_$][\w$]*\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\)\?t:void 0,\{window:([A-Za-z_$][\w$]*)\}=[A-Za-z_$][\w$]*\(e,\3\);return )(\4-\2)(\})/g;
+    /(function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{let ([A-Za-z_$][\w$]*)=Math\.min\([A-Za-z_$][\w$]*\(\2\),[A-Za-z_$][\w$]*\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\)\?\3:void 0,\{window:([A-Za-z_$][\w$]*)\}=[A-Za-z_$][\w$]*\(\2,\5\);return )(\6-\4)(\})/g;
   output = output.replace(
     effectiveWindowPattern,
-    (full, prefix, reserveLocal, ctxLocal, windowLocal, originalReturn, suffix) => {
+    (full, prefix, modelParam, headersParam, reserveLocal, ctxLocal, windowLocal, originalReturn, suffix) => {
       candidates += 1;
       patched += 1;
       return `${prefix}process.env.CALICO_MODEL_CONTEXT_WINDOWS?${windowLocal}:${originalReturn}${suffix}`;
     }
   );
 
+  // Same pinned-parameter bug as the resolver above: 2.1.257 renamed them.
   const precomputePattern =
-    /(function [A-Za-z_$][\w$]*\(e,t\)\{)(return Math\.min\(e-Math\.round\(e\*t\.precomputeBufferFraction\),([A-Za-z_$][\w$]*)\(e,t\)\)\})/g;
+    /(function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{)(return Math\.min\(\2-Math\.round\(\2\*\3\.precomputeBufferFraction\),([A-Za-z_$][\w$]*)\(\2,\3\)\)\})/g;
   output = output.replace(
     precomputePattern,
-    (full, functionStart, originalBody, percentFn) => {
+    (full, functionStart, modelParam, headersParam, originalBody, percentFn) => {
       candidates += 1;
       patched += 1;
-      return `${functionStart}if(process.env.CALICO_MODEL_CONTEXT_WINDOWS)return ${percentFn}(e,t);${originalBody}`;
+      return `${functionStart}if(process.env.CALICO_MODEL_CONTEXT_WINDOWS)return ${percentFn}(${modelParam},${headersParam});${originalBody}`;
     }
   );
 
@@ -2478,27 +2488,50 @@ function patchBackgroundAgentUsage(content) {
   // field whose value contains braces will fail to match, which reports zero
   // candidates and fails --assert-all rather than quietly discarding state.
   const trackerPattern = new RegExp(
-    `function (${identifierPattern})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:\\[\\]((?:,[^{}]*)?)\\}\\}`,
+    // Upstream adds fields on both sides of recentActivities, not only after it:
+    // 2.1.246 appended `seenToolUseIds:new Set`, and 2.1.257 inserted
+    // `streamedTokenEstimate`, `streamedTokenEstimateAtResponseStart` and
+    // `lastStampedResponseId` BEFORE it, which a pattern demanding
+    // `cumulativeOutputTokens:0,recentActivities:` could not match. Capture both
+    // runs of fields and re-emit them verbatim, so anything upstream adds keeps
+    // working and nothing is silently dropped from the tracker's state.
+    `function (${identifierPattern})\\(\\)\\{return\\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0((?:,[^{}\\[\\]]*)?),recentActivities:\\[\\]((?:,[^{}]*)?)\\}\\}`,
     "g"
   );
   const totalPattern = new RegExp(
-    `function (${identifierPattern})\\((${identifierPattern})\\)\\{return \\2\\.latestInputTokens\\+\\2\\.cumulativeOutputTokens\\}`,
+    // 2.1.257 extended the sum with `+e.streamedTokenEstimate`. The name is only
+    // captured to build the summary anchor below, so accept further terms.
+    `function (${identifierPattern})\\((${identifierPattern})\\)\\{return \\2\\.latestInputTokens\\+\\2\\.cumulativeOutputTokens(?:\\+\\2\\.${identifierPattern})*\\}`,
     "g"
   );
   const accountingPattern = new RegExp(
-    `if\\((${identifierPattern})\\.type!=="assistant"\\)return;let (${identifierPattern})=\\1\\.message\\.usage;(${identifierPattern})\\.latestInputTokens=\\2\\.input_tokens\\+\\(\\2\\.cache_creation_input_tokens\\?\\?0\\)\\+\\(\\2\\.cache_read_input_tokens\\?\\?0\\),\\3\\.cumulativeOutputTokens\\+=\\2\\.output_tokens;`,
+    // The two assignments are the anchor; whether they stand as their own
+    // statement is not. 2.1.257 folded them into the head of an `if(...)` comma
+    // expression so it could append its lastStampedResponseId bookkeeping, which
+    // took this from a match to none — and with it eventName, progressPattern and
+    // everything downstream, since the whole module keys off this one site.
+    // Accept either form and stop at the second assignment.
+    // Accept either form and capture which one it is. The folded form's trailing
+    // `,` belongs to a condition that continues after the match, so the
+    // replacement has to re-open the `if(` rather than swallow it — dropping it
+    // leaves a dangling `)` and the module stops parsing, which no text-level
+    // check notices because every marker is still present.
+    `if\\((${identifierPattern})\\.type!=="assistant"\\)return;let (${identifierPattern})=\\1\\.message\\.usage;(if\\()?(${identifierPattern})\\.latestInputTokens=\\2\\.input_tokens\\+\\(\\2\\.cache_creation_input_tokens\\?\\?0\\)\\+\\(\\2\\.cache_read_input_tokens\\?\\?0\\),\\4\\.cumulativeOutputTokens\\+=\\2\\.output_tokens([;,])`,
     "g"
   );
   const trackerMatches = [...content.matchAll(trackerPattern)];
   const totalMatches = [...content.matchAll(totalPattern)];
   const accountingMatches = [...content.matchAll(accountingPattern)];
   const trackerName = trackerMatches[0]?.[1];
-  const trackerUpstreamFields = trackerMatches[0]?.[2] ?? "";
+  const trackerLeadingFields = trackerMatches[0]?.[2] ?? "";
+  const trackerUpstreamFields = trackerMatches[0]?.[3] ?? "";
   const totalName = totalMatches[0]?.[1];
   const accountingMatch = accountingMatches[0];
   const eventVar = accountingMatch?.[1];
   const usageVar = accountingMatch?.[2];
-  const trackerVar = accountingMatch?.[3];
+  const accountingIfPrefix = accountingMatch?.[3] ?? "";
+  const trackerVar = accountingMatch?.[4];
+  const accountingTerminator = accountingMatch?.[5] ?? ";";
   const eventIndex = accountingMatch?.index ?? -1;
   const eventFunctionStart = eventIndex === -1 ? -1 : content.lastIndexOf("function ", eventIndex);
   const eventHeaderMatch =
@@ -2610,7 +2643,7 @@ function patchBackgroundAgentUsage(content) {
   const trackerReplacement =
     'function __calicoTrackAgentUsage(e,t,r,n){if(!t||typeof t!=="object")return;let o=["input_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((s)=>typeof t[s]==="number"),i=(t.input_tokens??0)+(t.cache_creation_input_tokens??0)+(t.cache_read_input_tokens??0);if(o&&(n||i>0))e.latestInputTokens=i;let s=typeof t.output_tokens==="number"&&Number.isFinite(t.output_tokens)?Math.max(0,t.output_tokens):0;if(r==null){if(s>0)e.cumulativeOutputTokens+=s;return}let a=e.responseOutputTokens.get(r)??0;if(s>a)e.cumulativeOutputTokens+=s-a;if(s>a||!e.responseOutputTokens.has(r))e.responseOutputTokens.set(r,Math.max(a,s))}' +
     'function __calicoRefreshAgentUsage(e,t){if(!Array.isArray(t))return;let r=!1;for(let n=t.length-1;n>=0;n--){let o=t[n];if(o?.type==="assistant")r=!0,__calicoTrackAgentUsage(e,o.message?.usage,o.message?.id,o.message?.stop_reason!=null);else if(o?.type==="user"&&r)break}}' +
-    `function ${trackerName}(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0,recentActivities:[]${trackerUpstreamFields},activeMessageId:null,responseOutputTokens:new Map}}`;
+    `function ${trackerName}(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0${trackerLeadingFields},recentActivities:[]${trackerUpstreamFields},activeMessageId:null,responseOutputTokens:new Map}}`;
   const eventReplacement =
     `if(${eventVar}.type==="stream_event"){if(${eventVar}.event.type==="message_start")${trackerVar}.activeMessageId=${eventVar}.event.message.id,__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.message.usage,${trackerVar}.activeMessageId,!1);else if(${eventVar}.event.type==="message_delta")__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.usage,${trackerVar}.activeMessageId,${eventVar}.event.delta.stop_reason!=null);else if(${eventVar}.event.type==="message_stop")${trackerVar}.activeMessageId=null;return}if(${eventVar}.type!=="assistant")return;let ${usageVar}=${eventVar}.message.usage;__calicoTrackAgentUsage(${trackerVar},${usageVar},${eventVar}.message.id,${eventVar}.message.stop_reason!=null);`;
   const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),__calicoRefreshAgentUsage(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
@@ -2621,7 +2654,12 @@ function patchBackgroundAgentUsage(content) {
   // reach .replace only via a callback — a plain-string 2nd argument would
   // let `$$`/`$&`/`$1`-`$9` in a captured name expand against these regexes.
   let output = original.replace(trackerPattern, () => trackerReplacement);
-  output = output.replace(accountingPattern, () => eventReplacement);
+  // When the assignments were folded into an `if(`, re-emit that `if(` after our
+  // call so the condition it opened — and its closing paren — stay balanced.
+  output = output.replace(
+    accountingPattern,
+    () => `${eventReplacement}${accountingIfPrefix}`
+  );
   output = output.replace(progressPattern, () => progressReplacement);
   output = output.replace(
     completionMatch.match[0],
@@ -2677,8 +2715,23 @@ function patchStatuslineCommittedUsage(content) {
   // so the call no longer closes right after the second argument. Accept a
   // trailing argument list, one level of call nesting deep so the callback body
   // does not terminate it early.
+  // 2.1.257 stopped placing the message object immediately after the
+  // destructuring — it inserts wire-tool-input bookkeeping between them
+  // (`$c=Ps?Yxe([Hs]):void 0;YD||=…;let Ay=$c?.inputs,`) — and added
+  // `wireToolInputs` and `apiBlockIndex` to the object before `requestId`.
+  // Neither is something the replacement needs; both are matched loosely and
+  // re-emitted from the matched text, so upstream can keep adding to either
+  // position. The bounded `[^{}]` runs keep this from swallowing a whole
+  // unrelated object.
+  // 2.1.257 stopped placing the message object immediately after the
+  // destructuring — it inserts wire-tool-input bookkeeping between them
+  // (`$c=Ps?Yxe([Hs]):void 0;YD||=…;let Ay=$c?.inputs,`) — and added
+  // `wireToolInputs` and `apiBlockIndex` to the object before `requestId`.
+  // Neither is something the replacement needs; both are matched loosely and
+  // re-emitted from the matched text, so upstream can keep adding to either
+  // position. The bounded runs keep this from swallowing an unrelated object.
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\),(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\},requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{}]*(?:\\{[^{}]*\\})?)*?),requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
@@ -2725,11 +2778,14 @@ function patchStatuslineCommittedUsage(content) {
       effortCondition: match[11],
       effortProperty: match[12],
     })),
+    // Group 11 captures whatever upstream inserts between batchToolUses and
+    // requestId (2.1.257: wireToolInputs + apiBlockIndex), which shifts the
+    // trailing captures by one.
     ...[...content.matchAll(batchWrapperPattern)].map((match) => ({
       match,
       local: match[10],
-      effortCondition: match[14],
-      effortProperty: match[15],
+      effortCondition: match[15],
+      effortProperty: match[16],
     })),
   ];
   const wrapperMatch = wrapperMatches[0];
@@ -3732,24 +3788,28 @@ function patchActiveTurnPromptIdentity(content) {
   // Every spawned agent enters the same AsyncLocalStorage boundary. Freeze
   // the current prompt id there so a background agent keeps its spawning turn
   // even after the main session accepts another user prompt.
+  // The two parameters were pinned as the literals `e` and `t`, and the injected
+  // code emitted `e` verbatim. Those are minified names, not fixed syntax: 2.1.257
+  // renamed the second one to `n` and this matcher stopped matching, taking the
+  // module to 1 candidate / 0 patched. Capture both and emit the captures.
   const agentContextPattern =
-    /(function [A-Za-z_$][\w$]*\(e,t\)\{return )([A-Za-z_$][\w$]*)\.run\(e,t\)(\}function [A-Za-z_$][\w$]*\(\)\{return\{agentType:"main",agentId:)/g;
+    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{return )([A-Za-z_$][\w$]*)\.run\(\2,\3\)(\}function [A-Za-z_$][\w$]*\(\)\{return\{agentType:"main",agentId:)/g;
   output = output.replace(
     agentContextPattern,
-    (full, prefix, storage, suffix) => {
+    (full, prefix, contextParam, callbackParam, open, storage, suffix) => {
       agentCandidates += 1;
       agentPatched += 1;
-      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetterCall}),${storage}.run(e,t)${suffix}`;
+      return `${prefix}${contextParam},${callbackParam}${open}${contextParam}&&process.env.REMORA_ACTIVE==="1"&&${contextParam}.__calicoPromptId===void 0&&(${contextParam}.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetterCall}),${storage}.run(${contextParam},${callbackParam})${suffix}`;
     }
   );
   const attributedAgentContextPattern =
-    /(function [A-Za-z_$][\w$]*\(e,t\)\{)(if\(!\("turnAttributionKey"in e\)\)e\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return )([A-Za-z_$][\w$]*)(\.run\(e,\(\)=>[A-Za-z_$][\w$]*\(e\.turnAttributionKey,t\)\))(\}function [A-Za-z_$][\w$]*\(\)\{return\{agentType:"main",agentId:)/g;
+    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\(!\("turnAttributionKey"in \2\)\)\2\.turnAttributionKey=[A-Za-z_$][\w$]*\(\);return )([A-Za-z_$][\w$]*)(\.run\(\2,\(\)=>[A-Za-z_$][\w$]*\(\2\.turnAttributionKey,\3\)\))(\}function [A-Za-z_$][\w$]*\(\)\{return\{agentType:"main",agentId:)/g;
   output = output.replace(
     attributedAgentContextPattern,
-    (full, prefix, attribution, storage, run, suffix) => {
+    (full, prefix, contextParam, callbackParam, open, attribution, storage, run, suffix) => {
       agentCandidates += 1;
       agentPatched += 1;
-      return `${prefix}e&&process.env.REMORA_ACTIVE==="1"&&e.__calicoPromptId===void 0&&(e.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetterCall});${attribution}${storage}${run}${suffix}`;
+      return `${prefix}${contextParam},${callbackParam}${open}${contextParam}&&process.env.REMORA_ACTIVE==="1"&&${contextParam}.__calicoPromptId===void 0&&(${contextParam}.__calicoPromptId=${storage}.getStore()?.__calicoPromptId??${promptGetterCall});${attribution}${storage}${run}${suffix}`;
     }
   );
 
