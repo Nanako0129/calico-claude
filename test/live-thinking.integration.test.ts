@@ -59,8 +59,13 @@ liveThinkingTest(
       port: 0,
       fetch(request) {
         const url = new URL(request.url);
+        // 2.1.257 probes the endpoint with `HEAD /api/hello` before it will send
+        // anything. Answering 404 there makes the client treat the whole
+        // endpoint as unavailable and retry until the test times out — which
+        // reads as "thinking never rendered" rather than "the mock is missing a
+        // route". Anything that is not the messages endpoint gets a bare 200.
         if (request.method !== "POST" || !url.pathname.endsWith("/v1/messages")) {
-          return Response.json({ error: "not found" }, { status: 404 });
+          return new Response(null, { status: 200 });
         }
 
         requestReceived = true;
@@ -99,10 +104,22 @@ liveThinkingTest(
             // also faster in the healthy case, since it proceeds the moment the
             // row appears. The cap only bounds a build that never renders
             // thinking at all — there the assertion below is supposed to fail.
+            // Keep the stream alive while waiting. 2.1.257 treats a stream that
+            // goes silent as failed and retries the whole request, so a hold
+            // that simply sleeps deadlocks: the client never renders, the flag
+            // never flips, and the mock waits out its cap on every attempt.
+            // Emitting a delta per tick both keeps the connection healthy and
+            // gives the renderer something to paint.
             const observationDeadline = 15_000;
-            const pollInterval = 25;
+            const pollInterval = 250;
             for (let waited = 0; !sawThinkingBeforeFinalEvent && waited < observationDeadline; waited += pollInterval) {
               await Bun.sleep(pollInterval);
+              if (sawThinkingBeforeFinalEvent) break;
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "thinking_delta", thinking: "." },
+              });
             }
             send("content_block_delta", {
               type: "content_block_delta",
