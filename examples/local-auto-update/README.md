@@ -120,11 +120,20 @@ that to at most an hour.
 
 ```bash
 mkdir -p ~/Library/LaunchAgents ~/Library/Logs
-sed "s|__HOME__|$HOME|g" examples/local-auto-update/com.calico.auto-update.plist \
-  > ~/Library/LaunchAgents/com.calico.auto-update.plist
+python3 - <<'PY' > ~/Library/LaunchAgents/com.calico.auto-update.plist
+import html, os
+tpl = open("examples/local-auto-update/com.calico.auto-update.plist").read()
+print(tpl.replace("__HOME__", html.escape(os.environ["HOME"], quote=False)), end="")
+PY
 plutil -lint ~/Library/LaunchAgents/com.calico.auto-update.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.calico.auto-update.plist
 ```
+
+Python rather than `sed` because `&`, `<`, `>` and `|` are all legal in a macOS
+home path and all mean something to one of the two layers involved. `sed` reads
+`&` in a replacement as the whole match, so `HOME=/Users/a&b` writes
+`/Users/a__HOME__b` into valid XML that `plutil` and launchd both accept — a job
+pointed at a path that does not exist, with nothing to indicate why.
 
 If you track a fork, edit `CALICO_REPO` in the plist before loading it — and add
 any other `CALICO_*` override you rely on next to it. launchd starts the agent
@@ -189,6 +198,20 @@ left alone for a few months will quietly consume several gigabytes.
 provenance attestation cannot be checked and the script logs a warning and
 proceeds on the checksum alone. The checksum proves the file matches the release
 asset; the attestation proves the release asset came out of this repo's CI.
+
+The launchd timer needs that authentication to be **persistent** — `gh auth
+login`, which stores the credential on disk. launchd starts the agent with a
+clean environment, so a `GH_TOKEN` or `GITHUB_TOKEN` exported in your shell
+never reaches it: `gh auth status` fails there, every scheduled install skips
+attestation, and the job still exits 0. Do not work around that by putting a
+token in the plist — `~/Library/LaunchAgents` is not a credential store.
+
+The agent's log says which happened, the next time it actually installs
+something:
+
+```bash
+grep -E 'Attestation verified|gh unavailable' ~/Library/Logs/calico-auto-update.log
+```
 
 ## Verify it works
 
