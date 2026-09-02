@@ -119,11 +119,16 @@ began. [`com.calico.auto-update.plist`](./com.calico.auto-update.plist) closes
 that to at most an hour.
 
 ```bash
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
 sed "s|__HOME__|$HOME|g" examples/local-auto-update/com.calico.auto-update.plist \
   > ~/Library/LaunchAgents/com.calico.auto-update.plist
 plutil -lint ~/Library/LaunchAgents/com.calico.auto-update.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.calico.auto-update.plist
 ```
+
+If you track a fork, edit `CALICO_REPO` in the plist before loading it — and add
+any other `CALICO_*` override you rely on next to it. launchd starts the agent
+with a clean environment, so what you export in your shell does not reach it.
 
 `RunAtLoad` makes it run immediately, so you can read the result rather than
 assume it:
@@ -133,11 +138,13 @@ launchctl list | grep com.calico.auto-update   # second column is the last exit 
 tail ~/Library/Logs/calico-auto-update.log
 ```
 
-Three choices in that file are deliberate, and the comments say why: it calls
-`--run` rather than `--hook`, it sets `PATH`, and it logs somewhere other than
-`update.log`. The `PATH` one is the least obvious — without it `gh` is not on
-the timer's path, so every run installs on the checksum alone and skips
-attestation, while still exiting 0.
+Four choices in that file are deliberate, and the comments say why: it calls
+`--run` rather than `--hook`, it sets `PATH`, it writes `CALICO_REPO` out
+explicitly, and it logs somewhere other than `update.log`. The middle two both
+exist because launchd hands the agent a clean environment, and both fail
+quietly: without `PATH`, `gh` is missing and every run installs on the checksum
+alone with attestation skipped; without `CALICO_REPO`, a fork's timer checks the
+upstream repo. Neither shows up as a failed job.
 
 The timer does not touch the `last-check` stamp, so the SessionStart hook keeps
 its own schedule. Both can check within the same hour; the cost is one extra

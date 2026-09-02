@@ -8,10 +8,11 @@
     <string>/bin/bash</string>
     <!-- launchd does not expand ~ or $HOME here. Substitute your own path. -->
     <string>__HOME__/.claude/calico/update.sh</string>
-    <!-- --run, not --hook: --hook spawns a detached child and exits 0
-         immediately, so launchd would record success for a job whose real work
-         it can neither wait for nor report on. --run does the work in the
-         foreground, so the exit status and the output belong to the job. -->
+    <!-- Run mode, not hook mode. Hook mode stamps the throttle file, spawns a
+         detached child through nohup, and exits 0 at once; launchd would then
+         record success for work it never waited for and cannot report on. Run
+         mode does the work in the foreground, so the exit status and the log
+         describe the actual update. -->
     <string>--run</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -21,9 +22,18 @@
          /usr/bin/python3), but gh does not: `command -v gh` fails, the script
          logs "gh unavailable or not authenticated; skipping attestation
          verification", and installs on the checksum alone. The job still exits
-         0, so the downgrade is silent. Point PATH at wherever gh lives —
-         /opt/homebrew/bin on Apple Silicon, /usr/local/bin on Intel. -->
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+         0, so the downgrade is silent. Both Homebrew prefixes are listed —
+         /opt/homebrew/bin on Apple Silicon, /usr/local/bin on Intel — so this
+         entry needs no editing per machine. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- launchd starts the agent with a clean environment, so every CALICO_*
+         override you set in your shell is absent here and update.sh falls back
+         to its defaults. The repo is the one that matters: left implicit, a
+         timer installed by someone tracking a fork would quietly check and
+         install from the upstream repo instead. It is written out rather than
+         left to a default so the target is visible in the installed file.
+         Add any other CALICO_* override you rely on alongside it. -->
+    <key>CALICO_REPO</key><string>Nanako0129/calico-claude</string>
   </dict>
   <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>
