@@ -616,6 +616,21 @@ const CHECKS: Check[] = [
         return "shared locator is detached from the worker/respawn dispatch record";
       }
       const dispatchRecord = dispatchRecords[0];
+      // Object spreads are last-write-wins, and the containment checks above
+      // only establish where the injection sits — not that it survives to the
+      // end of the object. A later spread assigning the same key, e.g.
+      // `...{CALICO_GATEWAY_FAST_STATE_FILE:void 0}`, would silently win and
+      // every worker would come up without the shared locator. Requiring the
+      // key to be written exactly once inside this env object is the property
+      // itself rather than a proxy for it; the injection writes it once.
+      const envObject = workerSegment.slice(
+        dispatchRecord.envIndex,
+        dispatchRecord.envEnd + 1
+      );
+      const locatorWrites = envObject.split("CALICO_GATEWAY_FAST_STATE_FILE:").length - 1;
+      if (locatorWrites !== 1) {
+        return `expected the worker env to assign the shared locator once, found ${locatorWrites}`;
+      }
       const dispatchRecordLocal = dispatchRecord.match[1];
       // 2.1.239 appended arguments to the dispatch call; accept a trailing
       // argument list one level of call nesting deep, matching the patcher.

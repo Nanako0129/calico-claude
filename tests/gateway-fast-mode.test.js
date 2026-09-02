@@ -507,6 +507,28 @@ test("binary verifier accepts an unrelated spread between the locator and PATH",
   assert.notEqual(evaluatePatchModule("gateway-fast-mode", detachedFromExtraBody), null);
 });
 
+// Spreads are last-write-wins, so an intervening spread is only harmless while
+// nothing after it reassigns the key. Locating the injection does not prove it
+// survives to the end of the object.
+test("binary verifier rejects a later spread that overwrites the worker locator", () => {
+  const patched = patchGatewayFastMode(fixture).content;
+
+  const overwritten = patched.replace(
+    "...ye.PATH&&{PATH:ye.PATH}",
+    "...ye.PATH&&{PATH:ye.PATH},...{CALICO_GATEWAY_FAST_STATE_FILE:void 0}"
+  );
+  assert.notEqual(overwritten, patched);
+  assert.match(
+    evaluatePatchModule("gateway-fast-mode", overwritten),
+    /assign the shared locator once, found 2/
+  );
+
+  // Outside this worker env the same text is not an overwrite and must not trip
+  // the check — otherwise the guard fires on unrelated drift.
+  const elsewhere = patched + ";var unrelated={CALICO_GATEWAY_FAST_STATE_FILE:1};";
+  assert.equal(evaluatePatchModule("gateway-fast-mode", elsewhere), null);
+});
+
 test("binary verifier rejects detached helpers and broken gateway ownership", () => {
   const patched = patchGatewayFastMode(fixture).content;
   const helperStart = patched.indexOf("var __calicoGatewayFastNode=");
