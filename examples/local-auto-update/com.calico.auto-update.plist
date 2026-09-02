@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.calico.auto-update</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <!-- launchd does not expand ~ or $HOME here. Substitute your own path. -->
+    <string>__HOME__/.claude/calico/update.sh</string>
+    <!-- Run mode, not hook mode. Hook mode stamps the throttle file, spawns a
+         detached child through nohup, and exits 0 at once; launchd would then
+         record success for work it never waited for and cannot report on. Run
+         mode does the work in the foreground, so the exit status and the log
+         describe the actual update. -->
+    <string>--run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- launchd's default PATH is /usr/bin:/bin:/usr/sbin:/sbin, and update.sh
+         sets no PATH of its own. python3 survives that (macOS ships
+         /usr/bin/python3), but gh does not: `command -v gh` fails, the script
+         logs "gh unavailable or not authenticated; skipping attestation
+         verification", and installs on the checksum alone. The job still exits
+         0, so the downgrade is silent. Both Homebrew prefixes are listed —
+         /opt/homebrew/bin on Apple Silicon, /usr/local/bin on Intel — so this
+         entry needs no editing per machine. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- launchd starts the agent with a clean environment, so every CALICO_*
+         override you set in your shell is absent here and update.sh falls back
+         to its defaults. The repo is the one that matters: left implicit, a
+         timer installed by someone tracking a fork would quietly check and
+         install from the upstream repo instead. It is written out rather than
+         left to a default so the target is visible in the installed file.
+         Add any other CALICO_* override you rely on alongside it. -->
+    <key>CALICO_REPO</key><string>Nanako0129/calico-claude</string>
+  </dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <!-- Deliberately not update.log: update.sh rotates that file itself, and a
+       launchd-held descriptor would keep writing into the renamed inode. -->
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/calico-auto-update.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/calico-auto-update.log</string>
+</dict>
+</plist>

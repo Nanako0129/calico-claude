@@ -168,7 +168,12 @@ jobs:
           # reach the binary. Of everything under .github/, only patch-claude.yml
           # is part of the build definition — it runs the patcher and sets
           # DISABLED_MODULES. The rest decide when to build, or do not build.
-          NON_BUILD_PATHS='^(docs/|test/|tests/|tools/local-verify/|tools/watch-poke\.sh$|scripts/verify-patched-binary\.ts$|install-patched-claude\.|\.github/|bun\.lock$|\.gitignore$|.*\.md$)'
+          # examples/ holds material for running Calico on your own machine; the
+          # patch pipeline never reads it. The `.md` rule already covered every
+          # file there until a LaunchAgent plist was added, which would have
+          # rebuilt all five platforms for a file launchd reads and the patcher
+          # cannot see. Exclude the directory, not each new extension in turn.
+          NON_BUILD_PATHS='^(docs/|examples/|test/|tests/|tools/local-verify/|tools/watch-poke\.sh$|scripts/verify-patched-binary\.ts$|install-patched-claude\.|\.github/|bun\.lock$|\.gitignore$|.*\.md$)'
           BUILD_WORKFLOW='.github/workflows/patch-claude.yml'
           STALE=0
 

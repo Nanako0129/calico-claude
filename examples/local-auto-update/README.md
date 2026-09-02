@@ -110,6 +110,58 @@ stdin payload. `async: true` plus the short timeout are belt and braces.
 
 An updated binary is picked up by the **next** session, not the running one.
 
+**4. Optional — add a launchd timer (macOS).**
+
+The hook only fires when a session starts, so a release published while you are
+not opening sessions waits. Observed on one machine: `v2.1.258-macos-arm64`
+published at 08:08 local and was installed at 12:00, the next time a session
+began. [`com.calico.auto-update.plist`](./com.calico.auto-update.plist) closes
+that to at most an hour.
+
+```bash
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+python3 - <<'PY' > ~/Library/LaunchAgents/com.calico.auto-update.plist
+import html, os
+tpl = open("examples/local-auto-update/com.calico.auto-update.plist").read()
+print(tpl.replace("__HOME__", html.escape(os.environ["HOME"], quote=False)), end="")
+PY
+plutil -lint ~/Library/LaunchAgents/com.calico.auto-update.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.calico.auto-update.plist
+```
+
+Python rather than `sed` because `&`, `<`, `>` and `|` are all legal in a macOS
+home path and all mean something to one of the two layers involved. `sed` reads
+`&` in a replacement as the whole match, so `HOME=/Users/a&b` writes
+`/Users/a__HOME__b` into valid XML that `plutil` and launchd both accept — a job
+pointed at a path that does not exist, with nothing to indicate why.
+
+If you track a fork, edit `CALICO_REPO` in the plist before loading it — and add
+any other `CALICO_*` override you rely on next to it. launchd starts the agent
+with a clean environment, so what you export in your shell does not reach it.
+
+`RunAtLoad` makes it run immediately, so you can read the result rather than
+assume it:
+
+```bash
+launchctl list | grep com.calico.auto-update   # second column is the last exit status
+tail ~/Library/Logs/calico-auto-update.log
+```
+
+Four choices in that file are deliberate, and the comments say why: it calls
+`--run` rather than `--hook`, it sets `PATH`, it writes `CALICO_REPO` out
+explicitly, and it logs somewhere other than `update.log`. The middle two both
+exist because launchd hands the agent a clean environment, and both fail
+quietly: without `PATH`, `gh` is missing and every run installs on the checksum
+alone with attestation skipped; without `CALICO_REPO`, a fork's timer checks the
+upstream repo. Neither shows up as a failed job.
+
+The timer does not touch the `last-check` stamp, so the SessionStart hook keeps
+its own schedule. Both can check within the same hour; the cost is one extra
+release lookup.
+
+Remove it with `launchctl bootout gui/$(id -u)/com.calico.auto-update` and
+deleting the plist.
+
 ## Modes
 
 | Mode | Effect |
@@ -146,6 +198,20 @@ left alone for a few months will quietly consume several gigabytes.
 provenance attestation cannot be checked and the script logs a warning and
 proceeds on the checksum alone. The checksum proves the file matches the release
 asset; the attestation proves the release asset came out of this repo's CI.
+
+The launchd timer needs that authentication to be **persistent** — `gh auth
+login`, which stores the credential on disk. launchd starts the agent with a
+clean environment, so a `GH_TOKEN` or `GITHUB_TOKEN` exported in your shell
+never reaches it: `gh auth status` fails there, every scheduled install skips
+attestation, and the job still exits 0. Do not work around that by putting a
+token in the plist — `~/Library/LaunchAgents` is not a credential store.
+
+The agent's log says which happened, the next time it actually installs
+something:
+
+```bash
+grep -E 'Attestation verified|gh unavailable' ~/Library/Logs/calico-auto-update.log
+```
 
 ## Verify it works
 
