@@ -110,6 +110,42 @@ stdin payload. `async: true` plus the short timeout are belt and braces.
 
 An updated binary is picked up by the **next** session, not the running one.
 
+**4. Optional — add a launchd timer (macOS).**
+
+The hook only fires when a session starts, so a release published while you are
+not opening sessions waits. Observed on one machine: `v2.1.258-macos-arm64`
+published at 08:08 local and was installed at 12:00, the next time a session
+began. [`com.calico.auto-update.plist`](./com.calico.auto-update.plist) closes
+that to at most an hour.
+
+```bash
+sed "s|__HOME__|$HOME|g" examples/local-auto-update/com.calico.auto-update.plist \
+  > ~/Library/LaunchAgents/com.calico.auto-update.plist
+plutil -lint ~/Library/LaunchAgents/com.calico.auto-update.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.calico.auto-update.plist
+```
+
+`RunAtLoad` makes it run immediately, so you can read the result rather than
+assume it:
+
+```bash
+launchctl list | grep com.calico.auto-update   # second column is the last exit status
+tail ~/Library/Logs/calico-auto-update.log
+```
+
+Three choices in that file are deliberate, and the comments say why: it calls
+`--run` rather than `--hook`, it sets `PATH`, and it logs somewhere other than
+`update.log`. The `PATH` one is the least obvious — without it `gh` is not on
+the timer's path, so every run installs on the checksum alone and skips
+attestation, while still exiting 0.
+
+The timer does not touch the `last-check` stamp, so the SessionStart hook keeps
+its own schedule. Both can check within the same hour; the cost is one extra
+release lookup.
+
+Remove it with `launchctl bootout gui/$(id -u)/com.calico.auto-update` and
+deleting the plist.
+
 ## Modes
 
 | Mode | Effect |

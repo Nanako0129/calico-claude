@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.calico.auto-update</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <!-- launchd does not expand ~ or $HOME here. Substitute your own path. -->
+    <string>__HOME__/.claude/calico/update.sh</string>
+    <!-- --run, not --hook: --hook spawns a detached child and exits 0
+         immediately, so launchd would record success for a job whose real work
+         it can neither wait for nor report on. --run does the work in the
+         foreground, so the exit status and the output belong to the job. -->
+    <string>--run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- launchd's default PATH is /usr/bin:/bin:/usr/sbin:/sbin, and update.sh
+         sets no PATH of its own. python3 survives that (macOS ships
+         /usr/bin/python3), but gh does not: `command -v gh` fails, the script
+         logs "gh unavailable or not authenticated; skipping attestation
+         verification", and installs on the checksum alone. The job still exits
+         0, so the downgrade is silent. Point PATH at wherever gh lives —
+         /opt/homebrew/bin on Apple Silicon, /usr/local/bin on Intel. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <!-- Deliberately not update.log: update.sh rotates that file itself, and a
+       launchd-held descriptor would keep writing into the renamed inode. -->
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/calico-auto-update.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/calico-auto-update.log</string>
+</dict>
+</plist>
