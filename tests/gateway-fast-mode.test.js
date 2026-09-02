@@ -480,6 +480,33 @@ test("binary verifier accepts the complete gateway fast-mode structure", () => {
   );
 });
 
+// 2.1.259 emitted a bare `...{},` between the injected CALICO entry and PATH in
+// the worker env — a cosmetic empty spread that changes nothing. The verifier
+// had required the two to be textually adjacent and failed a correct patch,
+// which would have blocked the release on every platform. Position is proved by
+// the containment checks (inside the env of a dispatch record carrying
+// respawnFlags), not by whichever spread happens to come next.
+test("binary verifier accepts an unrelated spread between the locator and PATH", () => {
+  const patched = patchGatewayFastMode(fixture).content;
+  assert.equal(evaluatePatchModule("gateway-fast-mode", patched), null);
+
+  const withInterveningSpread = patched.replace(
+    "...ye.PATH&&{PATH:ye.PATH}",
+    "...{},...ye.PATH&&{PATH:ye.PATH}"
+  );
+  assert.notEqual(withInterveningSpread, patched);
+  assert.equal(evaluatePatchModule("gateway-fast-mode", withInterveningSpread), null);
+
+  // The relaxation must not reach the injected entry itself: detaching it from
+  // CLAUDE_CODE_EXTRA_BODY still has to fail.
+  const detachedFromExtraBody = withInterveningSpread.replace(
+    "...ye.CALICO_GATEWAY_FAST_STATE_FILE&&",
+    "...{},...ye.CALICO_GATEWAY_FAST_STATE_FILE&&"
+  );
+  assert.notEqual(detachedFromExtraBody, withInterveningSpread);
+  assert.notEqual(evaluatePatchModule("gateway-fast-mode", detachedFromExtraBody), null);
+});
+
 test("binary verifier rejects detached helpers and broken gateway ownership", () => {
   const patched = patchGatewayFastMode(fixture).content;
   const helperStart = patched.indexOf("var __calicoGatewayFastNode=");

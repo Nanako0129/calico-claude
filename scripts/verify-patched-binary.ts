@@ -532,8 +532,20 @@ const CHECKS: Check[] = [
         return "request-time mode application is not between native parsing and beta merge";
       }
 
+      // Locator only. What proves the injection landed correctly is the
+      // structural work below: this offset has to sit inside the `env:{…}` of a
+      // dispatch record carrying proto/short/sessionId and respawnFlags, with
+      // the env object nested inside the record. The patcher guarantees the
+      // CALICO entry follows CLAUDE_CODE_EXTRA_BODY and reads the same source
+      // object, so those two are the anchor.
+      //
+      // This used to require `...X.PATH&&{PATH:X.PATH}` immediately after as
+      // well. That neighbour proved nothing the containment check did not, and
+      // 2.1.259 broke it by emitting `...{},` between the CALICO entry and PATH
+      // — a cosmetic empty spread. The patch was correct and the verifier
+      // failed it. A redundant check can still be wrong, and this one was.
       const workerPattern = new RegExp(
-        `\\.\\.\\.(${identifier})\\.CLAUDE_CODE_EXTRA_BODY&&\\{CLAUDE_CODE_EXTRA_BODY:\\1\\.CLAUDE_CODE_EXTRA_BODY\\},\\.\\.\\.\\1\\.CALICO_GATEWAY_FAST_STATE_FILE&&\\{CALICO_GATEWAY_FAST_STATE_FILE:\\1\\.CALICO_GATEWAY_FAST_STATE_FILE\\},\\.\\.\\.\\1\\.PATH&&\\{PATH:\\1\\.PATH\\}`,
+        `\\.\\.\\.(${identifier})\\.CLAUDE_CODE_EXTRA_BODY&&\\{CLAUDE_CODE_EXTRA_BODY:\\1\\.CLAUDE_CODE_EXTRA_BODY\\},\\.\\.\\.\\1\\.CALICO_GATEWAY_FAST_STATE_FILE&&\\{CALICO_GATEWAY_FAST_STATE_FILE:\\1\\.CALICO_GATEWAY_FAST_STATE_FILE\\}`,
         "g"
       );
       const workerMatches = [...content.matchAll(workerPattern)];
