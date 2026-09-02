@@ -513,15 +513,24 @@ test("binary verifier accepts an unrelated spread between the locator and PATH",
 test("binary verifier rejects a later spread that overwrites the worker locator", () => {
   const patched = patchGatewayFastMode(fixture).content;
 
-  const overwritten = patched.replace(
-    "...ye.PATH&&{PATH:ye.PATH}",
-    "...ye.PATH&&{PATH:ye.PATH},...{CALICO_GATEWAY_FAST_STATE_FILE:void 0}"
-  );
-  assert.notEqual(overwritten, patched);
-  assert.match(
-    evaluatePatchModule("gateway-fast-mode", overwritten),
-    /assign the shared locator once, found 2/
-  );
+  // Both spellings of the same overwrite. The quoted one is why the check
+  // counts the bare name: a quote between the name and the colon slips past a
+  // `NAME:` count while overwriting the value just the same.
+  for (const key of [
+    "CALICO_GATEWAY_FAST_STATE_FILE",
+    '"CALICO_GATEWAY_FAST_STATE_FILE"',
+  ]) {
+    const overwritten = patched.replace(
+      "...ye.PATH&&{PATH:ye.PATH}",
+      `...ye.PATH&&{PATH:ye.PATH},...{${key}:void 0}`
+    );
+    assert.notEqual(overwritten, patched);
+    assert.match(
+      evaluatePatchModule("gateway-fast-mode", overwritten),
+      /mention the shared locator 3 times, found 4/,
+      key
+    );
+  }
 
   // Outside this worker env the same text is not an overwrite and must not trip
   // the check — otherwise the guard fires on unrelated drift.

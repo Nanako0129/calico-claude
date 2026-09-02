@@ -627,9 +627,20 @@ const CHECKS: Check[] = [
         dispatchRecord.envIndex,
         dispatchRecord.envEnd + 1
       );
-      const locatorWrites = envObject.split("CALICO_GATEWAY_FAST_STATE_FILE:").length - 1;
-      if (locatorWrites !== 1) {
-        return `expected the worker env to assign the shared locator once, found ${locatorWrites}`;
+      //
+      // Count the bare name, not `NAME:`. A quoted key — `{"CALICO_GATEWAY_
+      // FAST_STATE_FILE":void 0}` — puts a quote between the name and the
+      // colon and slips past a `NAME:` count while overwriting the value just
+      // the same. The locator pattern above pins the injection to
+      // `...X.NAME&&{NAME:X.NAME}`, which mentions it three times, and the name
+      // is ours: nothing upstream has any reason to write it in this object, so
+      // anything beyond those three means something else is touching the key.
+      //
+      // A computed key holding the name in a variable would still pass. No scan
+      // of the text can see that one; it is named here rather than implied away.
+      const locatorMentions = envObject.split("CALICO_GATEWAY_FAST_STATE_FILE").length - 1;
+      if (locatorMentions !== 3) {
+        return `expected the worker env to mention the shared locator 3 times, found ${locatorMentions}`;
       }
       const dispatchRecordLocal = dispatchRecord.match[1];
       // 2.1.239 appended arguments to the dispatch call; accept a trailing
