@@ -532,8 +532,20 @@ const CHECKS: Check[] = [
         return "request-time mode application is not between native parsing and beta merge";
       }
 
+      // Locator only. What proves the injection landed correctly is the
+      // structural work below: this offset has to sit inside the `env:{…}` of a
+      // dispatch record carrying proto/short/sessionId and respawnFlags, with
+      // the env object nested inside the record. The patcher guarantees the
+      // CALICO entry follows CLAUDE_CODE_EXTRA_BODY and reads the same source
+      // object, so those two are the anchor.
+      //
+      // This used to require `...X.PATH&&{PATH:X.PATH}` immediately after as
+      // well. That neighbour proved nothing the containment check did not, and
+      // 2.1.259 broke it by emitting `...{},` between the CALICO entry and PATH
+      // — a cosmetic empty spread. The patch was correct and the verifier
+      // failed it. A redundant check can still be wrong, and this one was.
       const workerPattern = new RegExp(
-        `\\.\\.\\.(${identifier})\\.CLAUDE_CODE_EXTRA_BODY&&\\{CLAUDE_CODE_EXTRA_BODY:\\1\\.CLAUDE_CODE_EXTRA_BODY\\},\\.\\.\\.\\1\\.CALICO_GATEWAY_FAST_STATE_FILE&&\\{CALICO_GATEWAY_FAST_STATE_FILE:\\1\\.CALICO_GATEWAY_FAST_STATE_FILE\\},\\.\\.\\.\\1\\.PATH&&\\{PATH:\\1\\.PATH\\}`,
+        `\\.\\.\\.(${identifier})\\.CLAUDE_CODE_EXTRA_BODY&&\\{CLAUDE_CODE_EXTRA_BODY:\\1\\.CLAUDE_CODE_EXTRA_BODY\\},\\.\\.\\.\\1\\.CALICO_GATEWAY_FAST_STATE_FILE&&\\{CALICO_GATEWAY_FAST_STATE_FILE:\\1\\.CALICO_GATEWAY_FAST_STATE_FILE\\}`,
         "g"
       );
       const workerMatches = [...content.matchAll(workerPattern)];
@@ -604,6 +616,32 @@ const CHECKS: Check[] = [
         return "shared locator is detached from the worker/respawn dispatch record";
       }
       const dispatchRecord = dispatchRecords[0];
+      // Object spreads are last-write-wins, and the containment checks above
+      // only establish where the injection sits — not that it survives to the
+      // end of the object. A later spread assigning the same key, e.g.
+      // `...{CALICO_GATEWAY_FAST_STATE_FILE:void 0}`, would silently win and
+      // every worker would come up without the shared locator. Requiring the
+      // key to be written exactly once inside this env object is the property
+      // itself rather than a proxy for it; the injection writes it once.
+      const envObject = workerSegment.slice(
+        dispatchRecord.envIndex,
+        dispatchRecord.envEnd + 1
+      );
+      //
+      // Count the bare name, not `NAME:`. A quoted key — `{"CALICO_GATEWAY_
+      // FAST_STATE_FILE":void 0}` — puts a quote between the name and the
+      // colon and slips past a `NAME:` count while overwriting the value just
+      // the same. The locator pattern above pins the injection to
+      // `...X.NAME&&{NAME:X.NAME}`, which mentions it three times, and the name
+      // is ours: nothing upstream has any reason to write it in this object, so
+      // anything beyond those three means something else is touching the key.
+      //
+      // A computed key holding the name in a variable would still pass. No scan
+      // of the text can see that one; it is named here rather than implied away.
+      const locatorMentions = envObject.split("CALICO_GATEWAY_FAST_STATE_FILE").length - 1;
+      if (locatorMentions !== 3) {
+        return `expected the worker env to mention the shared locator 3 times, found ${locatorMentions}`;
+      }
       const dispatchRecordLocal = dispatchRecord.match[1];
       // 2.1.239 appended arguments to the dispatch call; accept a trailing
       // argument list one level of call nesting deep, matching the patcher.

@@ -480,6 +480,64 @@ test("binary verifier accepts the complete gateway fast-mode structure", () => {
   );
 });
 
+// 2.1.259 emitted a bare `...{},` between the injected CALICO entry and PATH in
+// the worker env — a cosmetic empty spread that changes nothing. The verifier
+// had required the two to be textually adjacent and failed a correct patch,
+// which would have blocked the release on every platform. Position is proved by
+// the containment checks (inside the env of a dispatch record carrying
+// respawnFlags), not by whichever spread happens to come next.
+test("binary verifier accepts an unrelated spread between the locator and PATH", () => {
+  const patched = patchGatewayFastMode(fixture).content;
+  assert.equal(evaluatePatchModule("gateway-fast-mode", patched), null);
+
+  const withInterveningSpread = patched.replace(
+    "...ye.PATH&&{PATH:ye.PATH}",
+    "...{},...ye.PATH&&{PATH:ye.PATH}"
+  );
+  assert.notEqual(withInterveningSpread, patched);
+  assert.equal(evaluatePatchModule("gateway-fast-mode", withInterveningSpread), null);
+
+  // The relaxation must not reach the injected entry itself: detaching it from
+  // CLAUDE_CODE_EXTRA_BODY still has to fail.
+  const detachedFromExtraBody = withInterveningSpread.replace(
+    "...ye.CALICO_GATEWAY_FAST_STATE_FILE&&",
+    "...{},...ye.CALICO_GATEWAY_FAST_STATE_FILE&&"
+  );
+  assert.notEqual(detachedFromExtraBody, withInterveningSpread);
+  assert.notEqual(evaluatePatchModule("gateway-fast-mode", detachedFromExtraBody), null);
+});
+
+// Spreads are last-write-wins, so an intervening spread is only harmless while
+// nothing after it reassigns the key. Locating the injection does not prove it
+// survives to the end of the object.
+test("binary verifier rejects a later spread that overwrites the worker locator", () => {
+  const patched = patchGatewayFastMode(fixture).content;
+
+  // Both spellings of the same overwrite. The quoted one is why the check
+  // counts the bare name: a quote between the name and the colon slips past a
+  // `NAME:` count while overwriting the value just the same.
+  for (const key of [
+    "CALICO_GATEWAY_FAST_STATE_FILE",
+    '"CALICO_GATEWAY_FAST_STATE_FILE"',
+  ]) {
+    const overwritten = patched.replace(
+      "...ye.PATH&&{PATH:ye.PATH}",
+      `...ye.PATH&&{PATH:ye.PATH},...{${key}:void 0}`
+    );
+    assert.notEqual(overwritten, patched);
+    assert.match(
+      evaluatePatchModule("gateway-fast-mode", overwritten),
+      /mention the shared locator 3 times, found 4/,
+      key
+    );
+  }
+
+  // Outside this worker env the same text is not an overwrite and must not trip
+  // the check — otherwise the guard fires on unrelated drift.
+  const elsewhere = patched + ";var unrelated={CALICO_GATEWAY_FAST_STATE_FILE:1};";
+  assert.equal(evaluatePatchModule("gateway-fast-mode", elsewhere), null);
+});
+
 test("binary verifier rejects detached helpers and broken gateway ownership", () => {
   const patched = patchGatewayFastMode(fixture).content;
   const helperStart = patched.indexOf("var __calicoGatewayFastNode=");
