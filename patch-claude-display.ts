@@ -1339,6 +1339,49 @@ function patchThinkingStreaming(content) {
         return `${extrasVar}=${memoCall}(()=>{let __cc_streamingToolUseExtras=${streamingToolUsesVar}.map((${toolUseEntryVar})=>{let{id:${toolUseIdVar},minted:${mintedVar}}=${resolveToolUseIdHelper}(${toolUseEntryVar}),${toolUseMessageVar}=${createMessageHelper}({content:[${mintedVar}?{...${toolUseEntryVar}.contentBlock,id:${toolUseIdVar}}:${toolUseEntryVar}.contentBlock]});return ${toolUseMessageVar}.uuid=${mintedVar}?${toolUseIdVar}:${createUUIDHelper}(${toolUseIdVar},0),{index:${toolUseEntryVar}.index??9007199254740991,messages:${normalizeMessagesHelper}([${toolUseMessageVar}])}}),__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${normalizeMessagesHelper}([__cc_entry.message??__cc_entry])}));return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)},[${streamingToolUsesVar},${resolveToolUseIdHelper},${transcriptStreamingThinkingVar}])`;
       }
     );
+    // 2.1.257 runs this region through the React Compiler, so neither hand
+    // written shape above survives: the entry mapper is hoisted into its own
+    // memo slot and the `flatMap` into another, leaving no `memo(()=>…,[deps])`
+    // call to rewrite. Same construct, third spelling — match the compiled
+    // guard/mapper/flatMap triple instead.
+    const compiledInlineThinkingPattern = new RegExp(
+      `if\\((?<cache>${identifierPattern})\\[(?<g1>\\d+)\\]!==(?<resolver>${identifierPattern})\\|\\|\\k<cache>\\[(?<g2>\\d+)\\]!==(?<list>${identifierPattern})\\)\\{` +
+        `let (?<mapper>${identifierPattern});` +
+        `if\\(\\k<cache>\\[(?<g3>\\d+)\\]!==\\k<resolver>\\)\\k<mapper>=\\((?<entry>${identifierPattern})\\)=>\\{` +
+        `let\\{id:(?<id>${identifierPattern}),minted:(?<minted>${identifierPattern})\\}=\\k<resolver>\\(\\k<entry>\\);` +
+        `let (?<msg>${identifierPattern})=(?<create>${identifierPattern})\\(\\{content:\\[\\k<minted>\\?\\{\\.\\.\\.\\k<entry>\\.contentBlock,id:\\k<id>\\}:\\k<entry>\\.contentBlock\\]\\}\\);` +
+        `return \\k<msg>\\.uuid=\\k<minted>\\?\\k<id>:(?<uuid>${identifierPattern})\\(\\k<id>,0\\),(?<normalize>${identifierPattern})\\(\\[\\k<msg>\\]\\)\\},` +
+        `\\k<cache>\\[\\k<g3>\\]=\\k<resolver>,\\k<cache>\\[(?<g4>\\d+)\\]=\\k<mapper>;else \\k<mapper>=\\k<cache>\\[\\k<g4>\\];` +
+        `(?<result>${identifierPattern})=\\k<list>\\.flatMap\\(\\k<mapper>\\);` +
+        `\\k<cache>\\[\\k<g1>\\]=\\k<resolver>,\\k<cache>\\[\\k<g2>\\]=\\k<list>,\\k<cache>\\[(?<g5>\\d+)\\]=\\k<result>\\}else \\k<result>=\\k<cache>\\[\\k<g5>\\];`,
+      "g"
+    );
+    output = output.replace(compiledInlineThinkingPattern, (...args) => {
+      const g = args[args.length - 1];
+      inlineThinkingCandidates += 1;
+      inlineThinkingPatched += 1;
+      createVirtualMessageHelper = g.create;
+      // The compiler keyed this slot on the tool-use list and the id resolver
+      // only, and there is no slot left to key the thinking store on: growing
+      // the cache array means rewriting its `new Array(N)` literal, which moves
+      // every downstream index. Force the guard instead. The cost is that the
+      // merged list rebuilds each render of the transcript, which is what
+      // upstream did before it memoized this in 2.1.250.
+      return (
+        `if(!0||${g.cache}[${g.g1}]!==${g.resolver}||${g.cache}[${g.g2}]!==${g.list}){` +
+        `let ${g.mapper};` +
+        `if(${g.cache}[${g.g3}]!==${g.resolver})${g.mapper}=(${g.entry})=>{` +
+        `let{id:${g.id},minted:${g.minted}}=${g.resolver}(${g.entry});` +
+        `let ${g.msg}=${g.create}({content:[${g.minted}?{...${g.entry}.contentBlock,id:${g.id}}:${g.entry}.contentBlock]});` +
+        `return ${g.msg}.uuid=${g.minted}?${g.id}:${g.uuid}(${g.id},0),${g.normalize}([${g.msg}])},` +
+        `${g.cache}[${g.g3}]=${g.resolver},${g.cache}[${g.g4}]=${g.mapper};else ${g.mapper}=${g.cache}[${g.g4}];` +
+        `${g.result}=(()=>{let __cc_streamingToolUseExtras=${g.list}.map((__cc_entry)=>({index:__cc_entry.index??9007199254740991,messages:${g.mapper}(__cc_entry)})),` +
+        `__cc_streamingThinkingExtras=(${transcriptStreamingThinkingVar}?.messages??[]).map((__cc_entry,__cc_index)=>({index:__cc_entry.index??9007199254740991+__cc_index,messages:${g.normalize}([__cc_entry.message??__cc_entry])}));` +
+        `return[...__cc_streamingToolUseExtras,...__cc_streamingThinkingExtras].sort((__cc_a,__cc_b)=>__cc_a.index===__cc_b.index?0:__cc_a.index-__cc_b.index).flatMap((__cc_entry)=>__cc_entry.messages)})();` +
+        `${g.cache}[${g.g1}]=${g.resolver},${g.cache}[${g.g2}]=${g.list},${g.cache}[${g.g5}]=${g.result}}else ${g.result}=${g.cache}[${g.g5}];`
+      );
+    });
+
     candidates += inlineThinkingCandidates;
     patched += inlineThinkingPatched;
   }

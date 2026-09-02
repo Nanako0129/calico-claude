@@ -1662,8 +1662,19 @@ const CHECKS: Check[] = [
           version[0] > 2 ||
           (version[0] === 2 &&
             (version[1] > 1 || (version[1] === 1 && version[2] >= 246)));
+        // Pinned to the memo's full 2.1.245 spelling, this regex missed both
+        // later ones — the deduped `{id,minted}` shape and 2.1.257's
+        // React-Compiler output, where the mapper and the flatMap sit in
+        // separate cache slots and no `memo(()=>…)` call remains. Each time,
+        // the site was still there and still unpatched, and each time this
+        // waived it: 2.1.257 and 2.1.258 shipped with live thinking dead and
+        // every module reported ok. Match only the message construction at the
+        // core of the site, which all three spellings share and which nothing
+        // else in the bundle builds. This text also survives in patched output,
+        // which is harmless — the check is reached only when the extras marker
+        // is absent, i.e. only when the patch did not fire.
         const unpatchedExtrasMemo =
-          /=[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\(\)=>[A-Za-z_$][\w$]*\.flatMap\(\([A-Za-z_$][\w$]*\)=>\{let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\(\{content:\[[A-Za-z_$][\w$]*\.contentBlock\]\}\)/;
+          /\(\{content:\[(?:[A-Za-z_$][\w$]*\?\{\.\.\.[A-Za-z_$][\w$]*\.contentBlock,id:[A-Za-z_$][\w$]*\}:)?[A-Za-z_$][\w$]*\.contentBlock\]\}\)/;
         let extrasWaived = false;
         if (!content.includes("__cc_streamingThinkingExtras")) {
           if (!allowsMissingExtras) {
