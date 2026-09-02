@@ -368,25 +368,17 @@ jobs:
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: work/${{ matrix.patched_asset_name }}
-      # Reports, does not block. This test is the only check that can see live
-      # thinking actually rendering, and it runs on macos-arm64 only, so when it
-      # fails for a reason unrelated to the patcher it takes that one platform's
-      # release with it. That is what happened on 2.1.257 and 2.1.258: the client
-      # no longer renders thinking from this mock (the *unpatched* binary fails
-      # identically), yet macOS published nothing while four platforms shipped.
-      #
-      # Be clear about what this costs: there is NO pre-merge equivalent. The
-      # regression harness that runs this test is a local script, not CI, and no
-      # PR workflow sets CLAUDE_NATIVE_BINARY. So while this step is tolerated,
-      # a genuine live-thinking regression can reach a release. One cannot be
-      # added yet either: the test is currently red for environmental reasons, so
-      # gating PRs on it would block every PR. This is a deliberate, temporary
-      # reduction in coverage to stop shipping versions that exist for four
-      # platforms out of five — to be reverted once the mock incompatibility is
-      # understood and the test is green again.
+      # Blocking. This is the only check in the pipeline that can observe live
+      # thinking actually rendering, and it was right when everything else was
+      # wrong: on 2.1.257 it failed while --assert-all reported 20/20 and the
+      # verifier reported all 20 modules ok. It was briefly made non-blocking on
+      # the theory that the mock had gone stale, which was never established —
+      # the control was never run. Running it settles it: patched 2.1.252 passes,
+      # *unpatched* 2.1.252 fails, patched 2.1.257 fails. The mock was fine and
+      # the patch was dead, so 2.1.257 and 2.1.258 shipped without live thinking.
+      # Do not weaken this step again without that control in hand.
       - name: Test live thinking without credentials
         id: live_thinking
-        continue-on-error: true
         if: steps.check.outputs.skip != 'true' && matrix.platform_label == 'macos-arm64'
         env:
           CLAUDE_NATIVE_BINARY: work/${{ matrix.patched_asset_name }}
@@ -447,36 +439,6 @@ jobs:
             work/metadata.txt \
             work/checksums.txt \
             "$PATCHED_PATH"
-      # Placed after the release step: this message says the build published,
-      # and running it earlier would leave that claim standing in Discord even
-      # when a later step failed and nothing was released.
-      #
-      # continue-on-error leaves the job and the workflow successful, so the
-      # notify-failure job (if: failure()) never runs for this. Post to the
-      # webhook here or the failure is an Actions warning nobody reads.
-      - name: Report live-thinking result
-        if: steps.check.outputs.skip != 'true' && matrix.platform_label == 'macos-arm64'
-        env:
-          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          VERSION: ${{ steps.native.outputs.version }}
-        run: |
-          set -uo pipefail
-          if [ "${{ steps.live_thinking.outcome }}" = "success" ]; then
-            echo "live thinking verified on the patched binary"
-            exit 0
-          fi
-          echo "::warning title=live-thinking::The live-thinking integration test failed on this build. The release still published; live thinking is unverified for this version." >&2
-          if [ -n "${WEBHOOK:-}" ]; then
-            jq -n --arg v "$VERSION" --arg u "$RUN_URL" '{embeds:[{
-              title:"live thinking unverified (release still published)",
-              description:("macos-arm64 release for Claude " + $v + " published, but the live-thinking integration test failed. Check whether the mock endpoint or the patcher is at fault."),
-              url:$u, color:16098851}]}' \
-              | curl -sfS -X POST -H "content-type: application/json" -d @- "$WEBHOOK" >/dev/null \
-              || echo "::warning::could not post the live-thinking warning to Discord" >&2
-          fi
-
-
 
   # Failure notification to the community Discord's #github channel.
   # This lives INSIDE the pipeline because workflow_run cannot see these runs:
