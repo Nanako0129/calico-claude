@@ -111,9 +111,26 @@ if [ -z "$VERSION" ]; then
   exit 0
 fi
 
+# One listing, then match locally. `gh release view` exits non-zero for a tag
+# that does not exist AND for a lookup that could not be answered — a network
+# blip, a rate limit, a 5xx — and prints "release not found" either way, so
+# there is nothing in it to tell the two apart. Treating both as "missing" makes
+# a failed API call dispatch a five-platform rebuild. That fired at
+# 2026-09-03T01:37:29Z; only the dispatch call failing too kept it from
+# rebuilding, which is luck, not design.
+#
+# `gh release list` fails as a unit and says why, so its exit status carries the
+# distinction. Releases come back newest-first and the version we ask about is
+# the newest, so its tags sit at the top; the limit only needs to clear the
+# rebuild suffixes of recent versions.
+if ! RELEASE_TAGS="$(gh release list --repo "$REPO" --limit 60 --json tagName --jq '.[].tagName' 2>/dev/null)"; then
+  log "could not list releases for $REPO; skipping this tick"
+  exit 0
+fi
+
 MISSING=0
 for suffix in "${PLATFORMS[@]}"; do
-  if ! gh release view "v${VERSION}-${suffix}" --repo "$REPO" >/dev/null 2>&1; then
+  if ! printf '%s\n' "$RELEASE_TAGS" | grep -qxF "v${VERSION}-${suffix}"; then
     MISSING=1
     break
   fi
