@@ -134,9 +134,17 @@ if ! RELEASE_TAGS="$(gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_na
   exit 0
 fi
 
+# A here-string, not `printf … | grep`. grep exits at the first match, and once
+# the listing outgrows the pipe capacity printf is still writing when it does,
+# takes SIGPIPE, and `pipefail` turns a successful match into a non-zero
+# pipeline — read here as "this platform has no release". Measured: a match at
+# the top of a 5.5KB list is found, the same match in a 144KB list reports
+# missing. Today's listing is 4.4KB, so this is the third form of the same
+# defect on this branch, waiting on repository growth rather than on an API
+# failure. A here-string is not a pipeline and cannot signal the writer.
 MISSING=0
 for suffix in "${PLATFORMS[@]}"; do
-  if ! printf '%s\n' "$RELEASE_TAGS" | grep -qxF "v${VERSION}-${suffix}"; then
+  if ! grep -qxF "v${VERSION}-${suffix}" <<<"$RELEASE_TAGS"; then
     MISSING=1
     break
   fi
