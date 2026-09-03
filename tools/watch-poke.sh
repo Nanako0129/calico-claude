@@ -119,11 +119,17 @@ fi
 # 2026-09-03T01:37:29Z; only the dispatch call failing too kept it from
 # rebuilding, which is luck, not design.
 #
-# `gh release list` fails as a unit and says why, so its exit status carries the
-# distinction. Releases come back newest-first and the version we ask about is
-# the newest, so its tags sit at the top; the limit only needs to clear the
-# rebuild suffixes of recent versions.
-if ! RELEASE_TAGS="$(gh release list --repo "$REPO" --limit 60 --json tagName --jq '.[].tagName' 2>/dev/null)"; then
+# A paginated listing fails as a unit and reports why, so its exit status
+# carries the distinction the per-tag check could not express.
+#
+# Paginated rather than a capped `--limit`, because any cap is a bet on
+# position. Releases come back newest-first, and each rebuild of the current
+# version adds five entries ahead of that version's base tags: twelve rebuilds
+# push them past a limit of 60. The base tags would then read as missing and the
+# agent would dispatch every hour until upstream moved — the same "cannot tell
+# absent from unseen" mistake this commit is fixing, one layer out. Fetching all
+# of them costs seconds once an hour (measured: 214 releases, 3.8s).
+if ! RELEASE_TAGS="$(gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name' 2>/dev/null)"; then
   log "could not list releases for $REPO; skipping this tick"
   exit 0
 fi
