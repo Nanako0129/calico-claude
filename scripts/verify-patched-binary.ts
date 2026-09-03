@@ -1780,37 +1780,57 @@ const CHECKS: Check[] = [
     kind: "custom",
     // When this module is disabled, neither renamed calico gate may exist —
     // matching either one catches partially patched or transitional bundles.
-    disabledMarker: /"calico_lantern_wick_off"|"calico_vellum_gone_"/,
+    disabledMarker:
+      /"calico_lantern_wick_off"|"calico_lantern_text_off"|"calico_lantern_release_off"|"calico_vellum_gone_"/,
     describe:
       "usage-limit wrap-up statsig gate names renamed to dead calico gates",
     run: (content: string): string | null => {
-      // Bundles older than the feature carry neither the original gates nor
-      // the renames; that is a pass (nothing to neutralize). 2.1.238+ bundles
-      // must carry BOTH renamed gates, so a bundle where upstream changed or
-      // removed one gate literal while the patcher renamed only the survivor
-      // cannot pass as "nothing to neutralize" with an injection path left
-      // active under a new gate name.
+      // All four gates, not just the mode one. The injector reads the text gate
+      // first and treats a non-empty value as mode "custom", so leaving that
+      // literal live keeps the whole wrap-up path reachable no matter what the
+      // mode gate is called; the release gate follows from a wrap-up the text
+      // path can produce. Shipped bundles through 2.1.259 carried both live.
+      //
+      // Eras are per gate because they did not arrive together. Measured on
+      // macos-arm64 originals: the mode and vellum gates are present from
+      // 2.1.238, while the text and release gates first appear in 2.1.247 and
+      // are absent from 2.1.246. One shared threshold would fail 2.1.246 for
+      // renames it can never carry.
+      const gates = [
+        { original: "tengu_lantern_wick_mode", renamed: "calico_lantern_wick_off", since: 238 },
+        { original: "tengu_lantern_wick_text", renamed: "calico_lantern_text_off", since: 247 },
+        {
+          original: "tengu_lantern_wick_release",
+          renamed: "calico_lantern_release_off",
+          since: 247,
+        },
+        { original: "tengu_vellum_anchor", renamed: "calico_vellum_gone_", since: 238 },
+      ];
+
       const problems: string[] = [];
-      for (const gate of ["tengu_lantern_wick_mode", "tengu_vellum_anchor"]) {
-        if (content.includes(`"${gate}"`)) {
-          problems.push(`found residual usage wrap-up gate "${gate}"`);
+      for (const { original } of gates) {
+        if (content.includes(`"${original}"`)) {
+          problems.push(`found residual usage wrap-up gate "${original}"`);
         }
       }
+      // Bundles older than a gate carry neither its original nor its rename;
+      // that is a pass. From its era the rename is mandatory, so a bundle where
+      // upstream moved the literal and the patcher renamed only the survivors
+      // cannot pass as "nothing to neutralize" with a path left live under a
+      // name this check never looked for.
       const versionMatch = content.match(
         /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/
       );
       if (versionMatch) {
         const [major, minor, micro] = versionMatch.slice(1).map(Number);
-        const featureEra =
-          major > 2 ||
-          (major === 2 && (minor > 1 || (minor === 1 && micro >= 238)));
-        if (featureEra) {
-          for (const renamed of ["calico_lantern_wick_off", "calico_vellum_gone_"]) {
-            if (!content.includes(`"${renamed}"`)) {
-              problems.push(
-                `expected renamed usage wrap-up gate "${renamed}" in a 2.1.238+ bundle`
-              );
-            }
+        for (const { renamed, since } of gates) {
+          const inEra =
+            major > 2 ||
+            (major === 2 && (minor > 1 || (minor === 1 && micro >= since)));
+          if (inEra && !content.includes(`"${renamed}"`)) {
+            problems.push(
+              `expected renamed usage wrap-up gate "${renamed}" in a 2.1.${since}+ bundle`
+            );
           }
         }
       }

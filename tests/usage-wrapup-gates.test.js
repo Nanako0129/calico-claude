@@ -10,23 +10,55 @@ const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
 const patcherPath = path.join(__dirname, "..", "patch-claude-display.ts");
 
-// Mirrors the 2.1.238 bundle shape: gate names assigned to minified vars, then
-// read through the statsig getter `it(gate, default)` at the two injection
-// sites (grace-window wrap-up and 95% near-limit checkpoint).
+// Mirrors the 2.1.247+ bundle shape: gate names assigned to minified vars,
+// then read through the statsig getter `it(gate, default)` at the injection
+// sites (grace-window wrap-up, its release note, and the 95% near-limit
+// checkpoint). The text gate is read FIRST and a non-empty value stands in for
+// the mode, which is why renaming the mode gate alone leaves the path live.
 const fixture =
-  'var GIS=3600000,VIS=300000,KIS,WHp,GHp="tengu_lantern_wick_mode",KHp,_3n="tengu_vellum_anchor",' +
+  'var GIS=3600000,VIS=300000,KIS,WHp,GHp="tengu_lantern_wick_mode",nan="tengu_lantern_wick_text",' +
+  'u6o="tengu_lantern_wick_release",KHp,_3n="tengu_vellum_anchor",' +
   'YHp="[Usage limit approaching. Checkpoint now: finish the current step, then list up to 3 short bullets of the most impactful remaining work.]";' +
-  'if(!Ne&&te&&cNp(Pe.depth===0)){let Wr=VHp(it(GHp,"off"));if(Wr!=="off"){inject(Wr==="next-steps"?KHp:WHp)}}' +
+  'if(!Ne&&te&&cNp(Pe.depth===0)){let F=ran(it(nan,"")),Wr=F!==null?"custom":VHp(it(GHp,"off"));' +
+  'if(Wr!=="off"){inject(F??(Wr==="next-steps"?KHp:WHp))}}' +
+  'if(Pe.depth===0&&f6o(e)){let F=d6o(it(u6o,""));if(F)inject(F)}' +
   "if(!Ne&&te&&Pe.depth>0&&uNp()){if(it(_3n,!1)){notice(JHp);inject(YHp)}}";
 
-test("renames both usage wrap-up statsig gates to dead calico gates", () => {
+test("renames every usage wrap-up statsig gate to a dead calico gate", () => {
   const result = patchDisableUsageWrapUpHints(fixture);
-  assert.equal(result.candidates, 2);
-  assert.equal(result.patched, 2);
-  assert.ok(!result.content.includes('"tengu_lantern_wick_mode"'));
-  assert.ok(!result.content.includes('"tengu_vellum_anchor"'));
-  assert.ok(result.content.includes('"calico_lantern_wick_off"'));
-  assert.ok(result.content.includes('"calico_vellum_gone_"'));
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  for (const gate of [
+    "tengu_lantern_wick_mode",
+    "tengu_lantern_wick_text",
+    "tengu_lantern_wick_release",
+    "tengu_vellum_anchor",
+  ]) {
+    assert.ok(!result.content.includes(`"${gate}"`), gate);
+  }
+  for (const renamed of [
+    "calico_lantern_wick_off",
+    "calico_lantern_text_off",
+    "calico_lantern_release_off",
+    "calico_vellum_gone_",
+  ]) {
+    assert.ok(result.content.includes(`"${renamed}"`), renamed);
+  }
+});
+
+// The reason the text gate has to be renamed: it is consulted before the mode
+// gate and a non-empty value makes the mode irrelevant, so a bundle with only
+// the mode gate renamed still injects whatever the server supplies.
+test("renaming the mode gate alone leaves the text path live", () => {
+  const modeOnly = fixture.replace(
+    '"tengu_lantern_wick_mode"',
+    '"calico_lantern_wick_off"'
+  );
+  assert.ok(modeOnly.includes('"tengu_lantern_wick_text"'));
+  assert.match(
+    evaluatePatchModule("disable-usage-wrapup", versionedBundle("2.1.259", modeOnly)),
+    /residual usage wrap-up gate "tengu_lantern_wick_text"/
+  );
 });
 
 test("replacement gate names preserve byte length", () => {
@@ -48,6 +80,38 @@ test("leaves pre-feature bundles untouched", () => {
   assert.equal(result.candidates, 0);
   assert.equal(result.patched, 0);
   assert.equal(result.content, oldBundle);
+});
+
+// The text and release gates first appear in 2.1.247; 2.1.246 carries only the
+// mode and vellum ones. Counting a missing 2.1.247 gate as a partial match on a
+// 2.1.246 bundle would refuse to patch it at all, disabling nothing.
+test("patches a 2.1.246 bundle that predates the text and release gates", () => {
+  const bundle = versionedBundle(
+    "2.1.246",
+    'GHp="tengu_lantern_wick_mode",_3n="tengu_vellum_anchor";it(GHp,"off");it(_3n,!1)'
+  );
+  const result = patchDisableUsageWrapUpHints(bundle);
+  assert.equal(result.patched, 2);
+  assert.ok(!result.skipped);
+  assert.ok(result.content.includes('"calico_lantern_wick_off"'));
+  assert.ok(result.content.includes('"calico_vellum_gone_"'));
+  assert.equal(evaluatePatchModule("disable-usage-wrapup", result.content), null);
+});
+
+test("verifier requires the text and release renames from 2.1.247", () => {
+  const body =
+    'GHp="calico_lantern_wick_off",_3n="calico_vellum_gone_";it(GHp,"off");it(_3n,!1)';
+  // Same body, one version either side of the boundary.
+  assert.equal(
+    evaluatePatchModule("disable-usage-wrapup", versionedBundle("2.1.246", body)),
+    null
+  );
+  const verdict = evaluatePatchModule(
+    "disable-usage-wrapup",
+    versionedBundle("2.1.247", body)
+  );
+  assert.match(verdict, /calico_lantern_text_off/);
+  assert.match(verdict, /calico_lantern_release_off/);
 });
 
 function versionedBundle(version, body) {
@@ -74,10 +138,12 @@ test("does not mark unparseable-version bundles as skipped", () => {
 });
 
 test("never reports skipped when gates are present and patched", () => {
+  // 2.1.247, matching the fixture's shape: labelling a four-gate body 2.1.238
+  // would ask for two gates it predates.
   const result = patchDisableUsageWrapUpHints(
-    versionedBundle("2.1.238", fixture)
+    versionedBundle("2.1.247", fixture)
   );
-  assert.equal(result.patched, 2);
+  assert.equal(result.patched, 4);
   assert.ok(!result.skipped);
 });
 
