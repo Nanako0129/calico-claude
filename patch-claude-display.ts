@@ -2496,8 +2496,19 @@ function patchCustomContextWindows(content) {
   // `n`, which took this module from 4 candidates to 1. That still passed
   // --assert-all, since it only fails at zero — a silent loss of coverage.
   // Capture both and emit the captures.
+  //
+  // 2.1.260 stopped reading the headers parameter directly and passes it
+  // through a helper first:
+  //
+  //   2.1.259  function wL(e,n){if(ou(e))return 1e6;if(n?.includes(vx.header)…
+  //   2.1.260  function tU(e,n){if(Vc(e))return 1e6;if(RYe(n)?.includes(rP.header)…
+  //
+  // Pinning `\3?.includes(` took this module from 4 candidates to 3 — the
+  // resolver site, and with it both injected markers. --assert-all still
+  // passed, so the loss was silent again; the verifier is what failed the
+  // build. Accept the parameter bare or wrapped in one call.
   const resolverPattern =
-    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\(\3\?\.includes\()/g;
+    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\()/g;
 
   output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
     const functionStart = `${functionOpen}${modelParam},${headersParam}${brace}`;
