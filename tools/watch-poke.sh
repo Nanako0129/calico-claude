@@ -111,9 +111,40 @@ if [ -z "$VERSION" ]; then
   exit 0
 fi
 
+# One listing, then match locally. `gh release view` exits non-zero for a tag
+# that does not exist AND for a lookup that could not be answered — a network
+# blip, a rate limit, a 5xx — and prints "release not found" either way, so
+# there is nothing in it to tell the two apart. Treating both as "missing" makes
+# a failed API call dispatch a five-platform rebuild. That fired at
+# 2026-09-03T01:37:29Z; only the dispatch call failing too kept it from
+# rebuilding, which is luck, not design.
+#
+# A paginated listing fails as a unit and reports why, so its exit status
+# carries the distinction the per-tag check could not express.
+#
+# Paginated rather than a capped `--limit`, because any cap is a bet on
+# position. Releases come back newest-first, and each rebuild of the current
+# version adds five entries ahead of that version's base tags: twelve rebuilds
+# push them past a limit of 60. The base tags would then read as missing and the
+# agent would dispatch every hour until upstream moved — the same "cannot tell
+# absent from unseen" mistake this commit is fixing, one layer out. Fetching all
+# of them costs seconds once an hour (measured: 214 releases, 3.8s).
+if ! RELEASE_TAGS="$(gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name' 2>/dev/null)"; then
+  log "could not list releases for $REPO; skipping this tick"
+  exit 0
+fi
+
+# A here-string, not `printf … | grep`. grep exits at the first match, and once
+# the listing outgrows the pipe capacity printf is still writing when it does,
+# takes SIGPIPE, and `pipefail` turns a successful match into a non-zero
+# pipeline — read here as "this platform has no release". Measured: a match at
+# the top of a 5.5KB list is found, the same match in a 144KB list reports
+# missing. Today's listing is 4.4KB, so this is the third form of the same
+# defect on this branch, waiting on repository growth rather than on an API
+# failure. A here-string is not a pipeline and cannot signal the writer.
 MISSING=0
 for suffix in "${PLATFORMS[@]}"; do
-  if ! gh release view "v${VERSION}-${suffix}" --repo "$REPO" >/dev/null 2>&1; then
+  if ! grep -qxF "v${VERSION}-${suffix}" <<<"$RELEASE_TAGS"; then
     MISSING=1
     break
   fi
