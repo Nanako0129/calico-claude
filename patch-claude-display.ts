@@ -2102,23 +2102,67 @@ function patchDisableUsageWrapUpHints(content) {
   // are the same length as the originals, so no preserveLength branch is
   // needed. Anchoring on the gate-name string literals (not minified locals)
   // keeps this stable across bundle rebuilds.
+  //
+  // The mode gate alone does not close the wrap-up path. The injector reads the
+  // text gate first and lets a non-empty value stand in for the mode:
+  //
+  //   let F = ran(P(nan, ""));                          // nan = ..._wick_text
+  //   B = F !== null ? "custom" : tan(P(ean, "off"));   // ean = ..._wick_mode
+  //   if (B !== "off") v.push(xe({ content: F ?? ..., isMeta: !0, ... }))
+  //
+  // so any server-supplied text short-circuits the renamed mode gate and the
+  // injection still fires. Measured on a patched 2.1.259 bundle before this
+  // change: _wick_mode and _vellum_anchor gone, _wick_text and _wick_release
+  // both still present. The release gate is reachable the same way, since its
+  // precondition is a wrap-up note the text path can produce. Renaming all four
+  // is what actually closes the path, not defence in depth.
+  //
+  // What gets injected is a `type: "user"` message carrying isMeta/turnCompanion
+  // and a usageLimitNote, i.e. it lands under the same role label as something
+  // the human typed. That is the reason to close it rather than tolerate it.
+  //
+  // `since` is the first version measured to carry the literal, and the gates
+  // did not arrive together: mode and vellum are present from 2.1.238, text and
+  // release first appear in 2.1.247 and are absent from 2.1.246. The
+  // all-or-nothing check below counts against the gates this bundle is old
+  // enough to have, not against the whole list, or 2.1.246 fails as a partial
+  // match for two literals it can never contain.
   const gateRenames = [
     // grace-window wrap-up injection ("off" | "basic" | "next-steps")
-    ['"tengu_lantern_wick_mode"', '"calico_lantern_wick_off"'],
+    { from: '"tengu_lantern_wick_mode"', to: '"calico_lantern_wick_off"', since: 238 },
+    // arbitrary server-supplied wrap-up text; non-empty implies mode "custom"
+    { from: '"tengu_lantern_wick_text"', to: '"calico_lantern_text_off"', since: 247 },
+    // arbitrary server-supplied text for the post-wrap-up release note
+    {
+      from: '"tengu_lantern_wick_release"',
+      to: '"calico_lantern_release_off"',
+      since: 247,
+    },
     // 95% near-limit "checkpoint now" injection + notice (boolean)
-    ['"tengu_vellum_anchor"', '"calico_vellum_gone_"'],
+    { from: '"tengu_vellum_anchor"', to: '"calico_vellum_gone_"', since: 238 },
   ];
 
-  const perGateCounts = gateRenames.map(([from]) => content.split(from).length - 1);
+  const bundleVersion = content
+    .match(/PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/)
+    ?.slice(1)
+    .map(Number);
+  // Unparseable metadata expects every gate, keeping the strict reading.
+  const inEra = (since) =>
+    bundleVersion === undefined ||
+    bundleVersion[0] > 2 ||
+    (bundleVersion[0] === 2 &&
+      (bundleVersion[1] > 1 || (bundleVersion[1] === 1 && bundleVersion[2] >= since)));
+
+  const perGateCounts = gateRenames.map(({ from }) => content.split(from).length - 1);
   const candidates = perGateCounts.reduce((sum, count) => sum + count, 0);
   const presentGates = perGateCounts.filter((count) => count > 0).length;
+  const expectedGates = gateRenames.filter(({ since }) => inEra(since)).length;
 
-  if (presentGates > 0 && presentGates < gateRenames.length) {
-    // Partial match: upstream changed or removed exactly one gate literal
-    // while keeping the other. Renaming only the survivor would ship a bundle
-    // with the other wrap-up injection path still active under its new gate
-    // name, so patch nothing and report zero patched to fail --assert-all
-    // loudly instead.
+  if (presentGates > 0 && presentGates < expectedGates) {
+    // Partial match: upstream changed or removed a gate literal while keeping
+    // the others. Renaming only the survivors would ship a bundle with a
+    // wrap-up injection path still active under its new gate name, so patch
+    // nothing and report zero patched to fail --assert-all loudly instead.
     return {
       content,
       candidates,
@@ -2157,7 +2201,7 @@ function patchDisableUsageWrapUpHints(content) {
   }
 
   let output = content;
-  for (const [from, to] of gateRenames) {
+  for (const { from, to } of gateRenames) {
     output = output.split(from).join(to);
   }
 
