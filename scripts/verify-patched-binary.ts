@@ -1161,8 +1161,12 @@ const CHECKS: Check[] = [
 
       const escapedUsageLocal = usageLocal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const escapedRawEventLocal = rawEventLocal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Kept in lockstep with patch-claude-display.ts: 2.1.261 folded this
+      // assignment into the head of an `if` as the first operand of a comma
+      // expression, so the `{` no longer sits against it and the statement ends
+      // in `,` rather than `;`. The assignment itself is unchanged.
       const aggregationPattern = new RegExp(
-        `case"message_delta":\\{${escapedUsageLocal}=(${identifier})\\(${escapedUsageLocal},${escapedRawEventLocal}\\.usage\\);`,
+        `case"message_delta":\\{(?:if\\()?${escapedUsageLocal}=(${identifier})\\(${escapedUsageLocal},${escapedRawEventLocal}\\.usage\\)[;,]`,
         "g"
       );
       const canonicalSegment = content.slice(canonicalStart, terminalIndex);
@@ -1197,7 +1201,20 @@ const CHECKS: Check[] = [
       const cloneSource = cloneSync[1];
       const cloneDestination = cloneSync[2];
       const cloneArray = cloneSync[3];
-      if (cloneArray === terminalArray) {
+      // Name equality is not identity across a minified bundle: 2.1.261 reused
+      // `Ac` for both arrays in two functions half a megabyte apart, and the
+      // loops do not even destructure alike (`for(let x of Ac)x.message.usage=`
+      // against `for(let{src,dst}of Ac)dst.usage=`), so they cannot be one
+      // array at runtime. Same name in the same function is aliasing; same name
+      // in different functions is the minifier. Kept in lockstep with
+      // patch-claude-display.ts.
+      const cloneSyncFunctionStart = content.lastIndexOf("function ", cloneSync.index ?? -1);
+      if (
+        cloneArray === terminalArray &&
+        (canonicalStart === -1 ||
+          cloneSyncFunctionStart === -1 ||
+          canonicalStart === cloneSyncFunctionStart)
+      ) {
         return "downstream clone array aliases the canonical terminal array";
       }
       const cloneRegistrationPattern = new RegExp(
@@ -1222,10 +1239,6 @@ const CHECKS: Check[] = [
       }
       const cloneFunctionStarts = new Set(
         cloneMatches.map((match) => content.lastIndexOf("function ", match.index ?? -1))
-      );
-      const cloneSyncFunctionStart = content.lastIndexOf(
-        "function ",
-        cloneSync.index ?? -1
       );
       if (
         cloneFunctionStarts.size !== 1 ||
@@ -1288,8 +1301,17 @@ const CHECKS: Check[] = [
       );
       if (
         aggregationIndex < canonicalStart ||
-        !terminalSegment.startsWith(
-          `case"message_delta":{${usageLocal}=${aggregationFunction}(${usageLocal},${rawEventLocal}.usage);`
+        // Third statement of the same contract, and the third to be pinned to
+        // the pre-2.1.261 punctuation. Upstream moved the assignment into an
+        // `if` head, so the prefix is `{if(` and it ends in `,`. Accept both;
+        // the assignment between them is still matched exactly.
+        !(
+          terminalSegment.startsWith(
+            `case"message_delta":{${usageLocal}=${aggregationFunction}(${usageLocal},${rawEventLocal}.usage);`
+          ) ||
+          terminalSegment.startsWith(
+            `case"message_delta":{if(${usageLocal}=${aggregationFunction}(${usageLocal},${rawEventLocal}.usage),`
+          )
         ) ||
         !terminalSegment.includes(`for(let ${terminalLoopLocal} of ${terminalArray})`) ||
         !terminalSegment.includes(`${terminalLoopLocal}.message.usage=${usageLocal}`) ||

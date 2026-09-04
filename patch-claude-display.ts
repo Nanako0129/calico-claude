@@ -2899,10 +2899,22 @@ function patchStatuslineCommittedUsage(content) {
   const terminalUsage = terminalMatch?.[3];
   const terminalStop = terminalMatch?.[4];
   const terminalRawEvent = terminalMatch?.[5];
+  // 2.1.261 folded the aggregation assignment into the head of an `if`, as the
+  // first operand of a comma expression:
+  //
+  //   2.1.260  case"message_delta":{yc=rY(yc,cl.usage);let Sl=…
+  //   2.1.261  case"message_delta":{if(Ml=MY(Ml,La.usage),Rn!==void 0&&…)…
+  //
+  // The assignment is unchanged; only its surroundings moved. Pinning the `{`
+  // and the `;` cost the match, and losing it cascaded — terminalArray then
+  // resolved to the clone array, so terminalCommitIsDirect and
+  // cloneArrayIsDistinctFromTerminal went false too, and the module bailed with
+  // 6 candidates and 0 patched. Accept the optional `if(` and either
+  // terminator; everything the aggregation identity rests on is still pinned.
   const aggregationPattern =
     terminalUsage && terminalRawEvent
       ? new RegExp(
-          `case"message_delta":\\{${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\);`,
+          `case"message_delta":\\{(?:if\\()?${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\)[;,]`,
           "g"
         )
       : null;
@@ -3039,7 +3051,24 @@ function patchStatuslineCommittedUsage(content) {
     wrapperPushPattern.test(
       content.slice(wrapperIndex + (wrapperMatch?.match[0].length ?? 0), terminalIndex)
     );
-  const cloneArrayIsDistinctFromTerminal = cloneArray !== terminalArray;
+  // The clone list and the terminal list must not be the same array — writing
+  // the terminal commit through the clone registrations would double-apply it.
+  // Name inequality was standing in for that, and on 2.1.261 the minifier
+  // reused one name in both scopes: `Ac` in a function at 9481073 and `Ac` in
+  // another at 8937761, half a megabyte apart. The loops are not even the same
+  // shape —
+  //
+  //   for(let wg of Ac)wg.message.usage=Ml,…
+  //   for(let{src:cu,dst:Vf}of Ac)Vf.usage=cu.usage,…
+  //
+  // one walks items carrying `.message`, the other walks {src,dst} pairs, so
+  // they cannot be one array at runtime. Compare the declaring scope instead:
+  // the same name in two different functions is two different bindings.
+  const cloneArrayIsDistinctFromTerminal =
+    cloneArray !== terminalArray ||
+    (terminalFunctionStart !== -1 &&
+      cloneSyncFunctionStart !== -1 &&
+      terminalFunctionStart !== cloneSyncFunctionStart);
 
   if (
     reducerMatches.length !== 1 ||
