@@ -810,3 +810,35 @@ test("statusline committed usage patch tolerates the same array name in another 
   assert.equal(result.patched, 6);
   assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
 });
+
+// Distinctness must not be inferred from the enclosing use sites: two functions
+// can close over one outer array, and the same name then really is the same
+// binding. Only a local declaration in the clone-sync function proves a fresh
+// one, by shadowing. Here the name is shared with no such declaration.
+test("statusline committed usage patch rejects a closed-over aliased array", () => {
+  const variant = committedUsageFixture
+    .replace(/\beo\b/g, "shared")
+    .replace(/\b_r\b/g, "shared")
+    .replace("let shared=", "shared=");
+  assert.notEqual(variant, committedUsageFixture);
+  assert.ok(!/(?:let|const|var) shared=/.test(variant));
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+});
+
+// The two punctuation forms are paired, not a cross-product. A comma without
+// the `if` is a shape the verifier's prefix check rejects, so the patcher must
+// reject it too rather than emit a bundle its own verifier fails.
+test("statusline committed usage patch rejects a comma terminator without the if head", () => {
+  const variant = committedUsageFixture.replace(
+    'case"message_delta":{pn=xAe(pn,ar.usage);',
+    'case"message_delta":{pn=xAe(pn,ar.usage),next();'
+  );
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+});

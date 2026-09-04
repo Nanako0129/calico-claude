@@ -2914,7 +2914,11 @@ function patchStatuslineCommittedUsage(content) {
   const aggregationPattern =
     terminalUsage && terminalRawEvent
       ? new RegExp(
-          `case"message_delta":\\{(?:if\\()?${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\)[;,]`,
+          // Paired, not a cross-product. `(?:if\()?…[;,]` would also accept
+          // `{X=f(…),` — a form the verifier's prefix check rejects — so the
+          // patcher could produce a bundle its own verifier then failed. The
+          // two spellings that exist are the statement and the `if` head.
+          `case"message_delta":\\{(?:${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\);|if\\(${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\),)`,
           "g"
         )
       : null;
@@ -3064,11 +3068,33 @@ function patchStatuslineCommittedUsage(content) {
   // one walks items carrying `.message`, the other walks {src,dst} pairs, so
   // they cannot be one array at runtime. Compare the declaring scope instead:
   // the same name in two different functions is two different bindings.
+  // Distinctness cannot be read off the enclosing use sites. Two functions can
+  // close over one outer binding, and `lastIndexOf("function ")` does not even
+  // find a function reliably — on 2.1.261 it lands inside an object literal
+  // (`kind:u(oc.kind),message_idx:…`). What does hold is shadowing: a `let` for
+  // this name inside the clone-sync function is a fresh binding for that whole
+  // function, so a use of the same name outside that region cannot be it.
+  //
+  // 2.1.261 is exactly that case. The minifier reused `Ac`; the clone function
+  // declares `let Ac=`, the terminal side only uses `Ac`, and the two loops do
+  // not destructure alike —
+  //
+  //   for(let wg of Ac)wg.message.usage=Ml,…
+  //   for(let{src:cu,dst:Vf}of Ac)Vf.usage=cu.usage,…
+  //
+  // so they cannot be one array at runtime. Absent that declaration the names
+  // are all we have, and equal names stay a rejection.
+  const cloneArrayDeclaredLocally =
+    cloneArray !== undefined &&
+    cloneSyncFunctionSegment !== "" &&
+    new RegExp(`(?:let|const|var) ${escapeRegExp(cloneArray)}=`).test(cloneSyncFunctionSegment);
+  const terminalUseIsOutsideCloneFunction =
+    cloneSyncFunctionStart !== -1 &&
+    (terminalIndex < cloneSyncFunctionStart ||
+      (cloneSyncFunctionEnd !== -1 && terminalIndex >= cloneSyncFunctionEnd));
   const cloneArrayIsDistinctFromTerminal =
     cloneArray !== terminalArray ||
-    (terminalFunctionStart !== -1 &&
-      cloneSyncFunctionStart !== -1 &&
-      terminalFunctionStart !== cloneSyncFunctionStart);
+    (cloneArrayDeclaredLocally && terminalUseIsOutsideCloneFunction);
 
   if (
     reducerMatches.length !== 1 ||

@@ -1166,7 +1166,7 @@ const CHECKS: Check[] = [
       // expression, so the `{` no longer sits against it and the statement ends
       // in `,` rather than `;`. The assignment itself is unchanged.
       const aggregationPattern = new RegExp(
-        `case"message_delta":\\{(?:if\\()?${escapedUsageLocal}=(${identifier})\\(${escapedUsageLocal},${escapedRawEventLocal}\\.usage\\)[;,]`,
+        `case"message_delta":\\{(?:${escapedUsageLocal}=(${identifier})\\(${escapedUsageLocal},${escapedRawEventLocal}\\.usage\\);|if\\(${escapedUsageLocal}=(${identifier})\\(${escapedUsageLocal},${escapedRawEventLocal}\\.usage\\),)`,
         "g"
       );
       const canonicalSegment = content.slice(canonicalStart, terminalIndex);
@@ -1179,7 +1179,8 @@ const CHECKS: Check[] = [
       ) {
         return `expected first message_delta path to own the canonical aggregation, found ${aggregationMatches.length}`;
       }
-      const aggregationFunction = aggregationMatches[0][1];
+      // Paired alternatives, so exactly one of the two groups is set.
+      const aggregationFunction = aggregationMatches[0][1] ?? aggregationMatches[0][2];
       const escapedAggregationFunction = aggregationFunction.replace(
         /[.*+?^${}()|[\]\\]/g,
         "\\$&"
