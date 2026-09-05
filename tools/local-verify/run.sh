@@ -75,15 +75,44 @@ STATUS=$?
 LC_ALL=C perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\e\][^\a]*(?:\a|\e\\)//g; s/\e[()][A-Za-z0-9]//g' \
   "$WORK/tui.raw" 2>/dev/null | LC_ALL=C tr -cd '\11\12\15\40-\176' > "$WORK/tui.clean"
 
+# The scripted turn makes exactly this many requests. Asserting the count, not
+# merely that one arrived, is what separates a healthy build from a broken
+# commit path: a clone loop walking the terminal array leaves the turn unable to
+# continue, and the run stops after the first request. Built deliberately from
+# 2.1.260 to check that, the aliased binary reported SENT (1) against SENT (2)
+# for the healthy one, while every other line — rendered text, no errors — was
+# identical. "At least one request" would have passed it.
+EXPECTED_REQUESTS=2
+REQUEST_COUNT="$(grep -c REQUEST "$WORK/mock.err" 2>/dev/null || echo 0)"
+
 echo "binary        : $BINARY"
-grep -q "REQUEST" "$WORK/mock.err" \
-  && echo "request       : SENT ($(grep -c REQUEST "$WORK/mock.err"))" \
-  || echo "request       : NEVER SENT  <-- the turn died before reaching the API"
+if [ "$REQUEST_COUNT" -gt 0 ]; then
+  echo "request       : SENT ($REQUEST_COUNT)"
+else
+  echo "request       : NEVER SENT  <-- the turn died before reaching the API"
+fi
 grep -aq "pongfromthemock" "$WORK/tui.clean" \
   && echo "assistant text: RENDERED" \
   || echo "assistant text: MISSING  <-- the stream arrived but nothing was rendered"
-ERR="$(LC_ALL=C grep -aoE "[A-Za-z_.$]*(is not defined|is not a function)" "$WORK/tui.clean" | head -2)"
+# Two phrases used to be the whole error vocabulary, which covered a missing
+# binding and a bad callee and nothing else. The failure this harness exists to
+# catch does not speak either of them: a clone loop walking the terminal array
+# destructures a wrapper that has no `src`/`dst` and throws "Cannot read
+# properties of undefined (reading 'message')". Worse, the mock renders
+# pongfromthemock before that delta arrives, so the two lines above still report
+# SENT and RENDERED — the run looks clean while the commit path is broken.
+# Match the thrown-error shapes instead of two of their wordings.
+ERR="$(LC_ALL=C grep -aoE "([A-Za-z_.$]*(is not defined|is not a function)|(Type|Reference|Range|Syntax)Error[^|]{0,60}|Cannot read propert[^|]{0,50}|undefined is not an? [a-z]+)" "$WORK/tui.clean" | head -2)"
 [ -n "$ERR" ] && echo "errors        : $ERR" || echo "errors        : none"
 [ "$STATUS" -ne 0 ] && echo "harness       : expect exited $STATUS (see above)"
+
+# Exit non-zero on a reported error too. It used to be printed and dropped, so
+# a caller that trusted the exit status saw a pass; the CI step then had to
+# re-grep the human-readable summary to notice. Both now agree.
+[ -z "$ERR" ] || exit 1
+if [ "$REQUEST_COUNT" -ne "$EXPECTED_REQUESTS" ]; then
+  echo "turn          : INCOMPLETE  <-- expected $EXPECTED_REQUESTS requests, saw $REQUEST_COUNT" >&2
+  exit 1
+fi
 
 grep -aq "pongfromthemock" "$WORK/tui.clean"

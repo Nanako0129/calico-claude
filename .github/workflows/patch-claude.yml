@@ -229,11 +229,11 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y expect
           fi
           command -v expect >/dev/null 2>&1 || { echo "expect is required for the streamed-turn harness" >&2; exit 1; }
-          OUT="$(bash tools/local-verify/run.sh "work/${{ matrix.patched_asset_name }}")"
-          echo "$OUT"
-          echo "$OUT" | grep -q "request       : SENT" || { echo "no request reached the mock" >&2; exit 1; }
-          echo "$OUT" | grep -q "assistant text: RENDERED" || { echo "assistant text did not render" >&2; exit 1; }
-          echo "$OUT" | grep -q "errors        : none" || { echo "the turn reported errors" >&2; exit 1; }
+          # The harness owns the assertions and reports them in its exit status.
+          # Re-grepping its summary here was how the first version of this step
+          # passed an aliased build: "request : SENT" matched both SENT (1) and
+          # SENT (2), and the incomplete turn is the whole signal.
+          bash tools/local-verify/run.sh "work/${{ matrix.patched_asset_name }}"
 
       - name: PTY smoke test (non-Windows)
         id: pty
