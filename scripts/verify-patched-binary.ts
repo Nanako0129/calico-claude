@@ -1202,22 +1202,13 @@ const CHECKS: Check[] = [
       const cloneSource = cloneSync[1];
       const cloneDestination = cloneSync[2];
       const cloneArray = cloneSync[3];
-      // Name equality is not identity across a minified bundle: 2.1.261 reused
-      // `Ac` for both arrays in two functions half a megabyte apart, and the
-      // loops do not even destructure alike (`for(let x of Ac)x.message.usage=`
-      // against `for(let{src,dst}of Ac)dst.usage=`), so they cannot be one
-      // array at runtime. Same name in the same function is aliasing; same name
-      // in different functions is the minifier. Kept in lockstep with
-      // patch-claude-display.ts.
-      const cloneSyncFunctionStart = content.lastIndexOf("function ", cloneSync.index ?? -1);
-      if (
-        cloneArray === terminalArray &&
-        (canonicalStart === -1 ||
-          cloneSyncFunctionStart === -1 ||
-          canonicalStart === cloneSyncFunctionStart)
-      ) {
-        return "downstream clone array aliases the canonical terminal array";
-      }
+      // No name-based aliasing check here. It was a proxy for "the clone list
+      // is not the terminal list", it is not sound across a minified bundle
+      // (2.1.261 reuses one name for both), and lexical scope cannot be
+      // recovered by scanning. The property is decided behaviourally instead:
+      // tools/local-verify drives the patched binary through a streamed turn,
+      // where an aliased clone loop throws, and CI runs it on every
+      // non-Windows leg. Kept in lockstep with patch-claude-display.ts.
       const cloneRegistrationPattern = new RegExp(
         `${cloneArray.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.push\\(\\{src:(${identifier}),dst:(${identifier})\\}\\)`,
         "g"
@@ -1241,6 +1232,11 @@ const CHECKS: Check[] = [
       const cloneFunctionStarts = new Set(
         cloneMatches.map((match) => content.lastIndexOf("function ", match.index ?? -1))
       );
+      // Still needed by the co-location check below, which only asks whether
+      // the registrations and the sync loop resolve to the same preceding
+      // `function ` token — a relative comparison that does not depend on that
+      // token really being the enclosing function.
+      const cloneSyncFunctionStart = content.lastIndexOf("function ", cloneSync.index ?? -1);
       if (
         cloneFunctionStarts.size !== 1 ||
         cloneSyncFunctionStart === -1 ||

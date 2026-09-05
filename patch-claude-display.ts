@@ -3068,33 +3068,22 @@ function patchStatuslineCommittedUsage(content) {
   // one walks items carrying `.message`, the other walks {src,dst} pairs, so
   // they cannot be one array at runtime. Compare the declaring scope instead:
   // the same name in two different functions is two different bindings.
-  // Distinctness cannot be read off the enclosing use sites. Two functions can
-  // close over one outer binding, and `lastIndexOf("function ")` does not even
-  // find a function reliably — on 2.1.261 it lands inside an object literal
-  // (`kind:u(oc.kind),message_idx:…`). What does hold is shadowing: a `let` for
-  // this name inside the clone-sync function is a fresh binding for that whole
-  // function, so a use of the same name outside that region cannot be it.
+  // The clone list must not be the terminal list: writing the terminal commit
+  // through the clone registrations would double-apply it. Name inequality was
+  // the proxy for that, and it is not sound. 2.1.261's minifier reused `Ac` for
+  // both, so the proxy rejected a bundle that works; three attempts to rescue
+  // it with text — comparing enclosing use sites, then requiring a local
+  // declaration, then requiring that declaration's block to still be open —
+  // each admitted a different false positive, and the last one's premise was
+  // wrong on the real bundle anyway: the `let Ac=` it found belongs to a
+  // generator that closes before the clone loop. Lexical scope is not
+  // recoverable by scanning minified text.
   //
-  // 2.1.261 is exactly that case. The minifier reused `Ac`; the clone function
-  // declares `let Ac=`, the terminal side only uses `Ac`, and the two loops do
-  // not destructure alike —
-  //
-  //   for(let wg of Ac)wg.message.usage=Ml,…
-  //   for(let{src:cu,dst:Vf}of Ac)Vf.usage=cu.usage,…
-  //
-  // so they cannot be one array at runtime. Absent that declaration the names
-  // are all we have, and equal names stay a rejection.
-  const cloneArrayDeclaredLocally =
-    cloneArray !== undefined &&
-    cloneSyncFunctionSegment !== "" &&
-    new RegExp(`(?:let|const|var) ${escapeRegExp(cloneArray)}=`).test(cloneSyncFunctionSegment);
-  const terminalUseIsOutsideCloneFunction =
-    cloneSyncFunctionStart !== -1 &&
-    (terminalIndex < cloneSyncFunctionStart ||
-      (cloneSyncFunctionEnd !== -1 && terminalIndex >= cloneSyncFunctionEnd));
-  const cloneArrayIsDistinctFromTerminal =
-    cloneArray !== terminalArray ||
-    (cloneArrayDeclaredLocally && terminalUseIsOutsideCloneFunction);
+  // So the check moved to where it can actually be decided. tools/local-verify
+  // drives the patched binary through a streamed turn; an aliased clone loop
+  // throws while destructuring the terminal wrapper, and the harness reports
+  // it. That step now runs in CI on every non-Windows leg. Measured on the real
+  // 2.1.261: request SENT, assistant text RENDERED, errors none.
 
   if (
     reducerMatches.length !== 1 ||
@@ -3111,8 +3100,7 @@ function patchStatuslineCommittedUsage(content) {
     !terminalCommitIsDirect ||
     !cloneRegistrationsOwnSync ||
     !cloneSourcesMatchStreamEvent ||
-    !cloneSyncIsDirect ||
-    !cloneArrayIsDistinctFromTerminal
+    !cloneSyncIsDirect
   ) {
     return { content: original, candidates, patched: 0 };
   }

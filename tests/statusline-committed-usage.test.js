@@ -811,22 +811,13 @@ test("statusline committed usage patch tolerates the same array name in another 
   assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
 });
 
-// Distinctness must not be inferred from the enclosing use sites: two functions
-// can close over one outer array, and the same name then really is the same
-// binding. Only a local declaration in the clone-sync function proves a fresh
-// one, by shadowing. Here the name is shared with no such declaration.
-test("statusline committed usage patch rejects a closed-over aliased array", () => {
-  const variant = committedUsageFixture
-    .replace(/\beo\b/g, "shared")
-    .replace(/\b_r\b/g, "shared")
-    .replace("let shared=", "shared=");
-  assert.notEqual(variant, committedUsageFixture);
-  assert.ok(!/(?:let|const|var) shared=/.test(variant));
-  const result = patchStatuslineCommittedUsage(variant);
-
-  assert.equal(result.patched, 0);
-  assert.equal(result.content, variant);
-});
+// The name-based "clone list is not the terminal list" check is gone. It was a
+// proxy for a lexical-scope property, minified bundles reuse names across
+// scopes (2.1.261 uses one name for both), and three textual rescues each
+// admitted a different false positive. The property is decided behaviourally
+// now, by tools/local-verify driving a streamed turn in CI: an aliased clone
+// loop throws while destructuring the terminal wrapper. No unit test can stand
+// in for that, so none pretends to.
 
 // The two punctuation forms are paired, not a cross-product. A comma without
 // the `if` is a shape the verifier's prefix check rejects, so the patcher must

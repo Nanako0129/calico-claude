@@ -212,6 +212,29 @@ jobs:
           PATCHED_PATH="work/${{ matrix.patched_asset_name }}"
           node scripts/verify-patched-binary.ts --input "$PATCHED_PATH" --disable "$DISABLED_MODULES"
 
+      # Blocking, and the only step here that drives a streamed turn. The PTY
+      # smoke test below boots the binary and checks the TUI mounts; it never
+      # sends a request, so nothing in CI used to exercise the streaming commit
+      # path. That gap is why statusline-committed-usage carried a text proxy
+      # for "the clone list is not the terminal list" — a property that cannot
+      # be decided by scanning minified source, and whose proxy rejected a
+      # working 2.1.261. An aliased clone loop throws while destructuring the
+      # terminal wrapper, which this harness sees and a text check cannot.
+      - name: Streamed-turn verification (non-Windows)
+        if: steps.check.outputs.skip != 'true' && !startsWith(matrix.platform_label, 'windows')
+        run: |
+          set -euo pipefail
+          # macOS runners ship /usr/bin/expect; Linux ones do not always.
+          if ! command -v expect >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y expect
+          fi
+          command -v expect >/dev/null 2>&1 || { echo "expect is required for the streamed-turn harness" >&2; exit 1; }
+          OUT="$(bash tools/local-verify/run.sh "work/${{ matrix.patched_asset_name }}")"
+          echo "$OUT"
+          echo "$OUT" | grep -q "request       : SENT" || { echo "no request reached the mock" >&2; exit 1; }
+          echo "$OUT" | grep -q "assistant text: RENDERED" || { echo "assistant text did not render" >&2; exit 1; }
+          echo "$OUT" | grep -q "errors        : none" || { echo "the turn reported errors" >&2; exit 1; }
+
       - name: PTY smoke test (non-Windows)
         id: pty
         if: steps.check.outputs.skip != 'true' && !startsWith(matrix.platform_label, 'windows')
