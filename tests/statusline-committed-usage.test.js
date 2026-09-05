@@ -770,3 +770,66 @@ test("statusline committed usage patch rejects wrapper and terminal anchors spli
   assert.equal(result.content, variant);
   assert.equal(result.content.includes("__calicoUsageState"), false);
 });
+
+// 2.1.261 folded the aggregation assignment into the head of an `if`, as the
+// first operand of a comma expression:
+//
+//   2.1.260  case"message_delta":{yc=rY(yc,cl.usage);let Sl=…
+//   2.1.261  case"message_delta":{if(Ml=MY(Ml,La.usage),Rn!==void 0&&…)…
+//
+// The assignment is untouched; only the punctuation around it moved. Pinning
+// the `{` against it and the trailing `;` cost the match, and the loss
+// cascaded: terminalArray then resolved to the clone array, so two more guards
+// went false and the module bailed with 6 candidates and 0 patched.
+test("statusline committed usage patch accepts the aggregation inside an if head", () => {
+  const variant = committedUsageFixture.replace(
+    'case"message_delta":{pn=xAe(pn,ar.usage);',
+    'case"message_delta":{if(pn=xAe(pn,ar.usage),guard!==void 0)note(guard);'
+  );
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+  assert.ok(result.content.includes("__calicoUsageState"));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+// Minified names are not unique across scopes. 2.1.261 reused one name for the
+// terminal array and the clone array in two functions half a megabyte apart,
+// and the guard read that as aliasing. The loops do not even destructure alike,
+// so they cannot be one array at runtime; what makes them distinct is the
+// declaring function, not the spelling.
+test("statusline committed usage patch tolerates the same array name in another function", () => {
+  const variant = committedUsageFixture
+    .replace(/\beo\b/g, "pnArr")
+    .replace(/\b_r\b/g, "pnArr");
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 6);
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+// The name-based "clone list is not the terminal list" check is gone. It was a
+// proxy for a lexical-scope property, minified bundles reuse names across
+// scopes (2.1.261 uses one name for both), and three textual rescues each
+// admitted a different false positive. The property is decided behaviourally
+// now, by tools/local-verify driving a streamed turn in CI: an aliased clone
+// loop throws while destructuring the terminal wrapper. No unit test can stand
+// in for that, so none pretends to.
+
+// The two punctuation forms are paired, not a cross-product. A comma without
+// the `if` is a shape the verifier's prefix check rejects, so the patcher must
+// reject it too rather than emit a bundle its own verifier fails.
+test("statusline committed usage patch rejects a comma terminator without the if head", () => {
+  const variant = committedUsageFixture.replace(
+    'case"message_delta":{pn=xAe(pn,ar.usage);',
+    'case"message_delta":{pn=xAe(pn,ar.usage),next();'
+  );
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+});

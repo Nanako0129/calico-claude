@@ -1161,8 +1161,12 @@ const CHECKS: Check[] = [
 
       const escapedUsageLocal = usageLocal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const escapedRawEventLocal = rawEventLocal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Kept in lockstep with patch-claude-display.ts: 2.1.261 folded this
+      // assignment into the head of an `if` as the first operand of a comma
+      // expression, so the `{` no longer sits against it and the statement ends
+      // in `,` rather than `;`. The assignment itself is unchanged.
       const aggregationPattern = new RegExp(
-        `case"message_delta":\\{${escapedUsageLocal}=(${identifier})\\(${escapedUsageLocal},${escapedRawEventLocal}\\.usage\\);`,
+        `case"message_delta":\\{(?:${escapedUsageLocal}=(${identifier})\\(${escapedUsageLocal},${escapedRawEventLocal}\\.usage\\);|if\\(${escapedUsageLocal}=(${identifier})\\(${escapedUsageLocal},${escapedRawEventLocal}\\.usage\\),)`,
         "g"
       );
       const canonicalSegment = content.slice(canonicalStart, terminalIndex);
@@ -1175,7 +1179,8 @@ const CHECKS: Check[] = [
       ) {
         return `expected first message_delta path to own the canonical aggregation, found ${aggregationMatches.length}`;
       }
-      const aggregationFunction = aggregationMatches[0][1];
+      // Paired alternatives, so exactly one of the two groups is set.
+      const aggregationFunction = aggregationMatches[0][1] ?? aggregationMatches[0][2];
       const escapedAggregationFunction = aggregationFunction.replace(
         /[.*+?^${}()|[\]\\]/g,
         "\\$&"
@@ -1197,9 +1202,13 @@ const CHECKS: Check[] = [
       const cloneSource = cloneSync[1];
       const cloneDestination = cloneSync[2];
       const cloneArray = cloneSync[3];
-      if (cloneArray === terminalArray) {
-        return "downstream clone array aliases the canonical terminal array";
-      }
+      // No name-based aliasing check here. It was a proxy for "the clone list
+      // is not the terminal list", it is not sound across a minified bundle
+      // (2.1.261 reuses one name for both), and lexical scope cannot be
+      // recovered by scanning. The property is decided behaviourally instead:
+      // tools/local-verify drives the patched binary through a streamed turn,
+      // where an aliased clone loop throws, and CI runs it on every
+      // non-Windows leg. Kept in lockstep with patch-claude-display.ts.
       const cloneRegistrationPattern = new RegExp(
         `${cloneArray.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.push\\(\\{src:(${identifier}),dst:(${identifier})\\}\\)`,
         "g"
@@ -1223,10 +1232,11 @@ const CHECKS: Check[] = [
       const cloneFunctionStarts = new Set(
         cloneMatches.map((match) => content.lastIndexOf("function ", match.index ?? -1))
       );
-      const cloneSyncFunctionStart = content.lastIndexOf(
-        "function ",
-        cloneSync.index ?? -1
-      );
+      // Still needed by the co-location check below, which only asks whether
+      // the registrations and the sync loop resolve to the same preceding
+      // `function ` token — a relative comparison that does not depend on that
+      // token really being the enclosing function.
+      const cloneSyncFunctionStart = content.lastIndexOf("function ", cloneSync.index ?? -1);
       if (
         cloneFunctionStarts.size !== 1 ||
         cloneSyncFunctionStart === -1 ||
@@ -1288,8 +1298,17 @@ const CHECKS: Check[] = [
       );
       if (
         aggregationIndex < canonicalStart ||
-        !terminalSegment.startsWith(
-          `case"message_delta":{${usageLocal}=${aggregationFunction}(${usageLocal},${rawEventLocal}.usage);`
+        // Third statement of the same contract, and the third to be pinned to
+        // the pre-2.1.261 punctuation. Upstream moved the assignment into an
+        // `if` head, so the prefix is `{if(` and it ends in `,`. Accept both;
+        // the assignment between them is still matched exactly.
+        !(
+          terminalSegment.startsWith(
+            `case"message_delta":{${usageLocal}=${aggregationFunction}(${usageLocal},${rawEventLocal}.usage);`
+          ) ||
+          terminalSegment.startsWith(
+            `case"message_delta":{if(${usageLocal}=${aggregationFunction}(${usageLocal},${rawEventLocal}.usage),`
+          )
         ) ||
         !terminalSegment.includes(`for(let ${terminalLoopLocal} of ${terminalArray})`) ||
         !terminalSegment.includes(`${terminalLoopLocal}.message.usage=${usageLocal}`) ||

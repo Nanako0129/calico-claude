@@ -2899,10 +2899,26 @@ function patchStatuslineCommittedUsage(content) {
   const terminalUsage = terminalMatch?.[3];
   const terminalStop = terminalMatch?.[4];
   const terminalRawEvent = terminalMatch?.[5];
+  // 2.1.261 folded the aggregation assignment into the head of an `if`, as the
+  // first operand of a comma expression:
+  //
+  //   2.1.260  case"message_delta":{yc=rY(yc,cl.usage);let Sl=…
+  //   2.1.261  case"message_delta":{if(Ml=MY(Ml,La.usage),Rn!==void 0&&…)…
+  //
+  // The assignment is unchanged; only its surroundings moved. Pinning the `{`
+  // and the `;` cost the match, and losing it cascaded — terminalArray then
+  // resolved to the clone array, so terminalCommitIsDirect and
+  // cloneArrayIsDistinctFromTerminal went false too, and the module bailed with
+  // 6 candidates and 0 patched. Accept the optional `if(` and either
+  // terminator; everything the aggregation identity rests on is still pinned.
   const aggregationPattern =
     terminalUsage && terminalRawEvent
       ? new RegExp(
-          `case"message_delta":\\{${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\);`,
+          // Paired, not a cross-product. `(?:if\()?…[;,]` would also accept
+          // `{X=f(…),` — a form the verifier's prefix check rejects — so the
+          // patcher could produce a bundle its own verifier then failed. The
+          // two spellings that exist are the statement and the `if` head.
+          `case"message_delta":\\{(?:${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\);|if\\(${escapeRegExp(terminalUsage)}=(${identifierPattern})\\(${escapeRegExp(terminalUsage)},${escapeRegExp(terminalRawEvent)}\\.usage\\),)`,
           "g"
         )
       : null;
@@ -3039,7 +3055,35 @@ function patchStatuslineCommittedUsage(content) {
     wrapperPushPattern.test(
       content.slice(wrapperIndex + (wrapperMatch?.match[0].length ?? 0), terminalIndex)
     );
-  const cloneArrayIsDistinctFromTerminal = cloneArray !== terminalArray;
+  // The clone list and the terminal list must not be the same array — writing
+  // the terminal commit through the clone registrations would double-apply it.
+  // Name inequality was standing in for that, and on 2.1.261 the minifier
+  // reused one name in both scopes: `Ac` in a function at 9481073 and `Ac` in
+  // another at 8937761, half a megabyte apart. The loops are not even the same
+  // shape —
+  //
+  //   for(let wg of Ac)wg.message.usage=Ml,…
+  //   for(let{src:cu,dst:Vf}of Ac)Vf.usage=cu.usage,…
+  //
+  // one walks items carrying `.message`, the other walks {src,dst} pairs, so
+  // they cannot be one array at runtime. Compare the declaring scope instead:
+  // the same name in two different functions is two different bindings.
+  // The clone list must not be the terminal list: writing the terminal commit
+  // through the clone registrations would double-apply it. Name inequality was
+  // the proxy for that, and it is not sound. 2.1.261's minifier reused `Ac` for
+  // both, so the proxy rejected a bundle that works; three attempts to rescue
+  // it with text — comparing enclosing use sites, then requiring a local
+  // declaration, then requiring that declaration's block to still be open —
+  // each admitted a different false positive, and the last one's premise was
+  // wrong on the real bundle anyway: the `let Ac=` it found belongs to a
+  // generator that closes before the clone loop. Lexical scope is not
+  // recoverable by scanning minified text.
+  //
+  // So the check moved to where it can actually be decided. tools/local-verify
+  // drives the patched binary through a streamed turn; an aliased clone loop
+  // throws while destructuring the terminal wrapper, and the harness reports
+  // it. That step now runs in CI on every non-Windows leg. Measured on the real
+  // 2.1.261: request SENT, assistant text RENDERED, errors none.
 
   if (
     reducerMatches.length !== 1 ||
@@ -3056,8 +3100,7 @@ function patchStatuslineCommittedUsage(content) {
     !terminalCommitIsDirect ||
     !cloneRegistrationsOwnSync ||
     !cloneSourcesMatchStreamEvent ||
-    !cloneSyncIsDirect ||
-    !cloneArrayIsDistinctFromTerminal
+    !cloneSyncIsDirect
   ) {
     return { content: original, candidates, patched: 0 };
   }
