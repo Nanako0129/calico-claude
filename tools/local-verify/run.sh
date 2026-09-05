@@ -106,6 +106,14 @@ ERR="$(LC_ALL=C grep -aoE "([A-Za-z_.$]*(is not defined|is not a function)|(Type
 [ -n "$ERR" ] && echo "errors        : $ERR" || echo "errors        : none"
 [ "$STATUS" -ne 0 ] && echo "harness       : expect exited $STATUS (see above)"
 
+# Propagate it. A binary that dies after rendering and after both requests, but
+# before tui.exp finishes its shutdown, leaves every check below satisfied while
+# expect reports the failure — printed and dropped, the run returned 0. That was
+# survivable while callers read the summary; the CI step now trusts this exit
+# status, so the one signal that saw the failure has to reach it. Measured 0 on
+# healthy 2.1.260 and 2.1.261 runs, so this does not fire on a clean teardown.
+[ "$STATUS" -eq 0 ] || exit 1
+
 # Exit non-zero on a reported error too. It used to be printed and dropped, so
 # a caller that trusted the exit status saw a pass; the CI step then had to
 # re-grep the human-readable summary to notice. Both now agree.
