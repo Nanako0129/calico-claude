@@ -1538,6 +1538,27 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "disable-bash-first",
+    kind: "custom",
+    describe: "the Bash-first steer defaults off with CLAUDE_CODE_THRIFTY_SONIC still honoured",
+    run: (content: string): string | null => {
+      const defaulted =
+        /return ([A-Za-z_$][\w$]*)\.CLAUDE_CODE_THRIFTY_SONIC\?\?!1;/;
+      if (!defaulted.test(content)) {
+        return "the Bash-first gate does not default to off";
+      }
+      // The original early return has to be gone, not merely accompanied. If
+      // upstream ever emitted the gate twice and only one copy were rewritten,
+      // the module would still report a non-zero patched count while the
+      // surviving copy kept deciding the steer from the server-side cohort.
+      const original =
+        /if\(([A-Za-z_$][\w$]*)\.CLAUDE_CODE_THRIFTY_SONIC!==void 0\)return \1\.CLAUDE_CODE_THRIFTY_SONIC;/;
+      return original.test(content)
+        ? "an unpatched CLAUDE_CODE_THRIFTY_SONIC early return is still present"
+        : null;
+    },
+  },
+  {
     id: "tool-call-verbose",
     kind: "presence",
     marker: /case"collapsed_read_search":(?:return|\{)[\s\S]{0,600}?verbose:!0/,
