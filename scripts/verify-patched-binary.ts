@@ -1506,6 +1506,38 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "compact-tokens-saved",
+    kind: "custom",
+    describe: "compaction saving is computed at the call site and consumed by the renderer",
+    run: (content: string): string | null => {
+      // Two injections, checked separately on purpose. The patch module counts
+      // them as two candidates and --assert-all only fails at zero, so losing
+      // either one to drift ships a build where the module reports patched and
+      // the line never changes. Producer without consumer renders nothing;
+      // consumer without producer renders nothing. Neither is visible from a
+      // marker count.
+      const producer =
+        /displayText:\(globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{let __cc_a=__cc_r\?\.preCompactTokenCount,__cc_b=__cc_r\?\.boundaryMarker\?\.compactMetadata\?\.postTokens;/;
+      if (!producer.test(content)) {
+        return "the saving is not computed at the compact command's displayText site";
+      }
+      const consumer =
+        /\.dim\("Compacted "\+\(\(\)=>\{let __cc_s=globalThis\.__calico_compact_saved;globalThis\.__calico_compact_saved=void 0;return __cc_s\?\?""\}\)\(\)\+/;
+      if (!consumer.test(content)) {
+        return "the compacted line does not consume the computed saving";
+      }
+      // The producer runs inside the same expression that calls the renderer.
+      // If a future release splits them across chunks the value silently
+      // becomes undefined at runtime and the segment disappears with every
+      // text check still green, so assert they are still one expression.
+      const wired =
+        /globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{[\s\S]{0,400}?\}\)\(([A-Za-z_$][\w$]*)\.result\),[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\)/;
+      return wired.test(content)
+        ? null
+        : "the computed saving is no longer sequenced with the renderer call";
+    },
+  },
+  {
     id: "tool-call-verbose",
     kind: "presence",
     marker: /case"collapsed_read_search":(?:return|\{)[\s\S]{0,600}?verbose:!0/,

@@ -2576,6 +2576,89 @@ function patchCustomContextWindows(content) {
   return { content: output, candidates, patched };
 }
 
+function patchCompactTokensSaved(content) {
+  // After `/compact`, the CLI prints only `Compacted (ctrl+o to see full
+  // summary)`. The Claude mobile app prints how much the compaction actually
+  // bought — `Compacted conversation · saved 256.3k tokens`. Both numbers
+  // already exist in the CLI: the compaction finaliser returns
+  // `preCompactTokenCount` on its result and stamps `postTokens` onto the
+  // boundary marker's `compactMetadata`. Nothing renders the difference.
+  //
+  // Both sites sit in the same Bun chunk (measured on 2.1.259 through 2.1.263:
+  // same chunk, one declaration of the renderer in it), so a module-level
+  // binding would work. globalThis is used anyway because it keeps both
+  // injections in *expression* position. A statement-position injection would
+  // have to pin the renderer's whole body to find a safe insertion point, and
+  // that body is a spread list upstream adds elements to — exactly the kind of
+  // anchor that drifts silently. See __calico_display_window for the same
+  // channel used for the harder reason (genuinely different chunks).
+  //
+  // The renderer's minified name is `w` on every version measured, which is
+  // also the name of 111 other functions in the bundle. It is therefore never
+  // matched by name: the call site below is what identifies it, and the second
+  // pattern keys off the string literal, which is unique bundle-wide.
+  const callSitePattern =
+    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*)\.result,userDisplayMessage:([A-Za-z_$][\w$]*)\},displayText:([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),\2\)/g;
+
+  // Reads the result object rather than the caller's `preTokens`/`postTokens`
+  // locals: those are declared ~700 characters earlier and only named together
+  // in the `finally` telemetry call, so binding them would mean matching across
+  // the whole function body. `u.result` is right here in the same expression.
+  // Optional chaining throughout because the boundary marker is only stamped
+  // when `subtype === "compact_boundary"`; a missing number returns undefined
+  // and the segment is omitted rather than rendering `NaN`.
+  const summary =
+    '((__cc_r)=>{let __cc_a=__cc_r?.preCompactTokenCount,' +
+    '__cc_b=__cc_r?.boundaryMarker?.compactMetadata?.postTokens;' +
+    'if(!Number.isFinite(__cc_a)||!Number.isFinite(__cc_b)||__cc_a<=__cc_b)return;' +
+    'let __cc_n=__cc_a-__cc_b;' +
+    'return"\\u00B7 saved "+(__cc_n>=1e6?(__cc_n/1e6).toFixed(1)+"M":' +
+    '__cc_n>=1e3?(__cc_n/1e3).toFixed(1)+"k":String(__cc_n))+" tokens "})';
+
+  // The value is consumed once and cleared. The producer runs immediately
+  // before the consumer in the same expression, so there is no window for a
+  // stale read in practice; clearing means a renderer reached by some other
+  // path in a later release shows nothing rather than the previous
+  // compaction's figure, which would be wrong and look right.
+  const renderPattern = /\.dim\("Compacted "\+(?!\(\(\)=>\{let __cc_s)/g;
+
+  // Both injections or neither. Applying them independently would let an
+  // upstream bundle that kept only one anchor return partially rewritten
+  // content with `patched === 1`, and --assert-all only fails at zero
+  // (patch-claude-display.ts, the assertAll block near the end of main): the
+  // build would be reported successful with the feature doing nothing.
+  // Producer without consumer sets a global nothing reads; consumer without
+  // producer reads undefined and concatenates "". Neither breaks the binary,
+  // which is exactly why neither is noticeable. The verifier catches this in
+  // CI, but `npm run patch:native` does not invoke the verifier, so anyone
+  // patching a binary directly would get the silent version.
+  const callMatches = [...content.matchAll(callSitePattern)];
+  const renderMatches = [...content.matchAll(renderPattern)];
+  const candidates = callMatches.length + renderMatches.length;
+  if (callMatches.length === 0 || renderMatches.length === 0) {
+    // Non-zero candidates with zero patched is the loud form: --assert-all
+    // fails on `patched === 0` and names this module.
+    return { content, candidates, patched: 0 };
+  }
+
+  let output = content.replace(
+    callSitePattern,
+    (full, resultVar, displayVar, renderFn, ctxVar) =>
+      `compactionResult:{...${resultVar}.result,userDisplayMessage:${displayVar}},` +
+      `displayText:(globalThis.__calico_compact_saved=${summary}(${resultVar}.result),` +
+      `${renderFn}(${ctxVar},${displayVar}))`
+  );
+
+  output = output.replace(
+    renderPattern,
+    () =>
+      '.dim("Compacted "+(()=>{let __cc_s=globalThis.__calico_compact_saved;' +
+      'globalThis.__calico_compact_saved=void 0;return __cc_s??""})()+'
+  );
+
+  return { content: output, candidates, patched: candidates };
+}
+
 function patchBackgroundAgentUsage(content) {
   const original = content;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
@@ -4278,6 +4361,11 @@ const PATCH_MODULES = [
     apply: patchCustomContextWindows,
   },
   {
+    id: "compact-tokens-saved",
+    description: "Report how many tokens /compact actually saved",
+    apply: patchCompactTokensSaved,
+  },
+  {
     id: "tool-call-verbose",
     description: "Force verbose collapsed read/search rendering",
     apply: patchCollapsedReadSearch,
@@ -4559,6 +4647,7 @@ module.exports = {
   patchStatuslineCommittedUsage,
   patchStatuslineRateLimitWindows,
   patchCustomContextWindows,
+  patchCompactTokensSaved,
   // Exported for tests: the positional stream-reducer branch is only reachable
   // on older bundle shapes, so nothing else exercises it.
   patchThinkingStreaming,
