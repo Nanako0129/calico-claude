@@ -2577,9 +2577,6 @@ function patchCustomContextWindows(content) {
 }
 
 function patchCompactTokensSaved(content) {
-  let candidates = 0;
-  let patched = 0;
-
   // After `/compact`, the CLI prints only `Compacted (ctrl+o to see full
   // summary)`. The Claude mobile app prints how much the compaction actually
   // bought — `Compacted conversation · saved 256.3k tokens`. Both numbers
@@ -2618,35 +2615,48 @@ function patchCompactTokensSaved(content) {
     'return"\\u00B7 saved "+(__cc_n>=1e6?(__cc_n/1e6).toFixed(1)+"M":' +
     '__cc_n>=1e3?(__cc_n/1e3).toFixed(1)+"k":String(__cc_n))+" tokens "})';
 
-  let output = content.replace(
-    callSitePattern,
-    (full, resultVar, displayVar, renderFn, ctxVar) => {
-      candidates += 1;
-      patched += 1;
-      return (
-        `compactionResult:{...${resultVar}.result,userDisplayMessage:${displayVar}},` +
-        `displayText:(globalThis.__calico_compact_saved=${summary}(${resultVar}.result),` +
-        `${renderFn}(${ctxVar},${displayVar}))`
-      );
-    }
-  );
-
   // The value is consumed once and cleared. The producer runs immediately
   // before the consumer in the same expression, so there is no window for a
   // stale read in practice; clearing means a renderer reached by some other
   // path in a later release shows nothing rather than the previous
   // compaction's figure, which would be wrong and look right.
   const renderPattern = /\.dim\("Compacted "\+(?!\(\(\)=>\{let __cc_s)/g;
-  output = output.replace(renderPattern, (full) => {
-    candidates += 1;
-    patched += 1;
-    return (
+
+  // Both injections or neither. Applying them independently would let an
+  // upstream bundle that kept only one anchor return partially rewritten
+  // content with `patched === 1`, and --assert-all only fails at zero
+  // (patch-claude-display.ts, the assertAll block near the end of main): the
+  // build would be reported successful with the feature doing nothing.
+  // Producer without consumer sets a global nothing reads; consumer without
+  // producer reads undefined and concatenates "". Neither breaks the binary,
+  // which is exactly why neither is noticeable. The verifier catches this in
+  // CI, but `npm run patch:native` does not invoke the verifier, so anyone
+  // patching a binary directly would get the silent version.
+  const callMatches = [...content.matchAll(callSitePattern)];
+  const renderMatches = [...content.matchAll(renderPattern)];
+  const candidates = callMatches.length + renderMatches.length;
+  if (callMatches.length === 0 || renderMatches.length === 0) {
+    // Non-zero candidates with zero patched is the loud form: --assert-all
+    // fails on `patched === 0` and names this module.
+    return { content, candidates, patched: 0 };
+  }
+
+  let output = content.replace(
+    callSitePattern,
+    (full, resultVar, displayVar, renderFn, ctxVar) =>
+      `compactionResult:{...${resultVar}.result,userDisplayMessage:${displayVar}},` +
+      `displayText:(globalThis.__calico_compact_saved=${summary}(${resultVar}.result),` +
+      `${renderFn}(${ctxVar},${displayVar}))`
+  );
+
+  output = output.replace(
+    renderPattern,
+    () =>
       '.dim("Compacted "+(()=>{let __cc_s=globalThis.__calico_compact_saved;' +
       'globalThis.__calico_compact_saved=void 0;return __cc_s??""})()+'
-    );
-  });
+  );
 
-  return { content: output, candidates, patched };
+  return { content: output, candidates, patched: candidates };
 }
 
 function patchBackgroundAgentUsage(content) {

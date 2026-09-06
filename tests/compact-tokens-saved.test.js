@@ -127,6 +127,30 @@ test("re-patching an already patched bundle changes nothing", () => {
   assert.equal(twice.content, once.content);
 });
 
+// Applying the two injections independently would let a bundle that kept only
+// one anchor come out partially rewritten with `patched === 1`. --assert-all
+// only fails at zero, and `npm run patch:native` does not invoke the verifier,
+// so that build would be reported successful with the feature doing nothing:
+// a producer nothing reads, or a consumer reading undefined and concatenating
+// "". Neither breaks the binary, which is why neither would be noticed.
+test("applies both injections or neither", () => {
+  const full = fixture("u");
+  const producerOnly = full.replace('ie.dim("Compacted "+', 'ie.dim("Summarised "+');
+  const consumerOnly = full.replace("displayText:w(e,y)", "displayText:y");
+
+  for (const [name, bundle, expectedCandidates] of [
+    ["only the call site survives", producerOnly, 1],
+    ["only the render site survives", consumerOnly, 1],
+  ]) {
+    const result = patchCompactTokensSaved(bundle);
+    assert.equal(result.patched, 0, name);
+    assert.equal(result.content, bundle, `${name}: content must be untouched`);
+    // Non-zero candidates with zero patched is what makes --assert-all fail
+    // loudly and name this module, rather than shipping the silent version.
+    assert.equal(result.candidates, expectedCandidates, name);
+  }
+});
+
 test("leaves an unrelated compact command alone", () => {
   // Same field names, but the display text is not built from the renderer this
   // module rewrites, so there is nothing to sequence the value with.
