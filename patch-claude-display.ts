@@ -2265,6 +2265,55 @@ function patchDisableSpinnerTips(content, ctx = {}) {
   };
 }
 
+function patchDisableBashFirst(content) {
+  // Upstream's `thrifty_sonic` experiment injects a synthetic `isMeta` turn
+  // telling the model to do its file work through Bash — `cat`, `sed`,
+  // heredocs — "rather than using the dedicated Read, Edit, or Write tools".
+  // It fires only in auto or bypassPermissions mode, which is why it looks
+  // like the model spontaneously stopped using Edit.
+  //
+  // The gate reads:
+  //
+  //   function rzt(){
+  //     if(a.CLAUDE_CODE_THRIFTY_SONIC!==void 0)return a.CLAUDE_CODE_THRIFTY_SONIC;
+  //     switch(Zd()){case"forced":return!0;case"none":return!1;case"cohort":return H(ka,!1)}
+  //   }
+  //
+  // so an explicit env var already wins over every server-side assignment —
+  // `"forced"` and the `tengu_thrifty_sonic` cohort lookup both sit past that
+  // early return. This module makes the *absent* case behave like the explicit
+  // off case, and nothing else: the env var keeps working in both directions,
+  // so `CLAUDE_CODE_THRIFTY_SONIC=1` still opts back in.
+  //
+  // `??` rather than a hard `return!1` because the value is parsed, not raw:
+  // the accessor is declared `r_=I.triBool()`, whose transform maps
+  // ["1","true","yes","on"] to true and ["0","false","no","off"] to false and
+  // everything else to undefined. So `X??!1` is true / false / false — exactly
+  // the three cases wanted.
+  //
+  // The `switch` below the replaced line becomes unreachable and is left in
+  // place. Rewriting only the early return means an upstream change to the
+  // cohort cases cannot break this match; pinning the switch body would make
+  // every new `case` a silent loss of coverage.
+  //
+  // Present exactly once on every version measured, 2.1.246 through 2.1.263.
+  // A bundle without it reports zero candidates and fails --assert-all, which
+  // is the wanted behaviour: upstream moving this gate should stop the build,
+  // not ship a binary where the steer is quietly back.
+  const gatePattern =
+    /if\(([A-Za-z_$][\w$]*)\.CLAUDE_CODE_THRIFTY_SONIC!==void 0\)return \1\.CLAUDE_CODE_THRIFTY_SONIC;/g;
+
+  let candidates = 0;
+  let patched = 0;
+  const output = content.replace(gatePattern, (full, envVar) => {
+    candidates += 1;
+    patched += 1;
+    return `return ${envVar}.CLAUDE_CODE_THRIFTY_SONIC??!1;`;
+  });
+
+  return { content: output, candidates, patched };
+}
+
 function patchInstallerMigrationMessage(content, ctx = {}) {
   const needle = "switched from npm to native installer";
   let output = content;
@@ -4366,6 +4415,11 @@ const PATCH_MODULES = [
     apply: patchCompactTokensSaved,
   },
   {
+    id: "disable-bash-first",
+    description: "Default the Bash-first tool steer off, leaving CLAUDE_CODE_THRIFTY_SONIC opt-in",
+    apply: patchDisableBashFirst,
+  },
+  {
     id: "tool-call-verbose",
     description: "Force verbose collapsed read/search rendering",
     apply: patchCollapsedReadSearch,
@@ -4648,6 +4702,7 @@ module.exports = {
   patchStatuslineRateLimitWindows,
   patchCustomContextWindows,
   patchCompactTokensSaved,
+  patchDisableBashFirst,
   // Exported for tests: the positional stream-reducer branch is only reachable
   // on older bundle shapes, so nothing else exercises it.
   patchThinkingStreaming,
