@@ -39,6 +39,7 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 | `create-diff-colors` | Renders created files through the diff component with `+` lines |
 | `word-diff-line-bg` | Keeps the muted `+`/`-` line background in word-diff mode |
 | `disable-spinner-tips` | Disables spinner tips regardless of settings |
+| `compact-tokens-saved` | Reports how many tokens `/compact` actually saved, as the Claude mobile app does |
 | `background-agent-usage` | Accounts terminal stream usage in the background agent progress row |
 | `statusline-committed-usage` | Exposes only committed terminal assistant usage to status-line payloads |
 | `statusline-rate-limit-windows` | Forwards the Fable 5 and usage-credit rate-limit windows to status-line payloads |
