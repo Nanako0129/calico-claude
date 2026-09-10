@@ -911,11 +911,11 @@ const CHECKS: Check[] = [
       }
 
       const legacyCompletionPattern = new RegExp(
-        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,(${identifier}),\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,(${identifier}),\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
       const modelsUsedCompletionPattern = new RegExp(
-        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
       const completionMatches = [
@@ -1061,7 +1061,7 @@ const CHECKS: Check[] = [
         "g"
       );
       const effortWrapperPattern = new RegExp(
-        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
+        `let (${identifier})=\\{message:\\{\\.\\.\\.(${identifier}),content:(${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:\\2\\.id\\}\\)\\},requestId:\\7\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\6\\.querySource,\\6\\.spawnedBySkill,\\6\\.activeSkill,\\6\\.activeMcpServer,\\6\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\10\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       // 2.1.236+ batch tool-use destructured wrapper; see the matching
@@ -1073,7 +1073,7 @@ const CHECKS: Check[] = [
         // 2.1.257 inserts statements between the destructuring and the message
         // object, and adds fields to the object before `requestId`. Kept in
         // lockstep with batchWrapperPattern in patch-claude-display.ts.
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{}]*(?:\\{[^{}]*\\})?)*?,requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1107,7 +1107,7 @@ const CHECKS: Check[] = [
         return "statusline effort condition and property use different locals";
       }
       const modelsUsedCompletionSignalPattern = new RegExp(
-        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
       const modelsUsedCompletionSignals = [
@@ -1375,25 +1375,29 @@ const CHECKS: Check[] = [
 
       // 2.1.247 introduced the handle-keyed memo; before it the reads were
       // straight-line and the header worked unaided, so absence there is
-      // correct rather than a missing patch. Version-gate the waiver instead of
-      // waiving on absence alone: on 2.1.247+ a read still keyed on the handle
-      // is the defect this module exists to remove.
-      const versionMatch = content.match(
-        /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/
-      );
-      const version = versionMatch?.slice(1).map(Number);
-      if (version === undefined) {
-        return "expected parseable Claude Code VERSION metadata";
-      }
-      const memoizedHere =
-        version[0] > 2 ||
-        (version[0] === 2 &&
-          (version[1] > 1 || (version[1] === 1 && version[2] >= 247)));
-
-      if (!memoizedHere) {
+      // correct rather than a missing patch. This used to be a version gate
+      // (>= 2.1.247 means the memo is present), which could only express
+      // "upstream added it" and not "upstream took it away again" — and
+      // 2.1.267 took it away, deleting the whole memoized component. The
+      // version gate then demanded three forced reads from a bundle with
+      // nothing to force, and blocked the release.
+      //
+      // Ask the bundle instead. This probe matches a handle-keyed memo of a
+      // viewport read in either state — upstream's `cache[N]!==x.handle` or
+      // the patched `if(!0||cache[N]!==x.handle)` — so it is present exactly
+      // when there is something for this module to do. Measured: 3 on 2.1.263
+      // and 2.1.266 both before and after patching, 0 on 2.1.267.
+      //
+      // This is stricter than the version gate, not looser. A memo upstream
+      // *reshaped* rather than removed still trips the probe, so it falls
+      // through to the checks below and fails, where waiving on the exact
+      // patterns alone would have passed it silently.
+      const anyViewportMemo =
+        /\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
+      if ((content.match(anyViewportMemo) ?? []).length === 0) {
         return forcedMatches.length === 0 && staleMatches.length === 0
           ? null
-          : "unexpected handle-keyed viewport memo on a bundle that predates it";
+          : "forced viewport reads present in a bundle with no handle-keyed viewport memo";
       }
 
       if (staleMatches.length > 0) {
@@ -1516,8 +1520,12 @@ const CHECKS: Check[] = [
       // the line never changes. Producer without consumer renders nothing;
       // consumer without producer renders nothing. Neither is visible from a
       // marker count.
+      // Both spellings of the pre-compaction figure have to be present: the
+      // result's own preCompactTokenCount and compactMetadata.preTokens, which
+      // is what 2.1.267 reads. Checking only one would pass a build that had
+      // silently lost the other era's source.
       const producer =
-        /displayText:\(globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{let __cc_a=__cc_r\?\.preCompactTokenCount,__cc_b=__cc_r\?\.boundaryMarker\?\.compactMetadata\?\.postTokens;/;
+        /displayText:\(globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{let __cc_m=__cc_r\?\.boundaryMarker\?\.compactMetadata,__cc_a=__cc_r\?\.preCompactTokenCount\?\?__cc_m\?\.preTokens,__cc_b=__cc_m\?\.postTokens;/;
       if (!producer.test(content)) {
         return "the saving is not computed at the compact command's displayText site";
       }
@@ -1530,8 +1538,11 @@ const CHECKS: Check[] = [
       // If a future release splits them across chunks the value silently
       // becomes undefined at runtime and the segment disappears with every
       // text check still green, so assert they are still one expression.
+      // The spread argument is `<local>.result` up to 2.1.266 and a bare local
+      // from 2.1.267, so the suffix is optional here for the same reason it is
+      // optional in the patch module's own anchor.
       const wired =
-        /globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{[\s\S]{0,400}?\}\)\(([A-Za-z_$][\w$]*)\.result\),[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\)/;
+        /globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{[\s\S]{0,400}?\}\)\(([A-Za-z_$][\w$]*(?:\.result)?)\),[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\)/;
       return wired.test(content)
         ? null
         : "the computed saving is no longer sequenced with the renderer call";

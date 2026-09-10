@@ -32,6 +32,17 @@ function modelsUsedFixture(source = fixture) {
   );
 }
 
+// 2.1.267 appended `handback` and `handbackInterim` to the options object.
+// Pinning the closing brace straight after `suppressTelemetry:<ident>` took
+// this module from four candidates to three and zero patched, which blocked the
+// 2.1.267 release — every downstream anchor is built from this one match.
+function handbackFixture(source = fixture) {
+  return source.replace(
+    "let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});",
+    "let oe=RTy(s,e,g),de=fCs(oe,e,{...n,modelsUsed:_},{suppressTelemetry:ee,handback:ha?void 0:V9(y.get(e),e),handbackInterim:ee});"
+  );
+}
+
 function renamedFixture() {
   const renames = [
     ["fQn", "uQn"],
@@ -258,6 +269,20 @@ test("matches renamed function, parameter, and seam locals", () => {
   const tracker = context.uQn();
   context.pQn(tracker, assistant("renamed", { input_tokens: 17, output_tokens: 4 }));
   assert.equal(context.dQn(tracker), 21);
+});
+
+test("accepts the 2.1.267 handback fields on the completion options object", () => {
+  const source = handbackFixture();
+  const result = patchBackgroundAgentUsage(source);
+
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  // The options object is re-emitted verbatim, so the new fields survive.
+  assert.match(
+    result.content,
+    /\{suppressTelemetry:ee,handback:ha\?void 0:V9\(y\.get\(e\),e\),handbackInterim:ee\}\);__calicoRefreshAgentUsage\(re,oe\),Z0u\(e,a9r\(re\),s\);/
+  );
+  assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
 });
 
 test("accepts the 2.1.212 modelsUsed completion variant without changing metadata", () => {

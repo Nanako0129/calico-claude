@@ -418,6 +418,60 @@ test("matches renamed wrapper, terminal, selector, and clone locals", () => {
   assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
 });
 
+// 2.1.267 inserted a plain field after the effort spread
+// (`,perTurnEffort:Ei,...{}`). The trailing run accepted only `,...{…}`
+// spreads, so this took the module from six candidates to five and zero
+// patched, blocking the 2.1.267 release.
+// The relaxed trailing run has to consume one field per repetition. Written as
+// `(?:,(?:\.\.\.)?[^{}]*(?:\{[^{}]*\})?)*` the field body could itself contain
+// commas, so a near-match that never reaches the closing `};` could be
+// partitioned exponentially: measured 76ms at 20 fields, 1.4s at 24, doubling
+// per field. Since the same pattern is in the verifier, the next upstream drift
+// would have hung the patch pipeline instead of failing it. Excluding commas
+// from the body makes each repetition unambiguous.
+//
+// The bound is generous on purpose: this asserts the absence of exponential
+// backtracking, not a throughput target.
+test("a near-matching wrapper tail fails fast instead of backtracking", () => {
+  const fields = Array.from({ length: 40 }, (_, i) => `,f${i}:v${i}`).join("");
+  const source = batchCommittedUsageFixture().replace(
+    "...Ie!==void 0&&{effort:Ie}};",
+    `...Ie!==void 0&&{effort:Ie}${fields} /* never closes */`
+  );
+
+  const started = Date.now();
+  const result = patchStatuslineCommittedUsage(source);
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed < 2000, `patching a near-match took ${elapsed}ms; the tail is backtracking`);
+  // And it fails closed rather than matching something else.
+  assert.equal(result.patched, 0);
+});
+
+// Exercised on the batch shape because that is the one 2.1.267 actually
+// carries. The older effort-only wrapper has the same narrow trailing run, but
+// no drift has been measured there, so it is left as it is.
+test("accepts a plain field appended after the effort spread", () => {
+  const source = batchCommittedUsageFixture().replace(
+    "...Ie!==void 0&&{effort:Ie}};",
+    "...Ie!==void 0&&{effort:Ie},perTurnEffort:Ie,...{}};"
+  );
+  assert.notEqual(source, batchCommittedUsageFixture());
+
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+
+  // The new field is carried across untouched, right after the injected cell.
+  assert.match(
+    result.content,
+    /__calicoUsageState:\{committed:!1,usage:null\},\.\.\._&&\{advisorModel:_\},\.\.\.Ie!==void 0&&\{effort:Ie\},perTurnEffort:Ie/
+  );
+  assert.equal(completed[0].effort, "high");
+  assert.equal(completed[0].perTurnEffort, "high");
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
 test("preserves the 2.1.212 effort metadata wrapper", () => {
   const source = effortCommittedUsageFixture();
   const { context, result } = loadCommittedFixture(source);

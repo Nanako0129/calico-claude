@@ -2646,19 +2646,36 @@ function patchCompactTokensSaved(content) {
   // also the name of 111 other functions in the bundle. It is therefore never
   // matched by name: the call site below is what identifies it, and the second
   // pattern keys off the string literal, which is unique bundle-wide.
+  // The spread is captured whole, not assumed to be `<local>.result`. 2.1.267
+  // restructured the compact command around a `compact:` callback and now
+  // spreads the compaction result directly:
+  //
+  //   2.1.266  compactionResult:{...c.result,userDisplayMessage:y},displayText:w(e,y)
+  //   2.1.267  compactionResult:{...k,userDisplayMessage:M},displayText:O(e,M),result:{…}
+  //
+  // Requiring the `.result` suffix took this to zero candidates. The render
+  // anchor was untouched, so the module reported 1 candidate and refused to
+  // apply — the atomicity guard doing its job rather than shipping a producer
+  // with no consumer.
   const callSitePattern =
-    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*)\.result,userDisplayMessage:([A-Za-z_$][\w$]*)\},displayText:([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),\2\)/g;
+    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},displayText:([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),\2\)/g;
 
-  // Reads the result object rather than the caller's `preTokens`/`postTokens`
-  // locals: those are declared ~700 characters earlier and only named together
-  // in the `finally` telemetry call, so binding them would mean matching across
-  // the whole function body. `u.result` is right here in the same expression.
-  // Optional chaining throughout because the boundary marker is only stamped
-  // when `subtype === "compact_boundary"`; a missing number returns undefined
-  // and the segment is omitted rather than rendering `NaN`.
+  // Reads the compaction result rather than the caller's `preTokens`/
+  // `postTokens` locals: those are declared ~700 characters earlier and only
+  // named together in the `finally` telemetry call, so binding them would mean
+  // matching across the whole function body. The spread argument is right here
+  // in the same expression.
+  //
+  // Two spellings of the pre-compaction figure, because 2.1.267 moved it: the
+  // result's own `preCompactTokenCount`, and `compactMetadata.preTokens`, which
+  // is what the new code reads (`tokensBefore:T?.preTokens`). Optional chaining
+  // throughout because the boundary marker only carries compactMetadata when
+  // its subtype is a compact boundary; a missing number omits the segment
+  // rather than rendering `NaN`.
   const summary =
-    '((__cc_r)=>{let __cc_a=__cc_r?.preCompactTokenCount,' +
-    '__cc_b=__cc_r?.boundaryMarker?.compactMetadata?.postTokens;' +
+    '((__cc_r)=>{let __cc_m=__cc_r?.boundaryMarker?.compactMetadata,' +
+    '__cc_a=__cc_r?.preCompactTokenCount??__cc_m?.preTokens,' +
+    '__cc_b=__cc_m?.postTokens;' +
     'if(!Number.isFinite(__cc_a)||!Number.isFinite(__cc_b)||__cc_a<=__cc_b)return;' +
     'let __cc_n=__cc_a-__cc_b;' +
     'return"\\u00B7 saved "+(__cc_n>=1e6?(__cc_n/1e6).toFixed(1)+"M":' +
@@ -2692,9 +2709,12 @@ function patchCompactTokensSaved(content) {
 
   let output = content.replace(
     callSitePattern,
-    (full, resultVar, displayVar, renderFn, ctxVar) =>
-      `compactionResult:{...${resultVar}.result,userDisplayMessage:${displayVar}},` +
-      `displayText:(globalThis.__calico_compact_saved=${summary}(${resultVar}.result),` +
+    // `spreadExpr` is the whole spread argument as it appears upstream —
+    // `<local>.result` up to 2.1.266, a bare `<local>` from 2.1.267 — so it is
+    // re-emitted verbatim and never has a suffix appended to it.
+    (full, spreadExpr, displayVar, renderFn, ctxVar) =>
+      `compactionResult:{...${spreadExpr},userDisplayMessage:${displayVar}},` +
+      `displayText:(globalThis.__calico_compact_saved=${summary}(${spreadExpr}),` +
       `${renderFn}(${ctxVar},${displayVar}))`
   );
 
@@ -2793,7 +2813,15 @@ function patchBackgroundAgentUsage(content) {
     "g"
   );
   const modelsUsedCompletionPattern = new RegExp(
-    `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,\\{\\.\\.\\.(${identifierPattern}),modelsUsed:(${identifierPattern})\\},\\{suppressTelemetry:(${identifierPattern})\\}\\);`,
+    // The options object is an anchor, not a contract: 2.1.267 appended
+    // `handback` and `handbackInterim` to it, and pinning the closing brace
+    // straight after `suppressTelemetry:<ident>` took this from a match to
+    // none — which zeroed the whole module, since every downstream anchor is
+    // built from these captures. Only groups 1, 3, 4 and 5 are consumed, so
+    // accept whatever else upstream puts in there. One level of nesting is
+    // allowed because 2.1.267's `handback` value already contains calls, and
+    // the next field may contain an object literal.
+    `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,\\{\\.\\.\\.(${identifierPattern}),modelsUsed:(${identifierPattern})\\},\\{suppressTelemetry:(${identifierPattern})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);`,
     "g"
   );
   const progressMatches = progressPattern ? [...content.matchAll(progressPattern)] : [];
@@ -2960,8 +2988,14 @@ function patchStatuslineCommittedUsage(content) {
   // Neither is something the replacement needs; both are matched loosely and
   // re-emitted from the matched text, so upstream can keep adding to either
   // position. The bounded runs keep this from swallowing an unrelated object.
+  //
+  // The trailing run after `effort` used to accept only `,...{…}` spreads.
+  // 2.1.267 inserted a plain field there (`,perTurnEffort:Ei,...{}`), which
+  // took this from a match to none and with it the whole module, since every
+  // downstream anchor is built from this one. Nothing reads that group — only
+  // 10, 15 and 16 are consumed — so it accepts either form now.
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{}]*(?:\\{[^{}]*\\})?)*?),requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,\\.\\.\\.\\{[^{}]*\\})*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
   const terminalPattern = new RegExp(
@@ -3366,6 +3400,42 @@ function patchStickyPromptHeader(content) {
   const candidates = matches.length;
 
   if (candidates === 0) {
+    // Absence of the exact memo shape has two very different causes, and
+    // skipping on both is how this module would go quiet without anyone
+    // noticing. 2.1.267 stopped memoizing these reads — nothing to force, skip
+    // is correct. A future release that merely reshapes the memo would look
+    // identical to the exact pattern while the header bug came back. This
+    // broader probe matches a handle-keyed memo of a viewport read in several
+    // shapes (measured: 3 on 2.1.263 and 2.1.266, 0 on 2.1.267), so those
+    // reshapes report zero patched and fail --assert-all instead.
+    //
+    // Requiring `if(` immediately before the cache local is what keeps this
+    // from firing on an already-patched bundle: the forced form reads
+    // `if(!0||cache[N]!==x.handle)`, so re-running the patch still reports
+    // nothing to do. Measured on real bundles — unpatched 2.1.266: 3,
+    // patched 2.1.266: 0, 2.1.267 either way: 0. The verifier's copy of this
+    // probe deliberately omits the `if(` prefix, because there the question is
+    // whether a memo exists at all, patched or not.
+    //
+    // Known limit, stated rather than papered over. Both operands may be
+    // spelled `x.handle` or an aliased local, but the guard and the read must
+    // sit in one statement: the `[^;]` span stops at a semicolon, so a memo
+    // rewritten as `if(c[2]!==v.handle){let h=v.handle;x=h?.isSticky()…}`
+    // escapes and is waived. Widening the span to cross statements was tried
+    // and reverted — it let an unrelated unforced memo guard pair with an
+    // already-forced viewport read, which makes a correctly patched bundle
+    // report work outstanding and fails --assert-all on a good build. Blocking
+    // a healthy release is the worse direction, and this module's failure mode
+    // is a blank sticky header rather than a crash. A text scan cannot
+    // enumerate compiler output shapes; the property is decided by
+    // tests/sticky-prompt-header.test.js, which renders the component twice
+    // and checks the header actually re-publishes after a scroll.
+    const unpatchedViewportMemo =
+      /if\([A-Za-z_$][\w$]*\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
+    const reshaped = (content.match(unpatchedViewportMemo) ?? []).length;
+    if (reshaped > 0) {
+      return { content: original, candidates: reshaped, patched: 0 };
+    }
     return {
       content: original,
       candidates: 0,
