@@ -620,7 +620,20 @@ function ownedByStickyComponent(content, index) {
   }
   const moduleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, index);
   const floor = Math.max(moduleStart === -1 ? 0 : moduleStart, index - STICKY_OWNER_WINDOW);
-  return content.slice(floor, index).includes("setStickyPrompt");
+  const setter = content.lastIndexOf("setStickyPrompt", index);
+  if (setter < floor) {
+    return false;
+  }
+  // Proximity alone reads through a closing brace: an unrelated function
+  // placed after this component, carrying the same three memos, would see the
+  // setter that belongs to the component before it and be patched instead —
+  // reported as success, with the real header left frozen. A `function ` token
+  // between the two means the match is in some later function. Measured on
+  // 2.1.263 and 2.1.266: no such token separates the setter from any of the
+  // three memos. A nested helper declared before the setter is unaffected; one
+  // declared between them would be rejected, which blocks the build loudly
+  // rather than patching the wrong component.
+  return !content.slice(setter, index).includes("function ");
 }
 
 // Index of the `}` that closes the `{` at openIndex, or -1.

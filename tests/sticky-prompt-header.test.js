@@ -275,6 +275,24 @@ test("a match owned by no function is skipped without scanning the bundle", () =
   assert.ok(elapsed < 2000, `owner lookup took ${elapsed}ms; the walk back is not bounded`);
 });
 
+// Proximity alone reads straight through a closing brace. An unrelated
+// function placed after the component, carrying the same three memos, saw the
+// setter belonging to the component before it — and was patched instead, 3/3,
+// with the verifier returning success while the real header stayed frozen.
+// That is the mirror of the forward-slice defect: swapping which direction the
+// window runs only moves which ordering breaks.
+test("refuses memos in a later function that borrow the preceding setter", () => {
+  const misowned = `${VERSION_METADATA}
+function km(XE){let{setStickyPrompt:dr}=Or();dr(null);return 1}
+function other(XE){let Eo=_(36),{scrollViewport:ot}=XE;let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];let aS;if(Eo[4]!==ot.handle)aS=ot.handle?.getScrollTop()??0,Eo[4]=ot.handle,Eo[5]=aS;else aS=Eo[5];let lS;if(Eo[6]!==ot.handle)lS=ot.handle?.getPendingDelta()??0,Eo[6]=ot.handle,Eo[7]=lS;else lS=Eo[7];return iS+aS+lS}
+`;
+  const result = patchStickyPromptHeader(misowned);
+  assert.equal(result.patched, 0, "must not patch a component that is not the sticky one");
+  assert.equal(result.content, misowned);
+  // And the verifier must not call that bundle clean either.
+  assert.notEqual(evaluatePatchModule("sticky-prompt-header", misowned), null);
+});
+
 test("re-running the patch does not force a guard twice", () => {
   const once = patchStickyPromptHeader(memoizedFixture).content;
   const twice = patchStickyPromptHeader(once);
