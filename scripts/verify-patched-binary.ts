@@ -1451,11 +1451,21 @@ const CHECKS: Check[] = [
       // The header is published through this setter, and the literal occurs
       // twice in the whole bundle. Without it the memo shape alone would accept
       // a forced guard in any other compiled component reading a `.handle`.
-      const owner = content.lastIndexOf("function ", forcedMatches[0].index ?? -1);
+      //
+      // Bounded to the enclosing function, like the two ownership tests above.
+      // As a forward slice this was the last way through: an unrelated earlier
+      // component carrying three already-forced reads satisfied every check
+      // above, and the slice then ran past its closing brace to find the real
+      // component's `setStickyPrompt`. Measured against that shape — forced
+      // reads in one function, an aliased still-frozen memo in the sticky
+      // component after it — this returned null and would have shipped the
+      // header bug reported as ok.
+      //
+      // Every forced read must be owned, not just the first: three reads
+      // sharing a cache local can still be split across functions.
       if (
-        owner === -1 ||
-        !boundedToModule(content.slice(owner, (forcedMatches[0].index ?? 0) + 4000)).includes(
-          "setStickyPrompt"
+        !forcedMatches.every((match) =>
+          enclosingFunctionBody(content, match.index ?? -1).includes("setStickyPrompt")
         )
       ) {
         return "forced viewport reads are not inside the sticky-prompt component";

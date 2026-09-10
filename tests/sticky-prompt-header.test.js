@@ -183,6 +183,24 @@ for (const [order, unrelated] of [
   });
 }
 
+// The last way through the verifier, and the one that ships the bug rather
+// than blocking a good build: three already-forced reads in an unrelated
+// earlier function satisfy every check — count, kinds, shared cache and
+// viewport locals — while the real sticky component carries an aliased memo
+// that is still frozen. As a forward slice the final ownership test then ran
+// past the unrelated function's closing brace and found the real component's
+// `setStickyPrompt`, returning success.
+test("verifier rejects forced reads that belong to another component", () => {
+  const misowned = `${VERSION_METADATA}
+function other(XE){let Eo=_(36),{scrollViewport:ot}=XE,iS;if(!0||Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];let aS;if(!0||Eo[4]!==ot.handle)aS=ot.handle?.getScrollTop()??0,Eo[4]=ot.handle,Eo[5]=aS;else aS=Eo[5];let lS;if(!0||Eo[6]!==ot.handle)lS=ot.handle?.getPendingDelta()??0,Eo[6]=ot.handle,Eo[7]=lS;else lS=Eo[7];return iS}
+function km(XE){let Fo=_(36),{scrollViewport:vp}=XE,{setStickyPrompt:dr}=Or(),hh=vp.handle,q;if(Fo[2]!==hh)q=hh?.isSticky()??!0,Fo[2]=hh,Fo[3]=q;else q=Fo[3];dr(q?null:1);return q}
+`;
+  assert.equal(
+    evaluatePatchModule("sticky-prompt-header", misowned),
+    "forced viewport reads are not inside the sticky-prompt component"
+  );
+});
+
 test("re-running the patch does not force a guard twice", () => {
   const once = patchStickyPromptHeader(memoizedFixture).content;
   const twice = patchStickyPromptHeader(once);
