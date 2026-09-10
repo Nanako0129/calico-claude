@@ -81,6 +81,44 @@ test("declines bundles whose viewport reads were never memoized", () => {
   assert.equal(evaluatePatchModule("sticky-prompt-header", plainFixture), null);
 });
 
+// 2.1.267 deleted the memoized component outright, so a recent bundle can look
+// exactly like a pre-2.1.247 one. The verifier used to waive on a version gate
+// (">= 2.1.247 means the memo is present"), which cannot express "upstream took
+// it away again" — it demanded three forced reads from a bundle with nothing to
+// force and blocked the release.
+test("waives a recent bundle whose viewport memo upstream removed", () => {
+  const removed = plainFixture.replace("2.1.246", "2.1.267");
+  assert.ok(removed.includes('VERSION:"2.1.267"'));
+
+  const result = patchStickyPromptHeader(removed);
+  assert.equal(result.candidates, 0);
+  assert.equal(result.patched, 0);
+  assert.equal(result.skipped, true);
+  assert.equal(evaluatePatchModule("sticky-prompt-header", removed), null);
+});
+
+// The waiver keys off the bundle's shape, not its version, so it has to tell
+// "removed" apart from "reshaped". A reshape is the dangerous one: the exact
+// pattern misses, the header bug is back, and waiving on absence alone would
+// ship it silently. Here the two cache writes are swapped, which the exact
+// pattern rejects while the read is still memoized on the handle.
+test("refuses a reshaped viewport memo instead of waiving on it", () => {
+  const reshaped = memoizedFixture.replace(
+    "iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;",
+    "iS=ot.handle?.isSticky()??!0,Eo[3]=iS,Eo[2]=ot.handle;"
+  );
+  assert.notEqual(reshaped, memoizedFixture);
+
+  const result = patchStickyPromptHeader(reshaped);
+  // Loud, not silent: non-zero candidates with zero patched fails --assert-all
+  // and names this module, where `skipped: true` would have passed the build.
+  assert.equal(result.patched, 0);
+  assert.notEqual(result.skipped, true);
+  assert.ok(result.candidates > 0, `expected a reshaped memo to be seen, got ${result.candidates}`);
+  assert.equal(result.content, reshaped);
+  assert.notEqual(evaluatePatchModule("sticky-prompt-header", reshaped), null);
+});
+
 test("re-running the patch does not force a guard twice", () => {
   const once = patchStickyPromptHeader(memoizedFixture).content;
   const twice = patchStickyPromptHeader(once);

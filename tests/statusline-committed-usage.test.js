@@ -418,6 +418,34 @@ test("matches renamed wrapper, terminal, selector, and clone locals", () => {
   assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
 });
 
+// 2.1.267 inserted a plain field after the effort spread
+// (`,perTurnEffort:Ei,...{}`). The trailing run accepted only `,...{…}`
+// spreads, so this took the module from six candidates to five and zero
+// patched, blocking the 2.1.267 release.
+// Exercised on the batch shape because that is the one 2.1.267 actually
+// carries. The older effort-only wrapper has the same narrow trailing run, but
+// no drift has been measured there, so it is left as it is.
+test("accepts a plain field appended after the effort spread", () => {
+  const source = batchCommittedUsageFixture().replace(
+    "...Ie!==void 0&&{effort:Ie}};",
+    "...Ie!==void 0&&{effort:Ie},perTurnEffort:Ie,...{}};"
+  );
+  assert.notEqual(source, batchCommittedUsageFixture());
+
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+
+  // The new field is carried across untouched, right after the injected cell.
+  assert.match(
+    result.content,
+    /__calicoUsageState:\{committed:!1,usage:null\},\.\.\._&&\{advisorModel:_\},\.\.\.Ie!==void 0&&\{effort:Ie\},perTurnEffort:Ie/
+  );
+  assert.equal(completed[0].effort, "high");
+  assert.equal(completed[0].perTurnEffort, "high");
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
 test("preserves the 2.1.212 effort metadata wrapper", () => {
   const source = effortCommittedUsageFixture();
   const { context, result } = loadCommittedFixture(source);
