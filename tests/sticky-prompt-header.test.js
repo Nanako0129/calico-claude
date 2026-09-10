@@ -100,24 +100,45 @@ test("waives a recent bundle whose viewport memo upstream removed", () => {
 // The waiver keys off the bundle's shape, not its version, so it has to tell
 // "removed" apart from "reshaped". A reshape is the dangerous one: the exact
 // pattern misses, the header bug is back, and waiving on absence alone would
-// ship it silently. Here the two cache writes are swapped, which the exact
-// pattern rejects while the read is still memoized on the handle.
-test("refuses a reshaped viewport memo instead of waiving on it", () => {
-  const reshaped = memoizedFixture.replace(
-    "iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;",
-    "iS=ot.handle?.isSticky()??!0,Eo[3]=iS,Eo[2]=ot.handle;"
-  );
-  assert.notEqual(reshaped, memoizedFixture);
+// ship it silently.
+//
+// Two reshapes, because they fail differently. Swapping the cache writes keeps
+// the read spelled `ot.handle?.isSticky()`; hoisting the handle into a local
+// changes the receiver itself, which the first version of this probe could not
+// see — it required the receiver to end in `.handle`, so an aliased memo stayed
+// frozen while both the patcher and the verifier reported success. That case is
+// one the version gate this replaced would have caught, so the probe has to
+// carry it rather than the claim being that shape checks dominate version ones.
+for (const [name, reshaped] of [
+  [
+    "swapped cache writes",
+    memoizedFixture.replace(
+      "iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;",
+      "iS=ot.handle?.isSticky()??!0,Eo[3]=iS,Eo[2]=ot.handle;"
+    ),
+  ],
+  [
+    "handle hoisted into a local",
+    memoizedFixture.replace(
+      "let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,",
+      "let hA=ot.handle,iS;if(Eo[2]!==ot.handle)iS=hA?.isSticky()??!0,"
+    ),
+  ],
+]) {
+  test(`refuses a reshaped viewport memo instead of waiving on it: ${name}`, () => {
+    assert.notEqual(reshaped, memoizedFixture, `${name} fixture did not change`);
 
-  const result = patchStickyPromptHeader(reshaped);
-  // Loud, not silent: non-zero candidates with zero patched fails --assert-all
-  // and names this module, where `skipped: true` would have passed the build.
-  assert.equal(result.patched, 0);
-  assert.notEqual(result.skipped, true);
-  assert.ok(result.candidates > 0, `expected a reshaped memo to be seen, got ${result.candidates}`);
-  assert.equal(result.content, reshaped);
-  assert.notEqual(evaluatePatchModule("sticky-prompt-header", reshaped), null);
-});
+    const result = patchStickyPromptHeader(reshaped);
+    // Loud, not silent: non-zero candidates with zero patched fails
+    // --assert-all and names this module, where `skipped: true` would have
+    // passed the build.
+    assert.equal(result.patched, 0);
+    assert.notEqual(result.skipped, true);
+    assert.ok(result.candidates > 0, `expected a reshaped memo to be seen, got ${result.candidates}`);
+    assert.equal(result.content, reshaped);
+    assert.notEqual(evaluatePatchModule("sticky-prompt-header", reshaped), null);
+  });
+}
 
 test("re-running the patch does not force a guard twice", () => {
   const once = patchStickyPromptHeader(memoizedFixture).content;
