@@ -57,6 +57,26 @@ function boundedToModule(segment: string): string {
   return boundary === -1 ? segment : segment.slice(0, boundary);
 }
 
+// Body of the function containing `index`, or "" when `index` is not inside
+// one. Kept in lockstep with patch-claude-display.ts: ownership tests cannot
+// use a fixed-length forward slice, which runs past the matched function's
+// closing brace and attributes a neighbouring function's contents to this one.
+function enclosingFunctionBody(content: string, index: number): string {
+  const start = content.lastIndexOf("function ", index);
+  if (start === -1) {
+    return "";
+  }
+  const open = content.indexOf("{", start);
+  if (open === -1 || open > index) {
+    return "";
+  }
+  const end = closingBraceIndex(content, open);
+  if (end === -1 || end < index) {
+    return "";
+  }
+  return content.slice(start, end + 1);
+}
+
 function inSameModule(content: string, first: number, second: number): boolean {
   if (first < 0 || second < 0) {
     return false;
@@ -1404,15 +1424,9 @@ const CHECKS: Check[] = [
       // component, so the scoping costs nothing.
       const anyViewportMemo =
         /\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
-      const ownedViewportMemos = [...content.matchAll(anyViewportMemo)].filter((match) => {
-        const functionStart = content.lastIndexOf("function ", match.index ?? -1);
-        if (functionStart === -1) {
-          return false;
-        }
-        return boundedToModule(
-          content.slice(functionStart, (match.index ?? 0) + 4000)
-        ).includes("setStickyPrompt");
-      });
+      const ownedViewportMemos = [...content.matchAll(anyViewportMemo)].filter((match) =>
+        enclosingFunctionBody(content, match.index ?? -1).includes("setStickyPrompt")
+      );
       if (ownedViewportMemos.length === 0) {
         return forcedMatches.length === 0 && staleMatches.length === 0
           ? null

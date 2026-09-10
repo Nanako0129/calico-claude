@@ -159,18 +159,29 @@ for (const [name, reshaped] of [
 // That would report work outstanding on a bundle whose sticky reads are
 // genuinely unmemoized — a false --assert-all failure on a healthy build, the
 // same direction of harm that got the statement-boundary widening reverted.
-test("an unrelated component's memo does not count as a reshaped sticky memo", () => {
-  const unrelated = `${plainFixture}
-function toast(XE){let Eo=_(4),{state:st}=XE,v;if(Eo[2]!==st)v=st?.isSticky()??!0,Eo[2]=st,Eo[3]=v;else v=Eo[3];return v}
-`;
-  const result = patchStickyPromptHeader(unrelated);
-  // Still a skip: the sticky component's reads are unmemoized here.
-  assert.equal(result.candidates, 0);
-  assert.equal(result.patched, 0);
-  assert.equal(result.skipped, true);
-  assert.equal(result.content, unrelated);
-  assert.equal(evaluatePatchModule("sticky-prompt-header", unrelated), null);
-});
+//
+// Both orderings, because the first version of the ownership test was a
+// fixed-length forward slice from the function start. That runs past the
+// matched function's closing brace, so an unrelated memo placed *before* the
+// sticky component found its `setStickyPrompt` and was attributed to it —
+// candidates 1, patched 0, no skip. The other ordering passed, which is why
+// only testing one of them missed it.
+const unrelatedMemo =
+  "function toast(XE){let Eo=_(4),{state:st}=XE,v;if(Eo[2]!==st)v=st?.isSticky()??!0,Eo[2]=st,Eo[3]=v;else v=Eo[3];return v}";
+for (const [order, unrelated] of [
+  ["unrelated memo after the sticky component", `${plainFixture}\n${unrelatedMemo}\n`],
+  ["unrelated memo before the sticky component", `${VERSION_METADATA}\n${unrelatedMemo}\n${plainFixture.split("\n").slice(1).join("\n")}`],
+]) {
+  test(`an unrelated component's memo does not count as a reshaped sticky memo: ${order}`, () => {
+    const result = patchStickyPromptHeader(unrelated);
+    // Still a skip: the sticky component's reads are unmemoized here.
+    assert.equal(result.candidates, 0);
+    assert.equal(result.patched, 0);
+    assert.equal(result.skipped, true);
+    assert.equal(result.content, unrelated);
+    assert.equal(evaluatePatchModule("sticky-prompt-header", unrelated), null);
+  });
+}
 
 test("re-running the patch does not force a guard twice", () => {
   const once = patchStickyPromptHeader(memoizedFixture).content;

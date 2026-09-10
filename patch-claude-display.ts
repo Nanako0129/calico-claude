@@ -594,6 +594,29 @@ function boundedToModule(segment) {
   return boundary === -1 ? segment : segment.slice(0, boundary);
 }
 
+// Body of the function containing `index`, or "" when `index` is not inside
+// one. Used for ownership tests — "is this match part of the component that
+// does X" — which a fixed-length forward slice cannot answer: it runs past the
+// matched function's closing brace into whatever follows, so a neighbouring
+// function's contents get attributed to this one. That produced a false
+// `--assert-all` failure on a healthy bundle when an unrelated memo happened to
+// sit within 4000 characters before the sticky-prompt component.
+function enclosingFunctionBody(content, index) {
+  const start = content.lastIndexOf("function ", index);
+  if (start === -1) {
+    return "";
+  }
+  const open = content.indexOf("{", start);
+  if (open === -1 || open > index) {
+    return "";
+  }
+  const end = closingBraceIndex(content, open);
+  if (end === -1 || end < index) {
+    return "";
+  }
+  return content.slice(start, end + 1);
+}
+
 // Index of the `}` that closes the `{` at openIndex, or -1.
 function closingBraceIndex(text, openIndex) {
   let depth = 0;
@@ -3443,15 +3466,9 @@ function patchStickyPromptHeader(content) {
     // scoping costs nothing in match count.
     const unpatchedViewportMemo =
       /if\([A-Za-z_$][\w$]*\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
-    const reshaped = [...content.matchAll(unpatchedViewportMemo)].filter((match) => {
-      const functionStart = content.lastIndexOf("function ", match.index ?? -1);
-      if (functionStart === -1) {
-        return false;
-      }
-      return boundedToModule(
-        content.slice(functionStart, (match.index ?? 0) + 4000)
-      ).includes("setStickyPrompt");
-    }).length;
+    const reshaped = [...content.matchAll(unpatchedViewportMemo)].filter((match) =>
+      enclosingFunctionBody(content, match.index ?? -1).includes("setStickyPrompt")
+    ).length;
     if (reshaped > 0) {
       return { content: original, candidates: reshaped, patched: 0 };
     }
@@ -3479,7 +3496,7 @@ function patchStickyPromptHeader(content) {
   const owningFunction =
     owningFunctionStart === undefined || owningFunctionStart === -1
       ? ""
-      : boundedToModule(content.slice(owningFunctionStart, (first.index ?? 0) + 4000));
+      : enclosingFunctionBody(content, first.index ?? -1);
 
   if (
     candidates !== 3 ||
