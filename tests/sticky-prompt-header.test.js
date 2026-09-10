@@ -216,6 +216,32 @@ function km(XE){function helper(a){return a+1}let Eo=_(36),{scrollViewport:ot}=X
   assert.equal(evaluatePatchModule("sticky-prompt-header", result.content), null);
 });
 
+// A destructured parameter puts a brace before the body's, and its match
+// closes before any statement. Taking it as the body brace made the owner
+// lookup decide the function does not contain its own code — which fails in
+// both directions: a healthy component reports 3/0 and blocks the build, and a
+// reshaped one is waived and ships the frozen header.
+test("finds the body brace past a destructured parameter", () => {
+  const destructured = `${VERSION_METADATA}
+function km({scrollViewport:ot}){let Eo=_(36),{setStickyPrompt:dr}=Or();let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];let aS;if(Eo[4]!==ot.handle)aS=ot.handle?.getScrollTop()??0,Eo[4]=ot.handle,Eo[5]=aS;else aS=Eo[5];let lS;if(Eo[6]!==ot.handle)lS=ot.handle?.getPendingDelta()??0,Eo[6]=ot.handle,Eo[7]=lS;else lS=Eo[7];dr(iS?null:aS+lS);return iS}
+`;
+  const result = patchStickyPromptHeader(destructured);
+  assert.equal(result.candidates, 3);
+  assert.equal(result.patched, 3);
+  assert.equal(evaluatePatchModule("sticky-prompt-header", result.content), null);
+});
+
+test("refuses a reshaped memo in a component with a destructured parameter", () => {
+  const reshaped = `${VERSION_METADATA}
+function km({scrollViewport:ot}){let Eo=_(36),{setStickyPrompt:dr}=Or(),hh=ot.handle;let iS;if(Eo[2]!==hh)iS=hh?.isSticky()??!0,Eo[2]=hh,Eo[3]=iS;else iS=Eo[3];dr(iS?null:1);return iS}
+`;
+  const result = patchStickyPromptHeader(reshaped);
+  assert.equal(result.patched, 0);
+  assert.notEqual(result.skipped, true);
+  assert.ok(result.candidates > 0);
+  assert.notEqual(evaluatePatchModule("sticky-prompt-header", reshaped), null);
+});
+
 // The walk back is floored at the enclosing Bun chunk, so a match owned by no
 // function cannot drag the scan through the whole bundle.
 test("a match owned by no function is skipped without scanning the bundle", () => {

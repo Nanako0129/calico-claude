@@ -61,6 +61,31 @@ function boundedToModule(segment: string): string {
 // one. Kept in lockstep with patch-claude-display.ts: ownership tests cannot
 // use a fixed-length forward slice, which runs past the matched function's
 // closing brace and attributes a neighbouring function's contents to this one.
+// Index of the `{` that opens the body of the `function ` at `start`, or -1.
+// Not `indexOf("{")`: a destructured parameter puts a brace first, and its
+// match closes before the body ever begins, so the owner lookup would decide
+// the function does not contain its own statements.
+function functionBodyBrace(content: string, start: number): number {
+  const paren = content.indexOf("(", start);
+  if (paren === -1) {
+    return -1;
+  }
+  let depth = 0;
+  for (let i = paren; i < content.length; i += 1) {
+    const char = content[i];
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        const brace = content.indexOf("{", i);
+        return brace === -1 ? -1 : brace;
+      }
+    }
+  }
+  return -1;
+}
+
 function enclosingFunctionBody(content: string, index: number): string {
   if (index < 0) {
     return "";
@@ -74,7 +99,7 @@ function enclosingFunctionBody(content: string, index: number): string {
   const floor = moduleStart === -1 ? 0 : moduleStart;
   let start = content.lastIndexOf("function ", index);
   while (start >= floor && start !== -1) {
-    const open = content.indexOf("{", start);
+    const open = functionBodyBrace(content, start);
     if (open !== -1 && open <= index) {
       const end = closingBraceIndex(content, open);
       if (end !== -1 && end >= index) {

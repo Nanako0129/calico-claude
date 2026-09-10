@@ -601,6 +601,31 @@ function boundedToModule(segment) {
 // function's contents get attributed to this one. That produced a false
 // `--assert-all` failure on a healthy bundle when an unrelated memo happened to
 // sit within 4000 characters before the sticky-prompt component.
+// Index of the `{` that opens the body of the `function ` at `start`, or -1.
+// Not `indexOf("{")`: a destructured parameter puts a brace first, and its
+// match closes before the body ever begins, so the owner lookup would decide
+// the function does not contain its own statements.
+function functionBodyBrace(content, start) {
+  const paren = content.indexOf("(", start);
+  if (paren === -1) {
+    return -1;
+  }
+  let depth = 0;
+  for (let i = paren; i < content.length; i += 1) {
+    const char = content[i];
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        const brace = content.indexOf("{", i);
+        return brace === -1 ? -1 : brace;
+      }
+    }
+  }
+  return -1;
+}
+
 function enclosingFunctionBody(content, index) {
   if (index < 0) {
     return "";
@@ -614,7 +639,7 @@ function enclosingFunctionBody(content, index) {
   const floor = moduleStart === -1 ? 0 : moduleStart;
   let start = content.lastIndexOf("function ", index);
   while (start >= floor && start !== -1) {
-    const open = content.indexOf("{", start);
+    const open = functionBodyBrace(content, start);
     if (open !== -1 && open <= index) {
       const end = closingBraceIndex(content, open);
       if (end !== -1 && end >= index) {
