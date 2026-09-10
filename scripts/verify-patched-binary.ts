@@ -1393,7 +1393,7 @@ const CHECKS: Check[] = [
       // through to the checks below and fails, where waiving on the exact
       // patterns alone would have passed it silently.
       const anyViewportMemo =
-        /\[\d+\]!==[A-Za-z_$][\w$]*\.handle\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
+        /\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
       if ((content.match(anyViewportMemo) ?? []).length === 0) {
         return forcedMatches.length === 0 && staleMatches.length === 0
           ? null

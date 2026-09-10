@@ -3417,7 +3417,7 @@ function patchStickyPromptHeader(content) {
     // probe deliberately omits the `if(` prefix, because there the question is
     // whether a memo exists at all, patched or not.
     const unpatchedViewportMemo =
-      /if\([A-Za-z_$][\w$]*\[\d+\]!==[A-Za-z_$][\w$]*\.handle\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
+      /if\([A-Za-z_$][\w$]*\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
     const reshaped = (content.match(unpatchedViewportMemo) ?? []).length;
     if (reshaped > 0) {
       return { content: original, candidates: reshaped, patched: 0 };

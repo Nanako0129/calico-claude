@@ -118,10 +118,20 @@ for (const [name, reshaped] of [
     ),
   ],
   [
-    "handle hoisted into a local",
+    "handle hoisted into a local, guard still on the handle",
     memoizedFixture.replace(
       "let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,",
       "let hA=ot.handle,iS;if(Eo[2]!==ot.handle)iS=hA?.isSticky()??!0,"
+    ),
+  ],
+  [
+    // Both operands aliased. Broadening only the receiver left this one
+    // invisible, which is the same silent-skip failure one step further in:
+    // the guard has to be accepted in either spelling too.
+    "handle hoisted for both the guard and the read",
+    memoizedFixture.replace(
+      "let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,",
+      "let hA=ot.handle,iS;if(Eo[2]!==hA)iS=hA?.isSticky()??!0,Eo[2]=hA,"
     ),
   ],
 ]) {
