@@ -1388,13 +1388,32 @@ const CHECKS: Check[] = [
       // when there is something for this module to do. Measured: 3 on 2.1.263
       // and 2.1.266 both before and after patching, 0 on 2.1.267.
       //
-      // This is stricter than the version gate, not looser. A memo upstream
-      // *reshaped* rather than removed still trips the probe, so it falls
-      // through to the checks below and fails, where waiving on the exact
-      // patterns alone would have passed it silently.
+      // Several reshapes upstream might make — an aliased receiver, an aliased
+      // guard, swapped cache writes — still trip the probe, so they fall
+      // through to the checks below and fail, where waiving on the exact
+      // patterns alone would have passed them silently. It does not cover a
+      // memo rewritten as a statement block; that limit is stated in
+      // patch-claude-display.ts, along with why widening the span to reach it
+      // was tried and reverted.
+      //
+      // Scoped to the component that publishes the header. Both operands may
+      // be bare identifiers, so bundle-wide any unrelated component holding
+      // `if(c[2]!==state)v=state?.isSticky()` would count as a sticky memo and
+      // this check would reject a healthy bundle for having zero forced reads.
+      // Measured: all three hits on 2.1.263 and 2.1.266 are inside that
+      // component, so the scoping costs nothing.
       const anyViewportMemo =
         /\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
-      if ((content.match(anyViewportMemo) ?? []).length === 0) {
+      const ownedViewportMemos = [...content.matchAll(anyViewportMemo)].filter((match) => {
+        const functionStart = content.lastIndexOf("function ", match.index ?? -1);
+        if (functionStart === -1) {
+          return false;
+        }
+        return boundedToModule(
+          content.slice(functionStart, (match.index ?? 0) + 4000)
+        ).includes("setStickyPrompt");
+      });
+      if (ownedViewportMemos.length === 0) {
         return forcedMatches.length === 0 && staleMatches.length === 0
           ? null
           : "forced viewport reads present in a bundle with no handle-keyed viewport memo";

@@ -3430,9 +3430,28 @@ function patchStickyPromptHeader(content) {
     // enumerate compiler output shapes; the property is decided by
     // tests/sticky-prompt-header.test.js, which renders the component twice
     // and checks the header actually re-publishes after a scroll.
+    //
+    // Ownership is required, not optional. Both operands may be bare
+    // identifiers, so without it any unrelated component holding a memo like
+    // `if(c[2]!==state)v=state?.isSticky()` counts as a reshaped sticky memo,
+    // and this returns non-zero candidates with zero patched on a bundle whose
+    // sticky reads are genuinely unmemoized — a false --assert-all failure on
+    // a healthy build, which is the same direction of harm that got the
+    // statement-boundary widening reverted. The exact matcher below already
+    // demands the same `setStickyPrompt` ownership; this reuses it. Measured:
+    // all three hits on 2.1.263 and 2.1.266 are inside that component, so
+    // scoping costs nothing in match count.
     const unpatchedViewportMemo =
       /if\([A-Za-z_$][\w$]*\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
-    const reshaped = (content.match(unpatchedViewportMemo) ?? []).length;
+    const reshaped = [...content.matchAll(unpatchedViewportMemo)].filter((match) => {
+      const functionStart = content.lastIndexOf("function ", match.index ?? -1);
+      if (functionStart === -1) {
+        return false;
+      }
+      return boundedToModule(
+        content.slice(functionStart, (match.index ?? 0) + 4000)
+      ).includes("setStickyPrompt");
+    }).length;
     if (reshaped > 0) {
       return { content: original, candidates: reshaped, patched: 0 };
     }

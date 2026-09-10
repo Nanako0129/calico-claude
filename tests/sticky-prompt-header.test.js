@@ -154,6 +154,24 @@ for (const [name, reshaped] of [
   });
 }
 
+// Both probe operands are bare identifiers, so without an ownership check any
+// unrelated memo of an `isSticky`-shaped read counts as a reshaped sticky memo.
+// That would report work outstanding on a bundle whose sticky reads are
+// genuinely unmemoized — a false --assert-all failure on a healthy build, the
+// same direction of harm that got the statement-boundary widening reverted.
+test("an unrelated component's memo does not count as a reshaped sticky memo", () => {
+  const unrelated = `${plainFixture}
+function toast(XE){let Eo=_(4),{state:st}=XE,v;if(Eo[2]!==st)v=st?.isSticky()??!0,Eo[2]=st,Eo[3]=v;else v=Eo[3];return v}
+`;
+  const result = patchStickyPromptHeader(unrelated);
+  // Still a skip: the sticky component's reads are unmemoized here.
+  assert.equal(result.candidates, 0);
+  assert.equal(result.patched, 0);
+  assert.equal(result.skipped, true);
+  assert.equal(result.content, unrelated);
+  assert.equal(evaluatePatchModule("sticky-prompt-header", unrelated), null);
+});
+
 test("re-running the patch does not force a guard twice", () => {
   const once = patchStickyPromptHeader(memoizedFixture).content;
   const twice = patchStickyPromptHeader(once);
