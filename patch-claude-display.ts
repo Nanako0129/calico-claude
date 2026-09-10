@@ -3402,12 +3402,12 @@ function patchStickyPromptHeader(content) {
   if (candidates === 0) {
     // Absence of the exact memo shape has two very different causes, and
     // skipping on both is how this module would go quiet without anyone
-    // noticing. 2.1.267 deleted the memoized component outright — nothing to
-    // force, skip is correct. A future release that merely reshapes the memo
-    // would look identical to the exact pattern while the header bug came
-    // back. This broader probe matches a handle-keyed memo of a viewport read
-    // in any shape (measured: 3 on 2.1.263 and 2.1.266, 0 on 2.1.267), so a
-    // reshape reports zero patched and fails --assert-all instead.
+    // noticing. 2.1.267 stopped memoizing these reads — nothing to force, skip
+    // is correct. A future release that merely reshapes the memo would look
+    // identical to the exact pattern while the header bug came back. This
+    // broader probe matches a handle-keyed memo of a viewport read in several
+    // shapes (measured: 3 on 2.1.263 and 2.1.266, 0 on 2.1.267), so those
+    // reshapes report zero patched and fail --assert-all instead.
     //
     // Requiring `if(` immediately before the cache local is what keeps this
     // from firing on an already-patched bundle: the forced form reads
@@ -3416,6 +3416,20 @@ function patchStickyPromptHeader(content) {
     // patched 2.1.266: 0, 2.1.267 either way: 0. The verifier's copy of this
     // probe deliberately omits the `if(` prefix, because there the question is
     // whether a memo exists at all, patched or not.
+    //
+    // Known limit, stated rather than papered over. Both operands may be
+    // spelled `x.handle` or an aliased local, but the guard and the read must
+    // sit in one statement: the `[^;]` span stops at a semicolon, so a memo
+    // rewritten as `if(c[2]!==v.handle){let h=v.handle;x=h?.isSticky()…}`
+    // escapes and is waived. Widening the span to cross statements was tried
+    // and reverted — it let an unrelated unforced memo guard pair with an
+    // already-forced viewport read, which makes a correctly patched bundle
+    // report work outstanding and fails --assert-all on a good build. Blocking
+    // a healthy release is the worse direction, and this module's failure mode
+    // is a blank sticky header rather than a crash. A text scan cannot
+    // enumerate compiler output shapes; the property is decided by
+    // tests/sticky-prompt-header.test.js, which renders the component twice
+    // and checks the header actually re-publishes after a scroll.
     const unpatchedViewportMemo =
       /if\([A-Za-z_$][\w$]*\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
     const reshaped = (content.match(unpatchedViewportMemo) ?? []).length;

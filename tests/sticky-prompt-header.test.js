@@ -81,8 +81,12 @@ test("declines bundles whose viewport reads were never memoized", () => {
   assert.equal(evaluatePatchModule("sticky-prompt-header", plainFixture), null);
 });
 
-// 2.1.267 deleted the memoized component outright, so a recent bundle can look
-// exactly like a pre-2.1.247 one. The verifier used to waive on a version gate
+// 2.1.267 no longer memoizes these reads, so a recent bundle can look exactly
+// like a pre-2.1.247 one. (Measured: the handle-keyed memo of a viewport read
+// occurs 3 times on 2.1.263 and 2.1.266 and 0 times on 2.1.267. Whether the
+// enclosing component was deleted or rewritten was not established —
+// `setStickyPrompt` still appears twice in both — so this says only what was
+// measured.) The verifier used to waive on a version gate
 // (">= 2.1.247 means the memo is present"), which cannot express "upstream took
 // it away again" — it demanded three forced reads from a bundle with nothing to
 // force and blocked the release.
