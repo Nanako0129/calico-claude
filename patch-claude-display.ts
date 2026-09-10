@@ -594,64 +594,33 @@ function boundedToModule(segment) {
   return boundary === -1 ? segment : segment.slice(0, boundary);
 }
 
-// Body of the function containing `index`, or "" when `index` is not inside
-// one. Used for ownership tests — "is this match part of the component that
-// does X" — which a fixed-length forward slice cannot answer: it runs past the
-// matched function's closing brace into whatever follows, so a neighbouring
-// function's contents get attributed to this one. That produced a false
-// `--assert-all` failure on a healthy bundle when an unrelated memo happened to
-// sit within 4000 characters before the sticky-prompt component.
-// Index of the `{` that opens the body of the `function ` at `start`, or -1.
-// Not `indexOf("{")`: a destructured parameter puts a brace first, and its
-// match closes before the body ever begins, so the owner lookup would decide
-// the function does not contain its own statements.
-function functionBodyBrace(content, start) {
-  const paren = content.indexOf("(", start);
-  if (paren === -1) {
-    return -1;
-  }
-  let depth = 0;
-  for (let i = paren; i < content.length; i += 1) {
-    const char = content[i];
-    if (char === "(") {
-      depth += 1;
-    } else if (char === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        const brace = content.indexOf("{", i);
-        return brace === -1 ? -1 : brace;
-      }
-    }
-  }
-  return -1;
-}
 
-function enclosingFunctionBody(content, index) {
+
+// Ownership for the sticky-prompt module: the setter that publishes the header
+// must appear shortly before the match, inside the same Bun chunk.
+//
+// Deliberately a backward window and nothing more. Earlier versions located the
+// enclosing function and searched its body, which meant guessing where a
+// function starts and ends from minified text — five review rounds found five
+// JavaScript forms that broke it (a forward slice overrunning into the next
+// function, a closed nested helper taken as the owner, a destructured
+// parameter's brace read as the body's, a `}` inside a string literal ending
+// the function early). This makes no lexical assumptions at all.
+//
+// Measured on 2.1.263 and 2.1.266: `setStickyPrompt` sits 250, 358 and 461
+// characters before the three memos, so 2000 is roughly four times the
+// observed span. Too small a window blocks a healthy build, which is loud; too
+// large would need a *second* component with this setter within the window,
+// and the literal occurs exactly twice in the bundle, both in this component.
+const STICKY_OWNER_WINDOW = 2000;
+
+function ownedByStickyComponent(content, index) {
   if (index < 0) {
-    return "";
+    return false;
   }
-  // The nearest preceding `function ` is not necessarily the owner: a nested
-  // helper that already closed sits between the component's own header and the
-  // match. Walk back until one's body actually contains `index`. Bounded by the
-  // enclosing Bun chunk, since a function cannot span a module boundary — that
-  // keeps a match owned by nothing from walking the whole bundle.
   const moduleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, index);
-  const floor = moduleStart === -1 ? 0 : moduleStart;
-  let start = content.lastIndexOf("function ", index);
-  while (start >= floor && start !== -1) {
-    const open = functionBodyBrace(content, start);
-    if (open !== -1 && open <= index) {
-      const end = closingBraceIndex(content, open);
-      if (end !== -1 && end >= index) {
-        return content.slice(start, end + 1);
-      }
-    }
-    if (start === 0) {
-      break;
-    }
-    start = content.lastIndexOf("function ", start - 1);
-  }
-  return "";
+  const floor = Math.max(moduleStart === -1 ? 0 : moduleStart, index - STICKY_OWNER_WINDOW);
+  return content.slice(floor, index).includes("setStickyPrompt");
 }
 
 // Index of the `}` that closes the `{` at openIndex, or -1.
@@ -3460,55 +3429,34 @@ function patchStickyPromptHeader(content) {
   const candidates = matches.length;
 
   if (candidates === 0) {
-    // Absence of the exact memo shape has two very different causes, and
-    // skipping on both is how this module would go quiet without anyone
-    // noticing. 2.1.267 stopped memoizing these reads — nothing to force, skip
-    // is correct. A future release that merely reshapes the memo would look
-    // identical to the exact pattern while the header bug came back. This
-    // broader probe matches a handle-keyed memo of a viewport read in several
-    // shapes (measured: 3 on 2.1.263 and 2.1.266, 0 on 2.1.267), so those
-    // reshapes report zero patched and fail --assert-all instead.
+    // Two causes look identical here: upstream stopped memoizing these reads
+    // (2.1.267 did, and there is nothing to force), or upstream reshaped the
+    // memo and the header bug is back.
     //
-    // Requiring `if(` immediately before the cache local is what keeps this
-    // from firing on an already-patched bundle: the forced form reads
-    // `if(!0||cache[N]!==x.handle)`, so re-running the patch still reports
-    // nothing to do. Measured on real bundles — unpatched 2.1.266: 3,
-    // patched 2.1.266: 0, 2.1.267 either way: 0. The verifier's copy of this
-    // probe deliberately omits the `if(` prefix, because there the question is
-    // whether a memo exists at all, patched or not.
+    // A probe that tried to tell them apart lived here for five review rounds
+    // and is gone. It had to decide whether a match belonged to this component,
+    // and that ownership test is load-bearing in *both* directions: undecided
+    // means either waiving a live regression or failing --assert-all on a
+    // healthy build, so there is no safe default. Every implementation was a
+    // heuristic over minified text, and each round found another JavaScript
+    // form the last one did not handle — an unbounded forward slice, a closed
+    // nested helper taken as the owner, a destructured parameter's brace read
+    // as the body's, a `}` inside a string literal ending the function early.
+    // Two of those silently shipped the very regression the probe existed to
+    // catch. Telling the shapes apart properly needs a real lexer, which is
+    // more machinery than a display module whose failure mode is a blank
+    // sticky header warrants.
     //
-    // Known limit, stated rather than papered over. Both operands may be
-    // spelled `x.handle` or an aliased local, but the guard and the read must
-    // sit in one statement: the `[^;]` span stops at a semicolon, so a memo
-    // rewritten as `if(c[2]!==v.handle){let h=v.handle;x=h?.isSticky()…}`
-    // escapes and is waived. Widening the span to cross statements was tried
-    // and reverted — it let an unrelated unforced memo guard pair with an
-    // already-forced viewport read, which makes a correctly patched bundle
-    // report work outstanding and fails --assert-all on a good build. Blocking
-    // a healthy release is the worse direction, and this module's failure mode
-    // is a blank sticky header rather than a crash. A text scan cannot
-    // enumerate compiler output shapes; the property is decided by
-    // tests/sticky-prompt-header.test.js, which renders the component twice
-    // and checks the header actually re-publishes after a scroll.
+    // What covers the reshape case instead:
+    //   - the verifier's `stale` pattern still fails on a memo that is present
+    //     and unpatched, which is the shape upstream has actually emitted;
+    //   - tests/sticky-prompt-header.test.js renders the component twice and
+    //     checks the header re-publishes after a scroll, which is the one check
+    //     no source-shape change can walk around.
     //
-    // Ownership is required, not optional. Both operands may be bare
-    // identifiers, so without it any unrelated component holding a memo like
-    // `if(c[2]!==state)v=state?.isSticky()` counts as a reshaped sticky memo,
-    // and this returns non-zero candidates with zero patched on a bundle whose
-    // sticky reads are genuinely unmemoized — a false --assert-all failure on
-    // a healthy build, which is the same direction of harm that got the
-    // statement-boundary widening reverted. The exact matcher below already
-    // demands the same `setStickyPrompt` ownership; this reuses it. Measured:
-    // all three hits on 2.1.263 and 2.1.266 are inside that component, so
-    // scoping costs nothing in match count.
-    const unpatchedViewportMemo =
-      /if\([A-Za-z_$][\w$]*\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
-    const reshaped = [...content.matchAll(unpatchedViewportMemo)].filter((match) =>
-      enclosingFunctionBody(content, match.index ?? -1).includes("setStickyPrompt")
-    ).length;
-    if (reshaped > 0) {
-      return { content: original, candidates: reshaped, patched: 0 };
-    }
+    // The accepted gap, stated rather than papered over: a memo upstream
+    // reshapes into a form the exact pattern above cannot match is skipped
+    // silently. That was also the behaviour before the probe existed.
     return {
       content: original,
       candidates: 0,
@@ -3530,10 +3478,6 @@ function patchStickyPromptHeader(content) {
     matches.map((match) => content.lastIndexOf("function ", match.index ?? -1))
   );
   const owningFunctionStart = functionStarts.values().next().value;
-  const owningFunction =
-    owningFunctionStart === undefined || owningFunctionStart === -1
-      ? ""
-      : enclosingFunctionBody(content, first.index ?? -1);
 
   if (
     candidates !== 3 ||
@@ -3544,7 +3488,8 @@ function patchStickyPromptHeader(content) {
     // The component that owns the header publishes it through this setter, and
     // the literal occurs twice in the whole bundle. Nothing weaker identifies
     // the sticky-prompt component; the memo shape alone is a compiler idiom.
-    !owningFunction.includes("setStickyPrompt")
+    // Every read must be owned, not just the first.
+    !matches.every((match) => ownedByStickyComponent(content, match.index ?? -1))
   ) {
     return { content: original, candidates, patched: 0 };
   }

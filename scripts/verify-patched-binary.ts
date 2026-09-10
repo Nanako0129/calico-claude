@@ -57,61 +57,23 @@ function boundedToModule(segment: string): string {
   return boundary === -1 ? segment : segment.slice(0, boundary);
 }
 
-// Body of the function containing `index`, or "" when `index` is not inside
-// one. Kept in lockstep with patch-claude-display.ts: ownership tests cannot
-// use a fixed-length forward slice, which runs past the matched function's
-// closing brace and attributes a neighbouring function's contents to this one.
-// Index of the `{` that opens the body of the `function ` at `start`, or -1.
-// Not `indexOf("{")`: a destructured parameter puts a brace first, and its
-// match closes before the body ever begins, so the owner lookup would decide
-// the function does not contain its own statements.
-function functionBodyBrace(content: string, start: number): number {
-  const paren = content.indexOf("(", start);
-  if (paren === -1) {
-    return -1;
-  }
-  let depth = 0;
-  for (let i = paren; i < content.length; i += 1) {
-    const char = content[i];
-    if (char === "(") {
-      depth += 1;
-    } else if (char === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        const brace = content.indexOf("{", i);
-        return brace === -1 ? -1 : brace;
-      }
-    }
-  }
-  return -1;
-}
 
-function enclosingFunctionBody(content: string, index: number): string {
+
+// Ownership for the sticky-prompt check; kept in lockstep with
+// patch-claude-display.ts. A backward window and nothing more: locating the
+// enclosing function meant guessing where one starts and ends from minified
+// text, and five review rounds found five JavaScript forms that broke it.
+// Measured on 2.1.263 and 2.1.266: `setStickyPrompt` sits 250, 358 and 461
+// characters before the three memos.
+const STICKY_OWNER_WINDOW = 2000;
+
+function ownedByStickyComponent(content: string, index: number): boolean {
   if (index < 0) {
-    return "";
+    return false;
   }
-  // The nearest preceding `function ` is not necessarily the owner: a nested
-  // helper that already closed sits between the component's own header and the
-  // match. Walk back until one's body actually contains `index`. Bounded by the
-  // enclosing Bun chunk, since a function cannot span a module boundary — that
-  // keeps a match owned by nothing from walking the whole bundle.
   const moduleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, index);
-  const floor = moduleStart === -1 ? 0 : moduleStart;
-  let start = content.lastIndexOf("function ", index);
-  while (start >= floor && start !== -1) {
-    const open = functionBodyBrace(content, start);
-    if (open !== -1 && open <= index) {
-      const end = closingBraceIndex(content, open);
-      if (end !== -1 && end >= index) {
-        return content.slice(start, end + 1);
-      }
-    }
-    if (start === 0) {
-      break;
-    }
-    start = content.lastIndexOf("function ", start - 1);
-  }
-  return "";
+  const floor = Math.max(moduleStart === -1 ? 0 : moduleStart, index - STICKY_OWNER_WINDOW);
+  return content.slice(floor, index).includes("setStickyPrompt");
 }
 
 function inSameModule(content: string, first: number, second: number): boolean {
@@ -1431,43 +1393,28 @@ const CHECKS: Check[] = [
       const staleMatches = [...content.matchAll(stale)];
 
       // 2.1.247 introduced the handle-keyed memo; before it the reads were
-      // straight-line and the header worked unaided, so absence there is
-      // correct rather than a missing patch. This used to be a version gate
-      // (>= 2.1.247 means the memo is present), which could only express
-      // "upstream added it" and not "upstream took it away again" — and
-      // 2.1.267 took it away, deleting the whole memoized component. The
-      // version gate then demanded three forced reads from a bundle with
-      // nothing to force, and blocked the release.
+      // straight-line and the header worked unaided, and 2.1.267 stopped
+      // memoizing them again, so a recent bundle can look exactly like a
+      // pre-2.1.247 one. This was a version gate once (">= 2.1.247 means the
+      // memo is present"), which could express "upstream added it" but not
+      // "upstream took it away again" — it demanded three forced reads from a
+      // bundle with nothing to force and blocked the 2.1.267 release.
       //
-      // Ask the bundle instead. This probe matches a handle-keyed memo of a
-      // viewport read in either state — upstream's `cache[N]!==x.handle` or
-      // the patched `if(!0||cache[N]!==x.handle)` — so it is present exactly
-      // when there is something for this module to do. Measured: 3 on 2.1.263
-      // and 2.1.266 both before and after patching, 0 on 2.1.267.
+      // It was then a shape probe, for five review rounds, and that is gone
+      // too. Deciding whether a match belongs to this component is
+      // load-bearing in both directions — undecided means either waiving a
+      // live regression or failing a healthy build — and every implementation
+      // was a heuristic over minified text that the next round broke. See
+      // patch-claude-display.ts for the list.
       //
-      // Several reshapes upstream might make — an aliased receiver, an aliased
-      // guard, swapped cache writes — still trip the probe, so they fall
-      // through to the checks below and fail, where waiving on the exact
-      // patterns alone would have passed them silently. It does not cover a
-      // memo rewritten as a statement block; that limit is stated in
-      // patch-claude-display.ts, along with why widening the span to reach it
-      // was tried and reverted.
-      //
-      // Scoped to the component that publishes the header. Both operands may
-      // be bare identifiers, so bundle-wide any unrelated component holding
-      // `if(c[2]!==state)v=state?.isSticky()` would count as a sticky memo and
-      // this check would reject a healthy bundle for having zero forced reads.
-      // Measured: all three hits on 2.1.263 and 2.1.266 are inside that
-      // component, so the scoping costs nothing.
-      const anyViewportMemo =
-        /\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
-      const ownedViewportMemos = [...content.matchAll(anyViewportMemo)].filter((match) =>
-        enclosingFunctionBody(content, match.index ?? -1).includes("setStickyPrompt")
-      );
-      if (ownedViewportMemos.length === 0) {
-        return forcedMatches.length === 0 && staleMatches.length === 0
-          ? null
-          : "forced viewport reads present in a bundle with no handle-keyed viewport memo";
+      // The waiver is now the plain one: no forced reads and no stale ones
+      // means there is nothing here to patch. `stale` still fails on a memo
+      // that is present and unpatched, which is the shape upstream has
+      // actually emitted; a memo reshaped into some other form is skipped
+      // silently, and the behavioural test in tests/sticky-prompt-header.test.js
+      // is what decides that property.
+      if (forcedMatches.length === 0 && staleMatches.length === 0) {
+        return null;
       }
 
       if (staleMatches.length > 0) {
@@ -1500,11 +1447,7 @@ const CHECKS: Check[] = [
       //
       // Every forced read must be owned, not just the first: three reads
       // sharing a cache local can still be split across functions.
-      if (
-        !forcedMatches.every((match) =>
-          enclosingFunctionBody(content, match.index ?? -1).includes("setStickyPrompt")
-        )
-      ) {
+      if (!forcedMatches.every((match) => ownedByStickyComponent(content, match.index ?? -1))) {
         return "forced viewport reads are not inside the sticky-prompt component";
       }
       return null;

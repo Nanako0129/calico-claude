@@ -231,15 +231,33 @@ function km({scrollViewport:ot}){let Eo=_(36),{setStickyPrompt:dr}=Or();let iS;i
   assert.equal(evaluatePatchModule("sticky-prompt-header", result.content), null);
 });
 
-test("refuses a reshaped memo in a component with a destructured parameter", () => {
+// The accepted gap, pinned so that changing it is deliberate rather than
+// accidental. A memo reshaped into a form the exact pattern cannot match at all
+// is skipped silently. A probe that tried to catch this lived here for five
+// review rounds and was removed: deciding whether a match belongs to this
+// component is load-bearing in both directions, so an undecided case either
+// waives a live regression or fails a healthy build, and every implementation
+// was a heuristic over minified text that the next round broke — twice by
+// shipping the very regression it existed to catch.
+//
+// What covers it instead is `runComponent` above: render twice, scroll between,
+// and require the header to re-publish. No source-shape change walks around
+// that.
+test("a fully reshaped memo is skipped, and the behavioural test is what sees it", () => {
   const reshaped = `${VERSION_METADATA}
 function km({scrollViewport:ot}){let Eo=_(36),{setStickyPrompt:dr}=Or(),hh=ot.handle;let iS;if(Eo[2]!==hh)iS=hh?.isSticky()??!0,Eo[2]=hh,Eo[3]=iS;else iS=Eo[3];dr(iS?null:1);return iS}
 `;
   const result = patchStickyPromptHeader(reshaped);
+  assert.equal(result.candidates, 0);
   assert.equal(result.patched, 0);
-  assert.notEqual(result.skipped, true);
-  assert.ok(result.candidates > 0);
-  assert.notEqual(evaluatePatchModule("sticky-prompt-header", reshaped), null);
+  assert.equal(result.skipped, true);
+  assert.equal(result.content, reshaped);
+  assert.equal(evaluatePatchModule("sticky-prompt-header", reshaped), null);
+
+  // And this is the gap being accepted, not a claim that the header is fine:
+  // the component is still frozen on its mount-time value.
+  const published = runComponent(reshaped);
+  assert.deepEqual(published, [null, null], "the reshaped memo is still frozen");
 });
 
 // The walk back is floored at the enclosing Bun chunk, so a match owned by no
