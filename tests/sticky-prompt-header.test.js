@@ -201,6 +201,36 @@ function km(XE){let Fo=_(36),{scrollViewport:vp}=XE,{setStickyPrompt:dr}=Or(),hh
   );
 });
 
+// The nearest preceding `function ` is not necessarily the owner. A nested
+// helper that already closed sits between the component's header and the
+// match, and taking it as the owner yields an empty body — so a component this
+// module patches correctly would report three candidates and zero patched, a
+// false --assert-all failure on a healthy bundle.
+test("finds the owning component past a closed nested helper", () => {
+  const nested = `${VERSION_METADATA}
+function km(XE){function helper(a){return a+1}let Eo=_(36),{scrollViewport:ot}=XE,{setStickyPrompt:dr}=Or();let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];let aS;if(Eo[4]!==ot.handle)aS=ot.handle?.getScrollTop()??0,Eo[4]=ot.handle,Eo[5]=aS;else aS=Eo[5];let lS;if(Eo[6]!==ot.handle)lS=ot.handle?.getPendingDelta()??0,Eo[6]=ot.handle,Eo[7]=lS;else lS=Eo[7];dr(iS?null:helper(aS+lS));return iS}
+`;
+  const result = patchStickyPromptHeader(nested);
+  assert.equal(result.candidates, 3);
+  assert.equal(result.patched, 3);
+  assert.equal(evaluatePatchModule("sticky-prompt-header", result.content), null);
+});
+
+// The walk back is floored at the enclosing Bun chunk, so a match owned by no
+// function cannot drag the scan through the whole bundle.
+test("a match owned by no function is skipped without scanning the bundle", () => {
+  const noise = Array.from({ length: 4000 }, (_, i) => `function f${i}(a){return a}`).join("");
+  const orphan = `${VERSION_METADATA}${noise}if(c[2]!==v.handle)x=v.handle?.isSticky()??!0;`;
+
+  const started = Date.now();
+  const result = patchStickyPromptHeader(orphan);
+  const elapsed = Date.now() - started;
+
+  assert.equal(result.candidates, 0);
+  assert.equal(result.skipped, true);
+  assert.ok(elapsed < 2000, `owner lookup took ${elapsed}ms; the walk back is not bounded`);
+});
+
 test("re-running the patch does not force a guard twice", () => {
   const once = patchStickyPromptHeader(memoizedFixture).content;
   const twice = patchStickyPromptHeader(once);

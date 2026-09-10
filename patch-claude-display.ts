@@ -602,19 +602,31 @@ function boundedToModule(segment) {
 // `--assert-all` failure on a healthy bundle when an unrelated memo happened to
 // sit within 4000 characters before the sticky-prompt component.
 function enclosingFunctionBody(content, index) {
-  const start = content.lastIndexOf("function ", index);
-  if (start === -1) {
+  if (index < 0) {
     return "";
   }
-  const open = content.indexOf("{", start);
-  if (open === -1 || open > index) {
-    return "";
+  // The nearest preceding `function ` is not necessarily the owner: a nested
+  // helper that already closed sits between the component's own header and the
+  // match. Walk back until one's body actually contains `index`. Bounded by the
+  // enclosing Bun chunk, since a function cannot span a module boundary — that
+  // keeps a match owned by nothing from walking the whole bundle.
+  const moduleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, index);
+  const floor = moduleStart === -1 ? 0 : moduleStart;
+  let start = content.lastIndexOf("function ", index);
+  while (start >= floor && start !== -1) {
+    const open = content.indexOf("{", start);
+    if (open !== -1 && open <= index) {
+      const end = closingBraceIndex(content, open);
+      if (end !== -1 && end >= index) {
+        return content.slice(start, end + 1);
+      }
+    }
+    if (start === 0) {
+      break;
+    }
+    start = content.lastIndexOf("function ", start - 1);
   }
-  const end = closingBraceIndex(content, open);
-  if (end === -1 || end < index) {
-    return "";
-  }
-  return content.slice(start, end + 1);
+  return "";
 }
 
 // Index of the `}` that closes the `{` at openIndex, or -1.
