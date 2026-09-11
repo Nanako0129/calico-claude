@@ -57,6 +57,46 @@ function boundedToModule(segment: string): string {
   return boundary === -1 ? segment : segment.slice(0, boundary);
 }
 
+
+
+// Ownership for the sticky-prompt check; kept in lockstep with
+// patch-claude-display.ts. A backward window and nothing more: locating the
+// enclosing function meant guessing where one starts and ends from minified
+// text, and five review rounds found five JavaScript forms that broke it.
+// Measured on 2.1.263 and 2.1.266: `setStickyPrompt` sits 250, 358 and 461
+// characters before the three memos.
+const STICKY_OWNER_WINDOW = 2000;
+
+function ownedByStickyComponent(content: string, index: number): boolean {
+  if (index < 0) {
+    return false;
+  }
+  const moduleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, index);
+  const floor = Math.max(moduleStart === -1 ? 0 : moduleStart, index - STICKY_OWNER_WINDOW);
+  const setter = content.lastIndexOf("setStickyPrompt", index);
+  if (setter < floor) {
+    return false;
+  }
+  // Proximity alone reads through a closing brace: an unrelated function
+  // placed after this component, carrying the same three memos, would see the
+  // setter that belongs to the component before it and be patched instead —
+  // reported as success, with the real header left frozen. A `function ` token
+  // between the two means the match is in some later function. Measured on
+  // 2.1.263 and 2.1.266: no such token separates the setter from any of the
+  // three memos. A nested helper declared before the setter is unaffected; one
+  // declared between them would be rejected, which blocks the build loudly
+  // rather than patching the wrong component.
+  return !content.slice(setter, index).includes("function ");
+}
+
+// Minified identifiers are not regex-safe: Bun emits names like `$e`, and `$`
+// is an anchor. Kept in lockstep with patch-claude-display.ts, where 2.1.269
+// renamed a statusline local from `Le` to `$e` and silently took that module
+// from 2 patched to 0.
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function inSameModule(content: string, first: number, second: number): boolean {
   if (first < 0 || second < 0) {
     return false;
@@ -647,12 +687,12 @@ const CHECKS: Check[] = [
       // argument list one level of call nesting deep, matching the patcher.
       const dispatchArguments = "(?:,(?:[^()]|\\([^()]*\\))*)?";
       const awaitedDispatchPattern = new RegExp(
-        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${dispatchRecordLocal}${dispatchArguments}\\)\\]\\)`,
+        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${escapeRegExp(dispatchRecordLocal)}${dispatchArguments}\\)\\]\\)`,
         "g"
       );
       const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
       const directDispatchPattern = new RegExp(
-        `(${identifier})\\(${dispatchRecordLocal}${dispatchArguments}\\)`,
+        `(${identifier})\\(${escapeRegExp(dispatchRecordLocal)}${dispatchArguments}\\)`,
         "g"
       );
       const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
@@ -1374,30 +1414,28 @@ const CHECKS: Check[] = [
       const staleMatches = [...content.matchAll(stale)];
 
       // 2.1.247 introduced the handle-keyed memo; before it the reads were
-      // straight-line and the header worked unaided, so absence there is
-      // correct rather than a missing patch. This used to be a version gate
-      // (>= 2.1.247 means the memo is present), which could only express
-      // "upstream added it" and not "upstream took it away again" — and
-      // 2.1.267 took it away, deleting the whole memoized component. The
-      // version gate then demanded three forced reads from a bundle with
-      // nothing to force, and blocked the release.
+      // straight-line and the header worked unaided, and 2.1.267 stopped
+      // memoizing them again, so a recent bundle can look exactly like a
+      // pre-2.1.247 one. This was a version gate once (">= 2.1.247 means the
+      // memo is present"), which could express "upstream added it" but not
+      // "upstream took it away again" — it demanded three forced reads from a
+      // bundle with nothing to force and blocked the 2.1.267 release.
       //
-      // Ask the bundle instead. This probe matches a handle-keyed memo of a
-      // viewport read in either state — upstream's `cache[N]!==x.handle` or
-      // the patched `if(!0||cache[N]!==x.handle)` — so it is present exactly
-      // when there is something for this module to do. Measured: 3 on 2.1.263
-      // and 2.1.266 both before and after patching, 0 on 2.1.267.
+      // It was then a shape probe, for five review rounds, and that is gone
+      // too. Deciding whether a match belongs to this component is
+      // load-bearing in both directions — undecided means either waiving a
+      // live regression or failing a healthy build — and every implementation
+      // was a heuristic over minified text that the next round broke. See
+      // patch-claude-display.ts for the list.
       //
-      // This is stricter than the version gate, not looser. A memo upstream
-      // *reshaped* rather than removed still trips the probe, so it falls
-      // through to the checks below and fails, where waiving on the exact
-      // patterns alone would have passed it silently.
-      const anyViewportMemo =
-        /\[\d+\]!==[A-Za-z_$][\w$]*(?:\.handle)?\)[^;]{0,120}?[A-Za-z_$][\w$]*(?:\.handle)?\?\.(?:isSticky|getScrollTop|getPendingDelta)\(\)/g;
-      if ((content.match(anyViewportMemo) ?? []).length === 0) {
-        return forcedMatches.length === 0 && staleMatches.length === 0
-          ? null
-          : "forced viewport reads present in a bundle with no handle-keyed viewport memo";
+      // The waiver is now the plain one: no forced reads and no stale ones
+      // means there is nothing here to patch. `stale` still fails on a memo
+      // that is present and unpatched, which is the shape upstream has
+      // actually emitted; a memo reshaped into some other form is skipped
+      // silently, and the behavioural test in tests/sticky-prompt-header.test.js
+      // is what decides that property.
+      if (forcedMatches.length === 0 && staleMatches.length === 0) {
+        return null;
       }
 
       if (staleMatches.length > 0) {
@@ -1418,13 +1456,19 @@ const CHECKS: Check[] = [
       // The header is published through this setter, and the literal occurs
       // twice in the whole bundle. Without it the memo shape alone would accept
       // a forced guard in any other compiled component reading a `.handle`.
-      const owner = content.lastIndexOf("function ", forcedMatches[0].index ?? -1);
-      if (
-        owner === -1 ||
-        !boundedToModule(content.slice(owner, (forcedMatches[0].index ?? 0) + 4000)).includes(
-          "setStickyPrompt"
-        )
-      ) {
+      //
+      // Bounded to the enclosing function, like the two ownership tests above.
+      // As a forward slice this was the last way through: an unrelated earlier
+      // component carrying three already-forced reads satisfied every check
+      // above, and the slice then ran past its closing brace to find the real
+      // component's `setStickyPrompt`. Measured against that shape — forced
+      // reads in one function, an aliased still-frozen memo in the sticky
+      // component after it — this returned null and would have shipped the
+      // header bug reported as ok.
+      //
+      // Every forced read must be owned, not just the first: three reads
+      // sharing a cache local can still be split across functions.
+      if (!forcedMatches.every((match) => ownedByStickyComponent(content, match.index ?? -1))) {
         return "forced viewport reads are not inside the sticky-prompt component";
       }
       return null;
@@ -1828,7 +1872,7 @@ const CHECKS: Check[] = [
         }
         for (const call of reducerCalls) {
           const declaration = new RegExp(
-            `function ${call[1]}\\(\\{content:[A-Za-z_$][\\w$]*,usage:`,
+            `function ${escapeRegExp(call[1])}\\(\\{content:[A-Za-z_$][\\w$]*,usage:`,
             "g"
           );
           const declared = [...content.matchAll(declaration)].some((match) =>

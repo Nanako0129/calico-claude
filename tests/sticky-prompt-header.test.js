@@ -154,6 +154,145 @@ for (const [name, reshaped] of [
   });
 }
 
+// Both probe operands are bare identifiers, so without an ownership check any
+// unrelated memo of an `isSticky`-shaped read counts as a reshaped sticky memo.
+// That would report work outstanding on a bundle whose sticky reads are
+// genuinely unmemoized — a false --assert-all failure on a healthy build, the
+// same direction of harm that got the statement-boundary widening reverted.
+//
+// Both orderings, because the first version of the ownership test was a
+// fixed-length forward slice from the function start. That runs past the
+// matched function's closing brace, so an unrelated memo placed *before* the
+// sticky component found its `setStickyPrompt` and was attributed to it —
+// candidates 1, patched 0, no skip. The other ordering passed, which is why
+// only testing one of them missed it.
+const unrelatedMemo =
+  "function toast(XE){let Eo=_(4),{state:st}=XE,v;if(Eo[2]!==st)v=st?.isSticky()??!0,Eo[2]=st,Eo[3]=v;else v=Eo[3];return v}";
+for (const [order, unrelated] of [
+  ["unrelated memo after the sticky component", `${plainFixture}\n${unrelatedMemo}\n`],
+  ["unrelated memo before the sticky component", `${VERSION_METADATA}\n${unrelatedMemo}\n${plainFixture.split("\n").slice(1).join("\n")}`],
+]) {
+  test(`an unrelated component's memo does not count as a reshaped sticky memo: ${order}`, () => {
+    const result = patchStickyPromptHeader(unrelated);
+    // Still a skip: the sticky component's reads are unmemoized here.
+    assert.equal(result.candidates, 0);
+    assert.equal(result.patched, 0);
+    assert.equal(result.skipped, true);
+    assert.equal(result.content, unrelated);
+    assert.equal(evaluatePatchModule("sticky-prompt-header", unrelated), null);
+  });
+}
+
+// The last way through the verifier, and the one that ships the bug rather
+// than blocking a good build: three already-forced reads in an unrelated
+// earlier function satisfy every check — count, kinds, shared cache and
+// viewport locals — while the real sticky component carries an aliased memo
+// that is still frozen. As a forward slice the final ownership test then ran
+// past the unrelated function's closing brace and found the real component's
+// `setStickyPrompt`, returning success.
+test("verifier rejects forced reads that belong to another component", () => {
+  const misowned = `${VERSION_METADATA}
+function other(XE){let Eo=_(36),{scrollViewport:ot}=XE,iS;if(!0||Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];let aS;if(!0||Eo[4]!==ot.handle)aS=ot.handle?.getScrollTop()??0,Eo[4]=ot.handle,Eo[5]=aS;else aS=Eo[5];let lS;if(!0||Eo[6]!==ot.handle)lS=ot.handle?.getPendingDelta()??0,Eo[6]=ot.handle,Eo[7]=lS;else lS=Eo[7];return iS}
+function km(XE){let Fo=_(36),{scrollViewport:vp}=XE,{setStickyPrompt:dr}=Or(),hh=vp.handle,q;if(Fo[2]!==hh)q=hh?.isSticky()??!0,Fo[2]=hh,Fo[3]=q;else q=Fo[3];dr(q?null:1);return q}
+`;
+  assert.equal(
+    evaluatePatchModule("sticky-prompt-header", misowned),
+    "forced viewport reads are not inside the sticky-prompt component"
+  );
+});
+
+// The nearest preceding `function ` is not necessarily the owner. A nested
+// helper that already closed sits between the component's header and the
+// match, and taking it as the owner yields an empty body — so a component this
+// module patches correctly would report three candidates and zero patched, a
+// false --assert-all failure on a healthy bundle.
+test("finds the owning component past a closed nested helper", () => {
+  const nested = `${VERSION_METADATA}
+function km(XE){function helper(a){return a+1}let Eo=_(36),{scrollViewport:ot}=XE,{setStickyPrompt:dr}=Or();let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];let aS;if(Eo[4]!==ot.handle)aS=ot.handle?.getScrollTop()??0,Eo[4]=ot.handle,Eo[5]=aS;else aS=Eo[5];let lS;if(Eo[6]!==ot.handle)lS=ot.handle?.getPendingDelta()??0,Eo[6]=ot.handle,Eo[7]=lS;else lS=Eo[7];dr(iS?null:helper(aS+lS));return iS}
+`;
+  const result = patchStickyPromptHeader(nested);
+  assert.equal(result.candidates, 3);
+  assert.equal(result.patched, 3);
+  assert.equal(evaluatePatchModule("sticky-prompt-header", result.content), null);
+});
+
+// A destructured parameter puts a brace before the body's, and its match
+// closes before any statement. Taking it as the body brace made the owner
+// lookup decide the function does not contain its own code — which fails in
+// both directions: a healthy component reports 3/0 and blocks the build, and a
+// reshaped one is waived and ships the frozen header.
+test("finds the body brace past a destructured parameter", () => {
+  const destructured = `${VERSION_METADATA}
+function km({scrollViewport:ot}){let Eo=_(36),{setStickyPrompt:dr}=Or();let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];let aS;if(Eo[4]!==ot.handle)aS=ot.handle?.getScrollTop()??0,Eo[4]=ot.handle,Eo[5]=aS;else aS=Eo[5];let lS;if(Eo[6]!==ot.handle)lS=ot.handle?.getPendingDelta()??0,Eo[6]=ot.handle,Eo[7]=lS;else lS=Eo[7];dr(iS?null:aS+lS);return iS}
+`;
+  const result = patchStickyPromptHeader(destructured);
+  assert.equal(result.candidates, 3);
+  assert.equal(result.patched, 3);
+  assert.equal(evaluatePatchModule("sticky-prompt-header", result.content), null);
+});
+
+// The accepted gap, pinned so that changing it is deliberate rather than
+// accidental. A memo reshaped into a form the exact pattern cannot match at all
+// is skipped silently. A probe that tried to catch this lived here for five
+// review rounds and was removed: deciding whether a match belongs to this
+// component is load-bearing in both directions, so an undecided case either
+// waives a live regression or fails a healthy build, and every implementation
+// was a heuristic over minified text that the next round broke — twice by
+// shipping the very regression it existed to catch.
+//
+// What covers it instead is `runComponent` above: render twice, scroll between,
+// and require the header to re-publish. No source-shape change walks around
+// that.
+test("a fully reshaped memo is skipped, and the behavioural test is what sees it", () => {
+  const reshaped = `${VERSION_METADATA}
+function km({scrollViewport:ot}){let Eo=_(36),{setStickyPrompt:dr}=Or(),hh=ot.handle;let iS;if(Eo[2]!==hh)iS=hh?.isSticky()??!0,Eo[2]=hh,Eo[3]=iS;else iS=Eo[3];dr(iS?null:1);return iS}
+`;
+  const result = patchStickyPromptHeader(reshaped);
+  assert.equal(result.candidates, 0);
+  assert.equal(result.patched, 0);
+  assert.equal(result.skipped, true);
+  assert.equal(result.content, reshaped);
+  assert.equal(evaluatePatchModule("sticky-prompt-header", reshaped), null);
+
+  // And this is the gap being accepted, not a claim that the header is fine:
+  // the component is still frozen on its mount-time value.
+  const published = runComponent(reshaped);
+  assert.deepEqual(published, [null, null], "the reshaped memo is still frozen");
+});
+
+// The walk back is floored at the enclosing Bun chunk, so a match owned by no
+// function cannot drag the scan through the whole bundle.
+test("a match owned by no function is skipped without scanning the bundle", () => {
+  const noise = Array.from({ length: 4000 }, (_, i) => `function f${i}(a){return a}`).join("");
+  const orphan = `${VERSION_METADATA}${noise}if(c[2]!==v.handle)x=v.handle?.isSticky()??!0;`;
+
+  const started = Date.now();
+  const result = patchStickyPromptHeader(orphan);
+  const elapsed = Date.now() - started;
+
+  assert.equal(result.candidates, 0);
+  assert.equal(result.skipped, true);
+  assert.ok(elapsed < 2000, `owner lookup took ${elapsed}ms; the walk back is not bounded`);
+});
+
+// Proximity alone reads straight through a closing brace. An unrelated
+// function placed after the component, carrying the same three memos, saw the
+// setter belonging to the component before it — and was patched instead, 3/3,
+// with the verifier returning success while the real header stayed frozen.
+// That is the mirror of the forward-slice defect: swapping which direction the
+// window runs only moves which ordering breaks.
+test("refuses memos in a later function that borrow the preceding setter", () => {
+  const misowned = `${VERSION_METADATA}
+function km(XE){let{setStickyPrompt:dr}=Or();dr(null);return 1}
+function other(XE){let Eo=_(36),{scrollViewport:ot}=XE;let iS;if(Eo[2]!==ot.handle)iS=ot.handle?.isSticky()??!0,Eo[2]=ot.handle,Eo[3]=iS;else iS=Eo[3];let aS;if(Eo[4]!==ot.handle)aS=ot.handle?.getScrollTop()??0,Eo[4]=ot.handle,Eo[5]=aS;else aS=Eo[5];let lS;if(Eo[6]!==ot.handle)lS=ot.handle?.getPendingDelta()??0,Eo[6]=ot.handle,Eo[7]=lS;else lS=Eo[7];return iS+aS+lS}
+`;
+  const result = patchStickyPromptHeader(misowned);
+  assert.equal(result.patched, 0, "must not patch a component that is not the sticky one");
+  assert.equal(result.content, misowned);
+  // And the verifier must not call that bundle clean either.
+  assert.notEqual(evaluatePatchModule("sticky-prompt-header", misowned), null);
+});
+
 test("re-running the patch does not force a guard twice", () => {
   const once = patchStickyPromptHeader(memoizedFixture).content;
   const twice = patchStickyPromptHeader(once);
