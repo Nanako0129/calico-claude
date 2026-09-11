@@ -636,6 +636,16 @@ function ownedByStickyComponent(content, index) {
   return !content.slice(setter, index).includes("function ");
 }
 
+// Minified identifiers are not regex-safe. Bun's minifier emits names like `$e`
+// and `$p`, and `$` is an anchor: interpolating a captured local straight into
+// a RegExp turns `${local}=$` into an anchor followed by the rest of the name,
+// and the test silently stops matching. 2.1.269 renamed one statusline local
+// from `Le` to `$e` and took that module from 2 patched to 0 exactly that way.
+// Every captured identifier that reaches a RegExp goes through here.
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // Index of the `}` that closes the `{` at openIndex, or -1.
 function closingBraceIndex(text, openIndex) {
   let depth = 0;
@@ -803,7 +813,6 @@ function patchThinkingStreaming(content) {
   let propCandidates = 0;
   let propPatched = 0;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
-  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let streamingVar =
     output.match(/hidePastThinking:!0,streamingThinking:([A-Za-z_$][\w$]*)/)?.[1] ??
     output.match(
@@ -1578,10 +1587,10 @@ function patchThinkingStreaming(content) {
       );
       const thinkingDeltaAfter = `case"thinking_delta":{${thinkingDeltaBody}return;}`;
       const thinkingDeltaProgressPattern = new RegExp(
-        `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+        `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${escapeRegExp(eventParam)}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
       );
       const thinkingDeltaProgressWithTextPattern = new RegExp(
-        `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:([A-Za-z_$][\\w$]*)\\(\\1\\.thinking\\)\\}\\);return\\}`
+        `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${escapeRegExp(eventParam)}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:([A-Za-z_$][\\w$]*)\\(\\1\\.thinking\\)\\}\\);return\\}`
       );
 
       const replacements = [
@@ -1795,7 +1804,7 @@ function patchThinkingStreaming(content) {
 
       if (displayTransformParam !== null) {
         const messageStopAuthoringProgressPattern = new RegExp(
-          `if\\(${eventParam}\\.event\\.type==="message_stop"\\)\\{if\\(` +
+          `if\\(${escapeRegExp(eventParam)}\\.event\\.type==="message_stop"\\)\\{if\\(` +
             `${displayTransformParam}\\?\\.finalize\\(\\),` +
             `${setModeParam}\\?\\.\\("tool-use"\\),` +
             `${setStreamingToolsParam}\\?\\.\\(\\(\\)=>\\[\\]\\),` +
@@ -1818,10 +1827,10 @@ function patchThinkingStreaming(content) {
       }
 
       const thinkingDeltaProgressPattern = new RegExp(
-        `case"thinking_delta":\\{let\\{delta:(${identifierPattern})\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)(${identifierPattern})\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+        `case"thinking_delta":\\{let\\{delta:(${identifierPattern})\\}=${escapeRegExp(eventParam)}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)(${identifierPattern})\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
       );
       const thinkingDeltaProgressWithTextPattern = new RegExp(
-        `case"thinking_delta":\\{let\\{delta:(${identifierPattern})\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)(${identifierPattern})\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:(${identifierPattern})\\(\\1\\.thinking\\)\\}\\);return\\}`
+        `case"thinking_delta":\\{let\\{delta:(${identifierPattern})\\}=${escapeRegExp(eventParam)}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)(${identifierPattern})\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:(${identifierPattern})\\(\\1\\.thinking\\)\\}\\);return\\}`
       );
 
       const nextThinkingDeltaProgressSegment = nextHandlerSegment.replace(
@@ -1925,13 +1934,13 @@ function patchThinkingStreaming(content) {
             thinkingDeltaBody === null
               ? null
               : new RegExp(
-                  `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
+                  `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${escapeRegExp(eventParam)}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);return\\}`
                 );
           const thinkingDeltaProgressWithTextPattern =
             thinkingDeltaBody === null
               ? null
               : new RegExp(
-                  `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${eventParam}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:([A-Za-z_$][\\w$]*)\\(\\1\\.thinking\\)\\}\\);return\\}`
+                  `case"thinking_delta":\\{let\\{delta:([A-Za-z_$][\\w$]*)\\}=${escapeRegExp(eventParam)}\\.event;if\\("estimated_tokens"in \\1&&typeof \\1\\.estimated_tokens==="number"\\)([A-Za-z_$][\\w$]*)\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:\\1\\.estimated_tokens\\}\\);else if\\("thinking"in \\1&&typeof \\1\\.thinking==="string"&&\\1\\.thinking\\.length>0\\)\\2\\?\\.\\(\\{type:"thinking_progress",estimatedTokensDelta:([A-Za-z_$][\\w$]*)\\(\\1\\.thinking\\)\\}\\);return\\}`
                 );
 
           const wg6Replacements = [
@@ -2053,7 +2062,7 @@ function patchSubagentPromptVisibility(content, ctx = {}) {
     }
 
     const transcriptModeVar = transcriptModeMatch[1];
-    const gatePattern = new RegExp(`${transcriptModeVar}&&([A-Za-z_$][\\w$]*)&&`, "g");
+    const gatePattern = new RegExp(`${escapeRegExp(transcriptModeVar)}&&([A-Za-z_$][\\w$]*)&&`, "g");
 
     let localCandidates = 0;
     let localPatched = 0;
@@ -2773,7 +2782,6 @@ function patchCompactTokensSaved(content) {
 function patchBackgroundAgentUsage(content) {
   const original = content;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
-  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // The replacement rewrites this initialiser, so any field upstream adds has to
   // be carried across rather than silently dropped: 2.1.246 appended
   // `seenToolUseIds:new Set`. Capture the trailing fields verbatim. A future
@@ -2983,7 +2991,6 @@ function patchBackgroundAgentUsage(content) {
 function patchStatuslineCommittedUsage(content) {
   const original = content;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
-  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const reducerPattern = new RegExp(
     `function (${identifierPattern})\\((${identifierPattern})\\)\\{for\\(let (${identifierPattern})=\\2\\.length-1;\\3>=0;\\3--\\)\\{let (${identifierPattern})=\\2\\[\\3\\],(${identifierPattern})=\\4\\?(${identifierPattern})\\(\\4\\):void 0;if\\(\\5\\)return\\{input_tokens:\\5\\.input_tokens,output_tokens:\\5\\.output_tokens,cache_creation_input_tokens:\\5\\.cache_creation_input_tokens\\?\\?0,cache_read_input_tokens:\\5\\.cache_read_input_tokens\\?\\?0\\}\\}return null\\}`,
     "g"
@@ -3602,7 +3609,7 @@ function patchStatuslineRateLimitWindows(content) {
   // the guard. Same boundary as the occurrence test below.
   const projectionAssignsGuardLocal =
     projectionIndex !== -1 &&
-    new RegExp(`(?:^|[^\\w$.])${guardLocal}=$`).test(
+    new RegExp(`(?:^|[^\\w$.])${escapeRegExp(guardLocal)}=$`).test(
       content.slice(Math.max(0, projectionIndex - 40), projectionIndex)
     );
 
@@ -3646,7 +3653,7 @@ function patchStatuslineRateLimitWindows(content) {
   // object literal and does not mention the local at all.
   const between = projectionEnd === -1 ? "" : content.slice(projectionEnd, guardIndex);
   const guardLocalOccursBetween = new RegExp(
-    `(?:^|[^\\w$.])${guardLocal}(?![\\w$])`
+    `(?:^|[^\\w$.])${escapeRegExp(guardLocal)}(?![\\w$])`
   ).test(between);
 
   if (
@@ -4217,7 +4224,6 @@ function patchActiveTurnPromptIdentity(content) {
     // not silently drop this site.
     const sourceParam = clientStartMatch[2];
     const contextParam = clientStartMatch[3];
-    const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const contextRe = escapeRegExp(contextParam);
     const localsPattern = new RegExp(
       `,([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(${contextRe}\\)\\?void 0:${contextRe},([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(\\),([A-Za-z_$][\\w$]*)=\\{`

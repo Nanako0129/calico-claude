@@ -89,6 +89,14 @@ function ownedByStickyComponent(content: string, index: number): boolean {
   return !content.slice(setter, index).includes("function ");
 }
 
+// Minified identifiers are not regex-safe: Bun emits names like `$e`, and `$`
+// is an anchor. Kept in lockstep with patch-claude-display.ts, where 2.1.269
+// renamed a statusline local from `Le` to `$e` and silently took that module
+// from 2 patched to 0.
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function inSameModule(content: string, first: number, second: number): boolean {
   if (first < 0 || second < 0) {
     return false;
@@ -679,12 +687,12 @@ const CHECKS: Check[] = [
       // argument list one level of call nesting deep, matching the patcher.
       const dispatchArguments = "(?:,(?:[^()]|\\([^()]*\\))*)?";
       const awaitedDispatchPattern = new RegExp(
-        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${dispatchRecordLocal}${dispatchArguments}\\)\\]\\)`,
+        `\\},\\[,(${identifier})\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(${identifier})\\(${escapeRegExp(dispatchRecordLocal)}${dispatchArguments}\\)\\]\\)`,
         "g"
       );
       const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
       const directDispatchPattern = new RegExp(
-        `(${identifier})\\(${dispatchRecordLocal}${dispatchArguments}\\)`,
+        `(${identifier})\\(${escapeRegExp(dispatchRecordLocal)}${dispatchArguments}\\)`,
         "g"
       );
       const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
@@ -1864,7 +1872,7 @@ const CHECKS: Check[] = [
         }
         for (const call of reducerCalls) {
           const declaration = new RegExp(
-            `function ${call[1]}\\(\\{content:[A-Za-z_$][\\w$]*,usage:`,
+            `function ${escapeRegExp(call[1])}\\(\\{content:[A-Za-z_$][\\w$]*,usage:`,
             "g"
           );
           const declared = [...content.matchAll(declaration)].some((match) =>

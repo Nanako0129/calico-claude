@@ -195,3 +195,41 @@ function hqw(){let k=tLn(),A=elsewhere();x.A={...k.five_hour&&{five_hour:{used_p
   assert.equal(result.patched, 0);
   assert.equal(result.content, propertyAssigned);
 });
+
+// Minified identifiers are not regex-safe. Bun emits names like `$e` and `$p`,
+// and the ownership proof interpolated the guard's local straight into a
+// RegExp, where `$` reads as an anchor rather than a character. 2.1.269 renamed
+// this local from `Le` to `$e` and the module went from 2 patched to 0 —
+// without the anchors drifting at all, which is why it did not look like the
+// usual shape change: both patterns still matched, and the module rejected its
+// own match.
+//
+// Run over every name that contains a metacharacter reachable from the
+// minifier's alphabet, not just the one upstream happened to pick.
+for (const local of ["$e", "$", "$$", "a$b", "_$"]) {
+  test(`patches when the guard's local is spelled ${local}`, () => {
+    // A function replacement, because `$` is special in a replacement *string*
+    // too: `"$$="` collapses to `"$="` and the fixture would silently test the
+    // wrong name.
+    const rename = (text, from, to) => text.split(from).join(to);
+    let source = rename(fixture, "A=", `${local}=`);
+    source = rename(source, "A.", `${local}.`);
+    source = rename(source, "A}", `${local}}`);
+    assert.notEqual(source, fixture, `${local} fixture did not change`);
+    assert.ok(source.includes(`${local}.five_hour`), `${local} fixture must carry the name verbatim`);
+
+    const result = patchStatuslineRateLimitWindows(source);
+    assert.equal(result.candidates, 2);
+    assert.equal(result.patched, 2, `a local named ${local} must not defeat the ownership proof`);
+
+    // And the rewrite still works end to end, not merely textually.
+    const context = runPatched(result.content);
+    context.setState({
+      five_hour: windowState(0.5, 1),
+      seven_day_overage_included: windowState(0.25, 2),
+    });
+    const payload = context.hqw();
+    assert.equal(payload.rate_limits.five_hour.used_percentage, 50);
+    assert.equal(payload.rate_limits.seven_day_overage_included.used_percentage, 25);
+  });
+}
