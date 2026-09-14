@@ -1171,11 +1171,24 @@ const CHECKS: Check[] = [
       const wrapperIndex = wrapper.match.index ?? -1;
       const wrapperFunctionStart = content.lastIndexOf("function ", wrapperIndex);
 
-      const terminalPattern = new RegExp(
-        `for\\(let (${identifier}) of (${identifier})\\)\\1\\.message\\.usage=(${identifier}),\\1\\.message\\.stop_reason=(${identifier}),\\1\\.message\\.stop_details=(${identifier})\\.delta\\.stop_details\\?\\?null,\\4!=null&&!__calicoUsageIsExactAllZero\\(\\5\\.usage\\)&&__calicoUsageHasAccountingSignal\\(\\3\\)&&\\(\\1\\.__calicoUsageState\\.committed=!0,\\1\\.__calicoUsageState\\.usage=\\3\\);`,
+      // The commit is the same expression in both spellings of the loop body:
+      // a statement through 2.1.270, an `if` head from 2.1.271, where it sits
+      // ahead of upstream's own condition. Accept either and nothing else — a
+      // `if(`-prefixed statement form or a bare form with a trailing condition
+      // are shapes the patcher cannot emit.
+      const terminalCommit = `\\1\\.message\\.usage=(${identifier}),\\1\\.message\\.stop_reason=(${identifier}),\\1\\.message\\.stop_details=(${identifier})\\.delta\\.stop_details\\?\\?null,\\4!=null&&!__calicoUsageIsExactAllZero\\(\\5\\.usage\\)&&__calicoUsageHasAccountingSignal\\(\\3\\)&&\\(\\1\\.__calicoUsageState\\.committed=!0,\\1\\.__calicoUsageState\\.usage=\\3\\)`;
+      const terminalStatementPattern = new RegExp(
+        `for\\(let (${identifier}) of (${identifier})\\)${terminalCommit};`,
         "g"
       );
-      const terminalMatches = [...content.matchAll(terminalPattern)];
+      const terminalIfPattern = new RegExp(
+        `for\\(let (${identifier}) of (${identifier})\\)if\\(${terminalCommit},(?:[^()]|\\([^()]*\\))*\\)(?:[^;{}]|\\{[^{}]*\\})*;`,
+        "g"
+      );
+      const terminalMatches = [
+        ...content.matchAll(terminalStatementPattern),
+        ...content.matchAll(terminalIfPattern),
+      ];
       if (terminalMatches.length !== 1) {
         return `expected 1 semantic terminal commit, found ${terminalMatches.length}`;
       }
@@ -1584,9 +1597,11 @@ const CHECKS: Check[] = [
       // text check still green, so assert they are still one expression.
       // The spread argument is `<local>.result` up to 2.1.266 and a bare local
       // from 2.1.267, so the suffix is optional here for the same reason it is
-      // optional in the patch module's own anchor.
+      // optional in the patch module's own anchor. The renderer's first
+      // argument became a member chain on 2.1.271 (`O(e.options.verbose,S)`)
+      // and is accepted in both spellings for the same reason.
       const wired =
-        /globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{[\s\S]{0,400}?\}\)\(([A-Za-z_$][\w$]*(?:\.result)?)\),[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\)/;
+        /globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{[\s\S]{0,400}?\}\)\(([A-Za-z_$][\w$]*(?:\.result)?)\),[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*,[A-Za-z_$][\w$]*\)\)/;
       return wired.test(content)
         ? null
         : "the computed saving is no longer sequenced with the renderer call";

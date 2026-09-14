@@ -887,3 +887,73 @@ test("statusline committed usage patch rejects a comma terminator without the if
   assert.equal(result.patched, 0);
   assert.equal(result.content, variant);
 });
+
+// 2.1.271 did to the terminal commit what 2.1.261 did to the aggregation: the
+// three assignments moved into an `if` head so a fourth operand and a body
+// could be appended.
+//
+//   2.1.270  for(let fg of sy)fg.message.usage=id,…stop_details??null;
+//   2.1.271  for(let Yd of gy)if(Yd.message.usage=hu,…stop_details??null,
+//            Qg!==void 0)Yd.message.resumable=Qg;
+//
+// Losing this one match took terminalCount to 0 and the module with it, since
+// every downstream anchor is derived from it.
+const TERMINAL_STATEMENT =
+  "for(let Ou of _r)Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null;";
+const TERMINAL_IF =
+  "for(let Ou of _r)if(Ou.message.usage=pn,Ou.message.stop_reason=Se,Ou.message.stop_details=ar.delta.stop_details??null,resumable!==void 0)Ou.message.resumable=resumable;";
+
+test("statusline committed usage patch accepts the terminal commit inside an if head", () => {
+  const variant = committedUsageFixture.replace(TERMINAL_STATEMENT, TERMINAL_IF);
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+  assert.ok(result.content.includes("__calicoUsageState"));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+// The condition and the body are upstream's. Rebuilding the loop instead of
+// re-emitting them would drop both, which no text check downstream notices
+// because every calico marker is still present.
+test("statusline committed usage patch preserves the if head's condition and body", () => {
+  const variant = committedUsageFixture.replace(TERMINAL_STATEMENT, TERMINAL_IF);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.ok(result.content.includes("resumable!==void 0)Ou.message.resumable=resumable;"));
+  // The commit goes in ahead of upstream's condition, so the `if` still tests
+  // what upstream wrote rather than the commit's own value.
+  assert.ok(
+    result.content.includes(
+      "Ou.__calicoUsageState.usage=pn),resumable!==void 0)Ou.message.resumable=resumable;"
+    )
+  );
+});
+
+// Paired, not crossed — same discipline as the aggregation's two spellings.
+// A bare loop body that ends in a condition, or an `if(` head that ends in a
+// plain `;`, are shapes the patcher cannot emit, so it must not accept them.
+test("statusline committed usage patch rejects an if head without a condition tail", () => {
+  const variant = committedUsageFixture.replace(
+    TERMINAL_STATEMENT,
+    TERMINAL_STATEMENT.replace("for(let Ou of _r)", "for(let Ou of _r)if(")
+  );
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+});
+
+test("statusline committed usage patch rejects a terminal condition tail without the if head", () => {
+  const variant = committedUsageFixture.replace(
+    TERMINAL_STATEMENT,
+    TERMINAL_STATEMENT.replace("??null;", "??null,resumable!==void 0;")
+  );
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, variant);
+});

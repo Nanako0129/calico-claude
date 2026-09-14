@@ -25,14 +25,24 @@ const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 // directly, and reads the pre-compaction figure from
 // `compactMetadata.preTokens` instead. Requiring the `.result` suffix took the
 // module to zero candidates on 2.1.267 and blocked the release.
-const fixture = (resultVar, era = "pre267") => `
+//
+// 2.1.271 moved the verbose read out of the renderer and into its caller, so
+// the renderer's first argument is a member chain rather than the bare command
+// context (`w(e.options.verbose,y)`). Nothing in the module reads that
+// argument, but pinning it to an identifier cost the call-site match and with
+// it the module — 1 candidate, 0 patched, release blocked.
+const fixture = (resultVar, era = "pre267") => {
+  const verbose = era === "v271" ? "s" : "s.options.verbose";
+  const contextArg = era === "v271" ? "e.options.verbose" : "e";
+  return `
 var ie={dim:(s)=>"DIM("+s+")"};
 function T4(){return tipText}
 function p_(){return"ctrl+o"}
-function w(s,e){let n=T4("tip"),o=p_("app:toggleTranscript","Global","ctrl+o"),m=[...s.options.verbose?[]:[\`(\${o} to see full summary)\`],...e?[e]:[],...n?[n]:[]];return ie.dim("Compacted "+m.join(\`\\n\`))}
-function finish(${resultVar},e,y){return{type:"compact",compactionResult:{...${resultVar}${era === "pre267" ? ".result" : ""},userDisplayMessage:y},displayText:w(e,y)}}
-function renderOnly(e,y){return w(e,y)}
+function w(s,e){let n=T4("tip"),o=p_("app:toggleTranscript","Global","ctrl+o"),m=[...${verbose}?[]:[\`(\${o} to see full summary)\`],...e?[e]:[],...n?[n]:[]];return ie.dim("Compacted "+m.join(\`\\n\`))}
+function finish(${resultVar},e,y){return{type:"compact",compactionResult:{...${resultVar}${era === "pre267" ? ".result" : ""},userDisplayMessage:y},displayText:w(${contextArg},y)}}
+function renderOnly(e,y){return w(${contextArg},y)}
 `;
+};
 
 // Pre-2.1.267 shape: the wrapper carries `.result`, pre lives on the result.
 const outcome = (pre, post) => ({
@@ -152,6 +162,22 @@ test("handles the 2.1.267 bare spread with preTokens on compactMetadata", () => 
   assert.equal(render(300000, undefined), "DIM(Compacted (ctrl+o to see full summary))");
   // And when the compaction did not shrink anything.
   assert.equal(render(43700, 300000), "DIM(Compacted (ctrl+o to see full summary))");
+});
+
+// 2.1.271: the verbose read moved out of the renderer, so its first argument is
+// `e.options.verbose` rather than `e`. The argument is re-emitted verbatim and
+// never read here; what this proves is that the call site still matches and the
+// value still reaches the renderer through the same sequenced expression.
+test("handles the 2.1.271 member-chain renderer argument", () => {
+  const { context } = load("k", "v271");
+  const render = (pre, post) =>
+    context.finish(outcome267(pre, post), { options: { verbose: false } }, undefined).displayText;
+
+  assert.equal(
+    render(300000, 43700),
+    "DIM(Compacted · saved 256.3k tokens (ctrl+o to see full summary))"
+  );
+  assert.equal(render(300000, undefined), "DIM(Compacted (ctrl+o to see full summary))");
 });
 
 // preCompactTokenCount wins when both are present, so a bundle carrying the old

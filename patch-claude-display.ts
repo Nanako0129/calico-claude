@@ -2708,8 +2708,19 @@ function patchCompactTokensSaved(content) {
   // anchor was untouched, so the module reported 1 candidate and refused to
   // apply — the atomicity guard doing its job rather than shipping a producer
   // with no consumer.
+  //
+  // 2.1.271 changed the renderer's first argument from the bare command context
+  // to a field read off it:
+  //
+  //   2.1.270  displayText:O(e,_)
+  //   2.1.271  displayText:O(e.options.verbose,S)
+  //
+  // Nothing here reads that argument — it is captured only so the replacement
+  // can re-emit it verbatim — so it accepts a member chain now. Pinning it to a
+  // bare identifier cost the call-site match and, with it, the module: the
+  // render anchor still matched, so this reported 1 candidate and 0 patched.
   const callSitePattern =
-    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},displayText:([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),\2\)/g;
+    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},displayText:([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\2\)/g;
 
   // Reads the compaction result rather than the caller's `preTokens`/
   // `postTokens` locals: those are declared ~700 characters earlier and only
@@ -3047,8 +3058,32 @@ function patchStatuslineCommittedUsage(content) {
     `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\},\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
-  const terminalPattern = new RegExp(
+  // Two spellings of the terminal commit, paired rather than crossed. Through
+  // 2.1.270 the loop body is the three assignments as a statement. 2.1.271
+  // folded them into an `if` head so it could append a fourth operand and a
+  // body:
+  //
+  //   2.1.270  for(let fg of sy)fg.message.usage=id,fg.message.stop_reason=_h,
+  //            fg.message.stop_details=ll.delta.stop_details??null;
+  //   2.1.271  for(let Yd of gy)if(Yd.message.usage=hu,Yd.message.stop_reason=zd,
+  //            Yd.message.stop_details=Al.delta.stop_details??null,
+  //            Qg!==void 0)Yd.message.resumable=Qg;
+  //
+  // Same drift class as 2.1.261's aggregation move, and the same cost: losing
+  // this one match took terminalCount to 0 and the module with it, because
+  // every downstream anchor is derived from it.
+  //
+  // The replacement cannot stay a rebuild for the `if` form — that would drop
+  // the condition and the `resumable` assignment — so the condition and body
+  // are captured and re-emitted verbatim, and the commit is inserted as one
+  // more comma operand ahead of the condition. Comma evaluates left to right
+  // and yields its last operand, so the `if` still tests what upstream wrote.
+  const terminalStatementPattern = new RegExp(
     `for\\(let (${identifierPattern}) of (${identifierPattern})\\)\\1\\.message\\.usage=(${identifierPattern}),\\1\\.message\\.stop_reason=(${identifierPattern}),\\1\\.message\\.stop_details=(${identifierPattern})\\.delta\\.stop_details\\?\\?null;`,
+    "g"
+  );
+  const terminalIfPattern = new RegExp(
+    `for\\(let (${identifierPattern}) of (${identifierPattern})\\)if\\(\\1\\.message\\.usage=(${identifierPattern}),\\1\\.message\\.stop_reason=(${identifierPattern}),\\1\\.message\\.stop_details=(${identifierPattern})\\.delta\\.stop_details\\?\\?null,((?:[^()]|\\([^()]*\\))*)\\)((?:[^;{}]|\\{[^{}]*\\})*);`,
     "g"
   );
   const cloneSyncPattern = new RegExp(
@@ -3105,8 +3140,22 @@ function patchStatuslineCommittedUsage(content) {
   const wrapperIndex = wrapperMatch?.match.index ?? -1;
   const wrapperLocal = wrapperMatch?.local;
   const wrapperFunctionStart = wrapperIndex === -1 ? -1 : content.lastIndexOf("function ", wrapperIndex);
-  const terminalMatches = [...content.matchAll(terminalPattern)];
-  const terminalMatch = terminalMatches[0];
+  const terminalMatches = [
+    ...[...content.matchAll(terminalStatementPattern)].map((match) => ({
+      match,
+      pattern: terminalStatementPattern,
+      condition: null,
+      body: null,
+    })),
+    ...[...content.matchAll(terminalIfPattern)].map((match) => ({
+      match,
+      pattern: terminalIfPattern,
+      condition: match[6],
+      body: match[7],
+    })),
+  ];
+  const terminalForm = terminalMatches[0];
+  const terminalMatch = terminalForm?.match;
   const terminalIndex = terminalMatch?.index ?? -1;
   const terminalFunctionStart = terminalIndex === -1 ? -1 : content.lastIndexOf("function ", terminalIndex);
   const terminalItem = terminalMatch?.[1];
@@ -3337,7 +3386,15 @@ function patchStatuslineCommittedUsage(content) {
   ) {
     return { content: original, candidates, patched: 0 };
   }
-  const terminalReplacement = `for(let ${terminalItem} of ${terminalArray})${terminalItem}.message.usage=${terminalUsage},${terminalItem}.message.stop_reason=${terminalStop},${terminalItem}.message.stop_details=${terminalRawEvent}.delta.stop_details??null,${terminalStop}!=null&&!__calicoUsageIsExactAllZero(${terminalRawEvent}.usage)&&__calicoUsageHasAccountingSignal(${terminalUsage})&&(${terminalItem}.__calicoUsageState.committed=!0,${terminalItem}.__calicoUsageState.usage=${terminalUsage});`;
+  const terminalAssignments = `${terminalItem}.message.usage=${terminalUsage},${terminalItem}.message.stop_reason=${terminalStop},${terminalItem}.message.stop_details=${terminalRawEvent}.delta.stop_details??null`;
+  const terminalCommit = `${terminalStop}!=null&&!__calicoUsageIsExactAllZero(${terminalRawEvent}.usage)&&__calicoUsageHasAccountingSignal(${terminalUsage})&&(${terminalItem}.__calicoUsageState.committed=!0,${terminalItem}.__calicoUsageState.usage=${terminalUsage})`;
+  // The `if` form's condition and body are upstream's, re-emitted verbatim; the
+  // commit goes in as one more comma operand ahead of the condition so the test
+  // still yields what upstream wrote.
+  const terminalReplacement =
+    terminalForm.condition === null
+      ? `for(let ${terminalItem} of ${terminalArray})${terminalAssignments},${terminalCommit};`
+      : `for(let ${terminalItem} of ${terminalArray})if(${terminalAssignments},${terminalCommit},${terminalForm.condition})${terminalForm.body};`;
   const cloneReplacements = cloneMatches.map(
     (match) => `${cloneArray}.push({src:${match[1]},dst:${match[2]}})`
   );
@@ -3355,7 +3412,7 @@ function patchStatuslineCommittedUsage(content) {
   // captured minified locals (terminalItem, terminalArray, cloneSyncSource,
   // …); route them through callbacks so a captured `$$`/`$&` cannot expand.
   let output = original.replace(wrapperMatch.match[0], () => wrapperReplacement);
-  output = output.replace(terminalPattern, () => terminalReplacement);
+  output = output.replace(terminalForm.pattern, () => terminalReplacement);
   let cloneIndex = 0;
   output = output.replace(cloneRegistrationPattern, () => cloneReplacements[cloneIndex++]);
   output = output.replace(cloneSyncPattern, () => cloneSyncReplacement);
