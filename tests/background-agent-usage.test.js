@@ -71,11 +71,51 @@ function renamedFixture() {
   return renames.reduce((source, [from, to]) => renameToken(source, from, to), fixture);
 }
 
+// 2.1.273 stopped reading the usage object straight off the message. It routes
+// it through a normaliser that resolves `iterations` to the authoritative entry
+// and returns null when there is nothing to account, and guards the whole
+// accounting block on the result:
+//
+//   2.1.272  let d=n.message.usage;e.latestInputTokens=…
+//   2.1.273  let d=mQ(n.message.usage);if(d){e.latestInputTokens=…}
+//
+// Both halves matter. Missing the new spelling takes the module to zero and
+// blocks the release; re-emitting a rebuilt `let d=n.message.usage` instead of
+// the matched initialiser would keep every calico marker present while handing
+// the tracker the raw object and leaving upstream's own code reading the
+// normalised one — two different figures for the same response.
+function normalizedFixture(source = fixture) {
+  return source
+    .replace(
+      "let o=t.message.usage;e.latestInputTokens=",
+      "let o=nrm(t.message.usage);if(o){e.latestInputTokens="
+    )
+    .replace(
+      "while(e.recentActivities.length>Y0u)e.recentActivities.shift()}",
+      "while(e.recentActivities.length>Y0u)e.recentActivities.shift()}}"
+    );
+}
+
+// Mirrors what upstream's normaliser does: the last iteration wins when the
+// response was retried, and a missing usage object accounts nothing.
+const normalise = (usage) =>
+  usage == null
+    ? null
+    : usage.iterations?.at(-1)
+      ? { ...usage, ...usage.iterations.at(-1) }
+      : usage;
+
 function runtime(source = fixture) {
   const result = patchBackgroundAgentUsage(source);
   assert.equal(result.candidates, 4);
   assert.equal(result.patched, 4);
-  const context = { Y0u: 5, Th: "Task", Oy: "REPL", ZAt: () => undefined };
+  const context = {
+    Y0u: 5,
+    Th: "Task",
+    Oy: "REPL",
+    ZAt: () => undefined,
+    nrm: normalise,
+  };
   vm.createContext(context);
   vm.runInContext(result.content, context);
   return { context, result };
@@ -420,5 +460,82 @@ test("fails atomically when progress and completion matches come from different 
 
   assert.equal(result.patched, 0);
   assert.equal(result.content, split);
+  assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
+});
+
+// 2.1.273: the usage read is normalised and guarded. The module has to accept
+// the new spelling — missing it zeroes the module and blocks the release, which
+// is what happened on the first 2.1.273 preflight.
+test("patches the 2.1.273 normalised usage read", () => {
+  const source = normalizedFixture();
+  const result = patchBackgroundAgentUsage(source);
+
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
+});
+
+// The tracker must be handed what upstream resolved, not the raw object. A
+// rebuilt `let o=t.message.usage` would leave every marker present and every
+// count wrong for any response that carries iterations — the figure the
+// statusline shows would disagree with the one upstream's own code computes one
+// line later.
+test("accounts the normalised usage rather than the raw object", () => {
+  const { context } = runtime(normalizedFixture());
+  const tracker = context.fQn();
+
+  context.hQn(
+    tracker,
+    assistant(
+      "resp-iter",
+      {
+        input_tokens: 10,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 7,
+        // The retry that actually produced the answer.
+        iterations: [
+          { input_tokens: 10, output_tokens: 7 },
+          { input_tokens: 400, output_tokens: 90 },
+        ],
+      },
+      "end_turn"
+    )
+  );
+
+  // 400 + 90 from the last iteration, not 10 + 7 from the outer object.
+  assert.equal(context.mQn(tracker), 490);
+});
+
+// The guard the patcher re-emits has to keep guarding: a message whose usage
+// normalises to null must account nothing and must not run the block upstream
+// put inside the guard.
+test("preserves the null guard around the accounting block", () => {
+  const { context } = runtime(normalizedFixture());
+  const tracker = context.fQn();
+
+  context.hQn(
+    tracker,
+    assistant("resp-null", null, "end_turn", [{ type: "tool_use", name: "Read", input: {} }])
+  );
+
+  assert.equal(context.mQn(tracker), 0);
+  // toolUseCount lives inside the guard upstream opened, so it must not run.
+  assert.equal(tracker.toolUseCount, 0);
+});
+
+// Paired, not crossed: the guard belongs to the normalised spelling. A bundle
+// that wraps the read but keeps the accounting unguarded is a shape the patcher
+// cannot re-emit correctly, so it must report zero rather than emit a stray
+// brace.
+test("rejects a normalised read without its guard", () => {
+  const broken = fixture.replace(
+    "let o=t.message.usage;e.latestInputTokens=",
+    "let o=nrm(t.message.usage);e.latestInputTokens="
+  );
+  const result = patchBackgroundAgentUsage(broken);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, broken);
   assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
 });

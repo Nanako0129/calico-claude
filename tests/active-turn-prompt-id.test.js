@@ -217,3 +217,52 @@ test("supports the request-journal prompt identity shape", async () => {
   });
   assert.equal(mainHeaders["x-calico-prompt-id"], "turn-b");
 });
+
+// 2.1.273 put three locals between the agent-context sanitizer assignment and
+// the extra-header factory:
+//
+//   2.1.272  ,c=$pe(i)?void 0:i,u=kAi(),p={
+//   2.1.273  ,c=$pe(i)?void 0:i,fe=Tle(),ge=fe?hNr(o,i):void 0,ve=fe?yNr(o,i):void 0,u=kAi(),p={
+//
+// Pinning that whole run took the client half of the module to zero and
+// blocked the release. Nothing injected reads the extra-header local, so only
+// the sanitizer assignment is pinned now and the header entry is found on its
+// own shape.
+const fixture273 = fixture.replace(
+  "c=$pe(i)?void 0:i,u=kAi(),p={",
+  "c=$pe(i)?void 0:i,fe=bs(),ge=fe?bhi(o):void 0,ve=fe?bhi(i):void 0,u=kAi(),p={"
+);
+
+test("tolerates locals inserted between the sanitizer and the header object", async () => {
+  const result = patchActiveTurnPromptIdentity(fixture273);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
+
+  const context = { process: { env: { REMORA_ACTIVE: "1" } } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+
+  const headers = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(headers["x-calico-prompt-id"], "turn-a");
+  assert.equal(headers["x-calico-active-turn-version"], "1");
+
+  // The locals upstream inserted must survive: they are re-emitted from the
+  // text after the injection point, not rebuilt.
+  assert.match(result.content, /ge=fe\?bhi\(o\):void 0,ve=fe\?bhi\(i\):void 0,u=kAi\(\)/);
+});
+
+// Both injections or neither. A bundle whose client factory has the sanitizer
+// assignment but no session-id header entry to inject after must report zero
+// rather than emit the declarations with nothing reading them.
+test("fails closed when the header entry is missing", () => {
+  const noHeaderEntry = fixture.replace('"X-Claude-Code-Session-Id":xt(),...u,', "...u,");
+  const result = patchActiveTurnPromptIdentity(noHeaderEntry);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, noHeaderEntry);
+  assert.equal(result.content.includes("__calicoQueryKind"), false);
+});

@@ -909,11 +909,24 @@ const CHECKS: Check[] = [
         return "background helper block is not executable code adjacent to tracker construction";
       }
 
-      const eventPattern = new RegExp(
-        `if\\((${identifier})\\.type==="stream_event"\\)\\{if\\(\\1\\.event\\.type==="message_start"\\)(${identifier})\\.activeMessageId=\\1\\.event\\.message\\.id,__calicoTrackAgentUsage\\(\\2,\\1\\.event\\.message\\.usage,\\2\\.activeMessageId,!1\\);else if\\(\\1\\.event\\.type==="message_delta"\\)__calicoTrackAgentUsage\\(\\2,\\1\\.event\\.usage,\\2\\.activeMessageId,\\1\\.event\\.delta\\.stop_reason!=null\\);else if\\(\\1\\.event\\.type==="message_stop"\\)\\2\\.activeMessageId=null;return\\}if\\(\\1\\.type!=="assistant"\\)return;let (${identifier})=\\1\\.message\\.usage;__calicoTrackAgentUsage\\(\\2,\\3,\\1\\.message\\.id,\\1\\.message\\.stop_reason!=null\\);`,
+      // Two spellings of the usage read, in lockstep with the paired
+      // accounting patterns in patch-claude-display.ts: bare through 2.1.272,
+      // and 2.1.273's normaliser call followed by the null guard that the
+      // patcher re-emits after our tracking call.
+      const eventHead = `if\\((${identifier})\\.type==="stream_event"\\)\\{if\\(\\1\\.event\\.type==="message_start"\\)(${identifier})\\.activeMessageId=\\1\\.event\\.message\\.id,__calicoTrackAgentUsage\\(\\2,\\1\\.event\\.message\\.usage,\\2\\.activeMessageId,!1\\);else if\\(\\1\\.event\\.type==="message_delta"\\)__calicoTrackAgentUsage\\(\\2,\\1\\.event\\.usage,\\2\\.activeMessageId,\\1\\.event\\.delta\\.stop_reason!=null\\);else if\\(\\1\\.event\\.type==="message_stop"\\)\\2\\.activeMessageId=null;return\\}if\\(\\1\\.type!=="assistant"\\)return;let (${identifier})=`;
+      const eventTail = `__calicoTrackAgentUsage\\(\\2,\\3,\\1\\.message\\.id,\\1\\.message\\.stop_reason!=null\\);`;
+      const bareEventPattern = new RegExp(
+        `${eventHead}\\1\\.message\\.usage;${eventTail}`,
         "g"
       );
-      const eventMatches = [...content.matchAll(eventPattern)];
+      const normalizedEventPattern = new RegExp(
+        `${eventHead}${identifier}\\(\\1\\.message\\.usage\\);${eventTail}if\\(\\3\\)\\{`,
+        "g"
+      );
+      const eventMatches = [
+        ...content.matchAll(bareEventPattern),
+        ...content.matchAll(normalizedEventPattern),
+      ];
       if (eventMatches.length !== 1) {
         return `expected 1 semantic background event accounting path, found ${eventMatches.length}`;
       }
@@ -1298,11 +1311,22 @@ const CHECKS: Check[] = [
         return "clone registrations and sync loop are in different functions";
       }
 
-      const usageReducerPattern = new RegExp(
-        `function (${identifier})\\((${identifier})\\)\\{for\\(let (${identifier})=\\2\\.length-1;\\3>=0;\\3--\\)\\{let (${identifier})=\\2\\[\\3\\],(${identifier})=\\4\\?(${identifier})\\(\\4\\):void 0;if\\(\\5\\)return\\{input_tokens:\\5\\.input_tokens,output_tokens:\\5\\.output_tokens,cache_creation_input_tokens:\\5\\.cache_creation_input_tokens\\?\\?0,cache_read_input_tokens:\\5\\.cache_read_input_tokens\\?\\?0\\}\\}return null\\}`,
+      // Inline object through 2.1.272, shared normaliser call from 2.1.273.
+      // Paired with inlineReducerPattern / normalizedReducerPattern in
+      // patch-claude-display.ts.
+      const usageReducerHead = `function (${identifier})\\((${identifier})\\)\\{for\\(let (${identifier})=\\2\\.length-1;\\3>=0;\\3--\\)\\{let (${identifier})=\\2\\[\\3\\],(${identifier})=\\4\\?(${identifier})\\(\\4\\):void 0;if\\(\\5\\)return`;
+      const inlineUsageReducerPattern = new RegExp(
+        `${usageReducerHead}\\{input_tokens:\\5\\.input_tokens,output_tokens:\\5\\.output_tokens,cache_creation_input_tokens:\\5\\.cache_creation_input_tokens\\?\\?0,cache_read_input_tokens:\\5\\.cache_read_input_tokens\\?\\?0\\}\\}return null\\}`,
         "g"
       );
-      const usageReducerMatches = [...content.matchAll(usageReducerPattern)];
+      const normalizedUsageReducerPattern = new RegExp(
+        `${usageReducerHead} ?${identifier}\\(\\5\\)\\}return null\\}`,
+        "g"
+      );
+      const usageReducerMatches = [
+        ...content.matchAll(inlineUsageReducerPattern),
+        ...content.matchAll(normalizedUsageReducerPattern),
+      ];
       if (usageReducerMatches.length !== 1) {
         return `expected 1 semantic statusline usage reducer, found ${usageReducerMatches.length}`;
       }
