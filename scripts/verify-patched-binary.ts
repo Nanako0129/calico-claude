@@ -911,10 +911,15 @@ const CHECKS: Check[] = [
 
       // Two spellings of the usage read, in lockstep with the paired
       // accounting patterns in patch-claude-display.ts: bare through 2.1.272,
-      // and 2.1.273's normaliser call followed by the null guard that the
-      // patcher re-emits after our tracking call.
+      // and 2.1.273's shape-screen call followed by the guard that the patcher
+      // re-emits after our tracking call.
+      //
+      // The tracking call takes the raw `message.usage` in both, not the
+      // screened local — the same object the __calicoRefreshAgentUsage sweep
+      // can reach from the transcript. Asserting on the raw read here is what
+      // keeps the two paths that write this tracker from drifting apart.
       const eventHead = `if\\((${identifier})\\.type==="stream_event"\\)\\{if\\(\\1\\.event\\.type==="message_start"\\)(${identifier})\\.activeMessageId=\\1\\.event\\.message\\.id,__calicoTrackAgentUsage\\(\\2,\\1\\.event\\.message\\.usage,\\2\\.activeMessageId,!1\\);else if\\(\\1\\.event\\.type==="message_delta"\\)__calicoTrackAgentUsage\\(\\2,\\1\\.event\\.usage,\\2\\.activeMessageId,\\1\\.event\\.delta\\.stop_reason!=null\\);else if\\(\\1\\.event\\.type==="message_stop"\\)\\2\\.activeMessageId=null;return\\}if\\(\\1\\.type!=="assistant"\\)return;let (${identifier})=`;
-      const eventTail = `__calicoTrackAgentUsage\\(\\2,\\3,\\1\\.message\\.id,\\1\\.message\\.stop_reason!=null\\);`;
+      const eventTail = `__calicoTrackAgentUsage\\(\\2,\\1\\.message\\.usage,\\1\\.message\\.id,\\1\\.message\\.stop_reason!=null\\);`;
       const bareEventPattern = new RegExp(
         `${eventHead}\\1\\.message\\.usage;${eventTail}`,
         "g"

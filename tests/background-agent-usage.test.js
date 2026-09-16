@@ -72,18 +72,20 @@ function renamedFixture() {
 }
 
 // 2.1.273 stopped reading the usage object straight off the message. It routes
-// it through a normaliser that resolves `iterations` to the authoritative entry
-// and returns null when there is nothing to account, and guards the whole
-// accounting block on the result:
+// it through a shape screen and guards the accounting block on the verdict:
 //
-//   2.1.272  let d=n.message.usage;e.latestInputTokens=…
-//   2.1.273  let d=mQ(n.message.usage);if(d){e.latestInputTokens=…}
+//   2.1.272  let d=t.message.usage;e.latestInputTokens=…
+//   2.1.273  let d=mQ(t.message.usage);if(d){e.latestInputTokens=…}
 //
-// Both halves matter. Missing the new spelling takes the module to zero and
-// blocks the release; re-emitting a rebuilt `let d=n.message.usage` instead of
-// the matched initialiser would keep every calico marker present while handing
-// the tracker the raw object and leaving upstream's own code reading the
-// normalised one — two different figures for the same response.
+// Measured from the 2.1.273 macos-arm64 bundle, `mQ` is
+//
+//   function mQ(e){if(e==null||typeof e.input_tokens!=="number")return;
+//     if(typeof e.output_tokens==="number")return e;
+//     return e.output_tokens==null?{...e,output_tokens:0}:void 0}
+//
+// so it returns the object, fills a missing output_tokens with 0, or returns
+// undefined. It changes no figure it passes through — what it decides is
+// whether the block runs at all.
 function normalizedFixture(source = fixture) {
   return source
     .replace(
@@ -96,14 +98,17 @@ function normalizedFixture(source = fixture) {
     );
 }
 
-// Mirrors what upstream's normaliser does: the last iteration wins when the
-// response was retried, and a missing usage object accounts nothing.
-const normalise = (usage) =>
-  usage == null
-    ? null
-    : usage.iterations?.at(-1)
-      ? { ...usage, ...usage.iterations.at(-1) }
-      : usage;
+// The same admission rule `mQ` implements: a usable shape passes through, an
+// unusable one is rejected. Nothing about the figures changes, which is the
+// point — what the guard decides is whether the block behind it runs.
+const screen = (usage) =>
+  usage == null || typeof usage.input_tokens !== "number"
+    ? undefined
+    : typeof usage.output_tokens === "number"
+      ? usage
+      : usage.output_tokens == null
+        ? { ...usage, output_tokens: 0 }
+        : undefined;
 
 function runtime(source = fixture) {
   const result = patchBackgroundAgentUsage(source);
@@ -114,7 +119,7 @@ function runtime(source = fixture) {
     Th: "Task",
     Oy: "REPL",
     ZAt: () => undefined,
-    nrm: normalise,
+    nrm: screen,
   };
   vm.createContext(context);
   vm.runInContext(result.content, context);
@@ -475,40 +480,60 @@ test("patches the 2.1.273 normalised usage read", () => {
   assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
 });
 
-// The tracker must be handed what upstream resolved, not the raw object. A
-// rebuilt `let o=t.message.usage` would leave every marker present and every
-// count wrong for any response that carries iterations — the figure the
-// statusline shows would disagree with the one upstream's own code computes one
-// line later.
-test("accounts the normalised usage rather than the raw object", () => {
+// Re-emitting the matched initialiser rather than rebuilding it is what keeps
+// upstream's guard reading upstream's verdict. A rebuilt `let o=t.message.usage`
+// makes `if(o)` test the raw object instead, so a shape upstream screened out
+// would still run the block it put behind that guard — with every calico marker
+// present. Only the guarded block can show the difference: this usage is truthy
+// but fails the screen.
+test("the guard keeps testing the screen's verdict, not the raw object", () => {
   const { context } = runtime(normalizedFixture());
   const tracker = context.fQn();
 
   context.hQn(
     tracker,
     assistant(
-      "resp-iter",
-      {
-        input_tokens: 10,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
-        output_tokens: 7,
-        // The retry that actually produced the answer.
-        iterations: [
-          { input_tokens: 10, output_tokens: 7 },
-          { input_tokens: 400, output_tokens: 90 },
-        ],
-      },
-      "end_turn"
+      "resp-unusable",
+      // input_tokens present, output_tokens neither a number nor null — the
+      // one shape `mQ` rejects outright while the object itself is truthy.
+      { input_tokens: 400, output_tokens: "many" },
+      "end_turn",
+      [{ type: "tool_use", name: "Read", input: {} }]
     )
   );
 
-  // 400 + 90 from the last iteration, not 10 + 7 from the outer object.
-  assert.equal(context.mQn(tracker), 490);
+  // toolUseCount lives inside the guard upstream opened, so a rebuilt
+  // initialiser would count this one.
+  assert.equal(tracker.toolUseCount, 0);
+});
+
+// Two call sites write this tracker: the event path here, and the
+// __calicoRefreshAgentUsage sweep the progress and completion sites run over
+// the transcript. The sweep can only reach the raw `message.usage` — the
+// screen's verdict is not recorded on the message — so the event path must
+// admit on the same terms, or the same response is counted or skipped
+// depending on which path saw it last.
+test("tracks the same usage the transcript sweep will see", () => {
+  const { context } = runtime(normalizedFixture());
+
+  const message = assistant(
+    "resp-shared",
+    { input_tokens: 400, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 90 },
+    "end_turn"
+  );
+
+  const viaEvent = context.fQn();
+  context.hQn(viaEvent, message);
+
+  const viaSweep = context.fQn();
+  context.__calicoRefreshAgentUsage(viaSweep, [message]);
+
+  assert.equal(context.mQn(viaEvent), 490);
+  assert.equal(context.mQn(viaSweep), context.mQn(viaEvent));
 });
 
 // The guard the patcher re-emits has to keep guarding: a message whose usage
-// normalises to null must account nothing and must not run the block upstream
+// the screen rejects must account nothing and must not run the block upstream
 // put inside the guard.
 test("preserves the null guard around the accounting block", () => {
   const { context } = runtime(normalizedFixture());

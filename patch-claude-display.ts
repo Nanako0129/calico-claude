@@ -2827,18 +2827,28 @@ function patchBackgroundAgentUsage(content) {
   // check notices because every marker is still present.
   //
   // Two spellings of the usage read, paired rather than crossed. Through
-  // 2.1.272 the usage object is read straight off the message. 2.1.273
-  // introduced a normaliser that resolves `iterations` to the authoritative
-  // entry, and routed this site through it behind a null guard:
+  // 2.1.272 the usage object is read straight off the message. 2.1.273 routes
+  // it through a screening function and guards the block on the result:
   //
   //   2.1.272  let d=n.message.usage;if(e.latestInputTokens=…
   //   2.1.273  let d=mQ(n.message.usage);if(d){if(e.latestInputTokens=…
   //
+  // Measured from the 2.1.273 macos-arm64 bundle, that function is
+  //
+  //   function mQ(e){if(e==null||typeof e.input_tokens!=="number")return;
+  //     if(typeof e.output_tokens==="number")return e;
+  //     return e.output_tokens==null?{...e,output_tokens:0}:void 0}
+  //
+  // — a shape screen that returns the object unchanged, fills a missing
+  // output_tokens with 0, or returns undefined when the shape is not usable.
+  // It does not alter any figure it passes through.
+  //
   // The replacement re-emits the initialiser and the guard from the matched
-  // text rather than rebuilding them. Rebuilding would hand the tracker the
-  // raw usage while upstream's own code below the guard keeps reading the
-  // normalised one — two different numbers for the same response, with every
-  // calico marker still present.
+  // text rather than rebuilding them. A rebuilt `let d=n.message.usage` would
+  // leave the guard reading a truthy raw object where upstream meant it to
+  // read the screen's verdict, so the bookkeeping upstream put inside the
+  // guard would run on shapes upstream rejected — with every calico marker
+  // still present.
   const accountingUsageRead = `if\\((${identifierPattern})\\.type!=="assistant"\\)return;let (${identifierPattern})=`;
   // Group 5 in both patterns below (1 event, 2 usage local, 3 usage
   // initialiser, 4 optional folded `if(`, 5 tracker), so the self-reference is
@@ -3002,8 +3012,18 @@ function patchBackgroundAgentUsage(content) {
     'function __calicoTrackAgentUsage(e,t,r,n){if(!t||typeof t!=="object")return;let o=["input_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((s)=>typeof t[s]==="number"),i=(t.input_tokens??0)+(t.cache_creation_input_tokens??0)+(t.cache_read_input_tokens??0);if(o&&(n||i>0))e.latestInputTokens=i;let s=typeof t.output_tokens==="number"&&Number.isFinite(t.output_tokens)?Math.max(0,t.output_tokens):0;if(r==null){if(s>0)e.cumulativeOutputTokens+=s;return}let a=e.responseOutputTokens.get(r)??0;if(s>a)e.cumulativeOutputTokens+=s-a;if(s>a||!e.responseOutputTokens.has(r))e.responseOutputTokens.set(r,Math.max(a,s))}' +
     'function __calicoRefreshAgentUsage(e,t){if(!Array.isArray(t))return;let r=!1;for(let n=t.length-1;n>=0;n--){let o=t[n];if(o?.type==="assistant")r=!0,__calicoTrackAgentUsage(e,o.message?.usage,o.message?.id,o.message?.stop_reason!=null);else if(o?.type==="user"&&r)break}}' +
     `function ${trackerName}(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0${trackerLeadingFields},recentActivities:[]${trackerUpstreamFields},activeMessageId:null,responseOutputTokens:new Map}}`;
+  // The tracker is handed the raw usage object, not upstream's screened one.
+  // Both calls below reach the same tracker: this one, and the
+  // __calicoRefreshAgentUsage sweep that the progress and completion sites run
+  // over the transcript, where only the raw `message.usage` is available — the
+  // screening upstream does at this site is not recorded on the message. Two
+  // different admission rules writing one tracker means the same response can
+  // be counted or skipped depending on which path saw it last, so both use the
+  // raw object and __calicoTrackAgentUsage's own per-field numeric guard.
+  // That also keeps the tracked figures identical to every release before
+  // 2.1.273, where no screening existed at this site at all.
   const eventReplacement =
-    `if(${eventVar}.type==="stream_event"){if(${eventVar}.event.type==="message_start")${trackerVar}.activeMessageId=${eventVar}.event.message.id,__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.message.usage,${trackerVar}.activeMessageId,!1);else if(${eventVar}.event.type==="message_delta")__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.usage,${trackerVar}.activeMessageId,${eventVar}.event.delta.stop_reason!=null);else if(${eventVar}.event.type==="message_stop")${trackerVar}.activeMessageId=null;return}if(${eventVar}.type!=="assistant")return;let ${usageVar}=${usageInitialiser};__calicoTrackAgentUsage(${trackerVar},${usageVar},${eventVar}.message.id,${eventVar}.message.stop_reason!=null);`;
+    `if(${eventVar}.type==="stream_event"){if(${eventVar}.event.type==="message_start")${trackerVar}.activeMessageId=${eventVar}.event.message.id,__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.message.usage,${trackerVar}.activeMessageId,!1);else if(${eventVar}.event.type==="message_delta")__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.usage,${trackerVar}.activeMessageId,${eventVar}.event.delta.stop_reason!=null);else if(${eventVar}.event.type==="message_stop")${trackerVar}.activeMessageId=null;return}if(${eventVar}.type!=="assistant")return;let ${usageVar}=${usageInitialiser};__calicoTrackAgentUsage(${trackerVar},${eventVar}.message.usage,${eventVar}.message.id,${eventVar}.message.stop_reason!=null);`;
   const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),__calicoRefreshAgentUsage(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
   const completionRefresh = `__calicoRefreshAgentUsage(${progressMatch[1]},${completionResult}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
 
