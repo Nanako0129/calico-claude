@@ -71,11 +71,56 @@ function renamedFixture() {
   return renames.reduce((source, [from, to]) => renameToken(source, from, to), fixture);
 }
 
+// 2.1.273 stopped reading the usage object straight off the message. It routes
+// it through a shape screen and guards the accounting block on the verdict:
+//
+//   2.1.272  let d=t.message.usage;e.latestInputTokens=…
+//   2.1.273  let d=mQ(t.message.usage);if(d){e.latestInputTokens=…}
+//
+// Measured from the 2.1.273 macos-arm64 bundle, `mQ` is
+//
+//   function mQ(e){if(e==null||typeof e.input_tokens!=="number")return;
+//     if(typeof e.output_tokens==="number")return e;
+//     return e.output_tokens==null?{...e,output_tokens:0}:void 0}
+//
+// so it returns the object, fills a missing output_tokens with 0, or returns
+// undefined. It changes no figure it passes through — what it decides is
+// whether the block runs at all.
+function normalizedFixture(source = fixture) {
+  return source
+    .replace(
+      "let o=t.message.usage;e.latestInputTokens=",
+      "let o=nrm(t.message.usage);if(o){e.latestInputTokens="
+    )
+    .replace(
+      "while(e.recentActivities.length>Y0u)e.recentActivities.shift()}",
+      "while(e.recentActivities.length>Y0u)e.recentActivities.shift()}}"
+    );
+}
+
+// The same admission rule `mQ` implements: a usable shape passes through, an
+// unusable one is rejected. Nothing about the figures changes, which is the
+// point — what the guard decides is whether the block behind it runs.
+const screen = (usage) =>
+  usage == null || typeof usage.input_tokens !== "number"
+    ? undefined
+    : typeof usage.output_tokens === "number"
+      ? usage
+      : usage.output_tokens == null
+        ? { ...usage, output_tokens: 0 }
+        : undefined;
+
 function runtime(source = fixture) {
   const result = patchBackgroundAgentUsage(source);
   assert.equal(result.candidates, 4);
   assert.equal(result.patched, 4);
-  const context = { Y0u: 5, Th: "Task", Oy: "REPL", ZAt: () => undefined };
+  const context = {
+    Y0u: 5,
+    Th: "Task",
+    Oy: "REPL",
+    ZAt: () => undefined,
+    nrm: screen,
+  };
   vm.createContext(context);
   vm.runInContext(result.content, context);
   return { context, result };
@@ -420,5 +465,102 @@ test("fails atomically when progress and completion matches come from different 
 
   assert.equal(result.patched, 0);
   assert.equal(result.content, split);
+  assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
+});
+
+// 2.1.273: the usage read is normalised and guarded. The module has to accept
+// the new spelling — missing it zeroes the module and blocks the release, which
+// is what happened on the first 2.1.273 preflight.
+test("patches the 2.1.273 normalised usage read", () => {
+  const source = normalizedFixture();
+  const result = patchBackgroundAgentUsage(source);
+
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
+});
+
+// Re-emitting the matched initialiser rather than rebuilding it is what keeps
+// upstream's guard reading upstream's verdict. A rebuilt `let o=t.message.usage`
+// makes `if(o)` test the raw object instead, so a shape upstream screened out
+// would still run the block it put behind that guard — with every calico marker
+// present. Only the guarded block can show the difference: this usage is truthy
+// but fails the screen.
+test("the guard keeps testing the screen's verdict, not the raw object", () => {
+  const { context } = runtime(normalizedFixture());
+  const tracker = context.fQn();
+
+  context.hQn(
+    tracker,
+    assistant(
+      "resp-unusable",
+      // input_tokens present, output_tokens neither a number nor null — the
+      // one shape `mQ` rejects outright while the object itself is truthy.
+      { input_tokens: 400, output_tokens: "many" },
+      "end_turn",
+      [{ type: "tool_use", name: "Read", input: {} }]
+    )
+  );
+
+  // toolUseCount lives inside the guard upstream opened, so a rebuilt
+  // initialiser would count this one.
+  assert.equal(tracker.toolUseCount, 0);
+});
+
+// Two call sites write this tracker: the event path here, and the
+// __calicoRefreshAgentUsage sweep the progress and completion sites run over
+// the transcript. The sweep can only reach the raw `message.usage` — the
+// screen's verdict is not recorded on the message — so the event path must
+// admit on the same terms, or the same response is counted or skipped
+// depending on which path saw it last.
+test("tracks the same usage the transcript sweep will see", () => {
+  const { context } = runtime(normalizedFixture());
+
+  const message = assistant(
+    "resp-shared",
+    { input_tokens: 400, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 90 },
+    "end_turn"
+  );
+
+  const viaEvent = context.fQn();
+  context.hQn(viaEvent, message);
+
+  const viaSweep = context.fQn();
+  context.__calicoRefreshAgentUsage(viaSweep, [message]);
+
+  assert.equal(context.mQn(viaEvent), 490);
+  assert.equal(context.mQn(viaSweep), context.mQn(viaEvent));
+});
+
+// The guard the patcher re-emits has to keep guarding: a message whose usage
+// the screen rejects must account nothing and must not run the block upstream
+// put inside the guard.
+test("preserves the null guard around the accounting block", () => {
+  const { context } = runtime(normalizedFixture());
+  const tracker = context.fQn();
+
+  context.hQn(
+    tracker,
+    assistant("resp-null", null, "end_turn", [{ type: "tool_use", name: "Read", input: {} }])
+  );
+
+  assert.equal(context.mQn(tracker), 0);
+  // toolUseCount lives inside the guard upstream opened, so it must not run.
+  assert.equal(tracker.toolUseCount, 0);
+});
+
+// Paired, not crossed: the guard belongs to the normalised spelling. A bundle
+// that wraps the read but keeps the accounting unguarded is a shape the patcher
+// cannot re-emit correctly, so it must report zero rather than emit a stray
+// brace.
+test("rejects a normalised read without its guard", () => {
+  const broken = fixture.replace(
+    "let o=t.message.usage;e.latestInputTokens=",
+    "let o=nrm(t.message.usage);e.latestInputTokens="
+  );
+  const result = patchBackgroundAgentUsage(broken);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, broken);
   assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
 });

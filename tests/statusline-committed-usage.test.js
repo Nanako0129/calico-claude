@@ -957,3 +957,52 @@ test("statusline committed usage patch rejects a terminal condition tail without
   assert.equal(result.patched, 0);
   assert.equal(result.content, variant);
 });
+
+// 2.1.273 moved the reducer's usage-object construction into a shared
+// normaliser and returns its call instead of building the object inline:
+//
+//   2.1.272  …if(n)return{input_tokens:n.input_tokens,…}}return null}
+//   2.1.273  …if(n)return VPe(n)}return null}
+//
+// Nothing in this module reads the reducer's body — the declaration is matched
+// only to prove the bundle has exactly one such reducer, which is what lets the
+// selector be located by position. Pinning the inline object took the module to
+// zero on 2.1.273 and blocked the release.
+function normalizedReducerFixture(source = committedUsageFixture) {
+  return source.replace(
+    "if(n)return{input_tokens:n.input_tokens,output_tokens:n.output_tokens,cache_creation_input_tokens:n.cache_creation_input_tokens??0,cache_read_input_tokens:n.cache_read_input_tokens??0}}return null}",
+    "if(n)return nrmUsage(n)}return null}\nfunction nrmUsage(e){return{input_tokens:e.input_tokens,output_tokens:e.output_tokens,cache_creation_input_tokens:e.cache_creation_input_tokens??0,cache_read_input_tokens:e.cache_read_input_tokens??0}}"
+  );
+}
+
+test("accepts the 2.1.273 reducer that returns a shared normaliser call", () => {
+  const source = normalizedReducerFixture();
+  const result = patchStatuslineCommittedUsage(source);
+
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+// The reducer shape is a gate, not a contract, so the committed-usage
+// behaviour has to be identical across both spellings — the statusline still
+// reads the terminal commit rather than the provisional wrapper.
+test("the 2.1.273 reducer shape does not change what the statusline reads", () => {
+  const { context } = loadCommittedFixture(normalizedReducerFixture());
+  const completed = context.query(usage(333, 44), "end_turn");
+
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
+});
+
+// Exactly one reducer declaration is what makes the positional selector match
+// safe to trust. Two of them — one of each spelling — must fail closed rather
+// than pick whichever came first.
+test("rejects a bundle declaring both reducer spellings", () => {
+  const both = `${committedUsageFixture}
+function bJt(e){for(let t=e.length-1;t>=0;t--){let r=e[t],n=r?LCe(r):void 0;if(n)return nrmUsage(n)}return null}`;
+  const result = patchStatuslineCommittedUsage(both);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, both);
+});

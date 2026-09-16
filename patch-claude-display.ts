@@ -2815,34 +2815,83 @@ function patchBackgroundAgentUsage(content) {
     `function (${identifierPattern})\\((${identifierPattern})\\)\\{return \\2\\.latestInputTokens\\+\\2\\.cumulativeOutputTokens(?:\\+\\2\\.${identifierPattern})*\\}`,
     "g"
   );
-  const accountingPattern = new RegExp(
-    // The two assignments are the anchor; whether they stand as their own
-    // statement is not. 2.1.257 folded them into the head of an `if(...)` comma
-    // expression so it could append its lastStampedResponseId bookkeeping, which
-    // took this from a match to none — and with it eventName, progressPattern and
-    // everything downstream, since the whole module keys off this one site.
-    // Accept either form and stop at the second assignment.
-    // Accept either form and capture which one it is. The folded form's trailing
-    // `,` belongs to a condition that continues after the match, so the
-    // replacement has to re-open the `if(` rather than swallow it — dropping it
-    // leaves a dangling `)` and the module stops parsing, which no text-level
-    // check notices because every marker is still present.
-    `if\\((${identifierPattern})\\.type!=="assistant"\\)return;let (${identifierPattern})=\\1\\.message\\.usage;(if\\()?(${identifierPattern})\\.latestInputTokens=\\2\\.input_tokens\\+\\(\\2\\.cache_creation_input_tokens\\?\\?0\\)\\+\\(\\2\\.cache_read_input_tokens\\?\\?0\\),\\4\\.cumulativeOutputTokens\\+=\\2\\.output_tokens([;,])`,
+  // The two assignments are the anchor; whether they stand as their own
+  // statement is not. 2.1.257 folded them into the head of an `if(...)` comma
+  // expression so it could append its lastStampedResponseId bookkeeping, which
+  // took this from a match to none — and with it eventName, progressPattern and
+  // everything downstream, since the whole module keys off this one site.
+  // Accept either form and capture which one it is. The folded form's trailing
+  // `,` belongs to a condition that continues after the match, so the
+  // replacement has to re-open the `if(` rather than swallow it — dropping it
+  // leaves a dangling `)` and the module stops parsing, which no text-level
+  // check notices because every marker is still present.
+  //
+  // Two spellings of the usage read, paired rather than crossed. Through
+  // 2.1.272 the usage object is read straight off the message. 2.1.273 routes
+  // it through a screening function and guards the block on the result:
+  //
+  //   2.1.272  let d=n.message.usage;if(e.latestInputTokens=…
+  //   2.1.273  let d=mQ(n.message.usage);if(d){if(e.latestInputTokens=…
+  //
+  // Measured from the 2.1.273 macos-arm64 bundle, that function is
+  //
+  //   function mQ(e){if(e==null||typeof e.input_tokens!=="number")return;
+  //     if(typeof e.output_tokens==="number")return e;
+  //     return e.output_tokens==null?{...e,output_tokens:0}:void 0}
+  //
+  // — a shape screen that returns the object unchanged, fills a missing
+  // output_tokens with 0, or returns undefined when the shape is not usable.
+  // It does not alter any figure it passes through.
+  //
+  // The replacement re-emits the initialiser and the guard from the matched
+  // text rather than rebuilding them. A rebuilt `let d=n.message.usage` would
+  // leave the guard reading a truthy raw object where upstream meant it to
+  // read the screen's verdict, so the bookkeeping upstream put inside the
+  // guard would run on shapes upstream rejected — with every calico marker
+  // still present.
+  const accountingUsageRead = `if\\((${identifierPattern})\\.type!=="assistant"\\)return;let (${identifierPattern})=`;
+  // Group 5 in both patterns below (1 event, 2 usage local, 3 usage
+  // initialiser, 4 optional folded `if(`, 5 tracker), so the self-reference is
+  // \5 rather than \3 — the usage initialiser and the guard each took a group.
+  const accountingAssignments = `(${identifierPattern})\\.latestInputTokens=\\2\\.input_tokens\\+\\(\\2\\.cache_creation_input_tokens\\?\\?0\\)\\+\\(\\2\\.cache_read_input_tokens\\?\\?0\\),\\5\\.cumulativeOutputTokens\\+=\\2\\.output_tokens`;
+  const bareAccountingPattern = new RegExp(
+    `${accountingUsageRead}(\\1\\.message\\.usage);(if\\()?${accountingAssignments}([;,])`,
+    "g"
+  );
+  const normalizedAccountingPattern = new RegExp(
+    `${accountingUsageRead}(${identifierPattern}\\(\\1\\.message\\.usage\\));if\\(\\2\\)\\{(if\\()?${accountingAssignments}([;,])`,
     "g"
   );
   const trackerMatches = [...content.matchAll(trackerPattern)];
   const totalMatches = [...content.matchAll(totalPattern)];
-  const accountingMatches = [...content.matchAll(accountingPattern)];
+  // Same capture layout in both, so the only thing that differs downstream is
+  // the guard that has to be re-emitted after our call.
+  const accountingForms = [
+    ...[...content.matchAll(bareAccountingPattern)].map((match) => ({
+      match,
+      pattern: bareAccountingPattern,
+      guard: "",
+    })),
+    ...[...content.matchAll(normalizedAccountingPattern)].map((match) => ({
+      match,
+      pattern: normalizedAccountingPattern,
+      guard: `if(${match[2]}){`,
+    })),
+  ];
+  const accountingMatches = accountingForms.map((form) => form.match);
   const trackerName = trackerMatches[0]?.[1];
   const trackerLeadingFields = trackerMatches[0]?.[2] ?? "";
   const trackerUpstreamFields = trackerMatches[0]?.[3] ?? "";
   const totalName = totalMatches[0]?.[1];
-  const accountingMatch = accountingMatches[0];
+  const accountingForm = accountingForms[0];
+  const accountingMatch = accountingForm?.match;
   const eventVar = accountingMatch?.[1];
   const usageVar = accountingMatch?.[2];
-  const accountingIfPrefix = accountingMatch?.[3] ?? "";
-  const trackerVar = accountingMatch?.[4];
-  const accountingTerminator = accountingMatch?.[5] ?? ";";
+  const usageInitialiser = accountingMatch?.[3];
+  const accountingGuard = accountingForm?.guard ?? "";
+  const accountingIfPrefix = accountingMatch?.[4] ?? "";
+  const trackerVar = accountingMatch?.[5];
+  const accountingTerminator = accountingMatch?.[6] ?? ";";
   const eventIndex = accountingMatch?.index ?? -1;
   const eventFunctionStart = eventIndex === -1 ? -1 : content.lastIndexOf("function ", eventIndex);
   const eventHeaderMatch =
@@ -2963,8 +3012,18 @@ function patchBackgroundAgentUsage(content) {
     'function __calicoTrackAgentUsage(e,t,r,n){if(!t||typeof t!=="object")return;let o=["input_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((s)=>typeof t[s]==="number"),i=(t.input_tokens??0)+(t.cache_creation_input_tokens??0)+(t.cache_read_input_tokens??0);if(o&&(n||i>0))e.latestInputTokens=i;let s=typeof t.output_tokens==="number"&&Number.isFinite(t.output_tokens)?Math.max(0,t.output_tokens):0;if(r==null){if(s>0)e.cumulativeOutputTokens+=s;return}let a=e.responseOutputTokens.get(r)??0;if(s>a)e.cumulativeOutputTokens+=s-a;if(s>a||!e.responseOutputTokens.has(r))e.responseOutputTokens.set(r,Math.max(a,s))}' +
     'function __calicoRefreshAgentUsage(e,t){if(!Array.isArray(t))return;let r=!1;for(let n=t.length-1;n>=0;n--){let o=t[n];if(o?.type==="assistant")r=!0,__calicoTrackAgentUsage(e,o.message?.usage,o.message?.id,o.message?.stop_reason!=null);else if(o?.type==="user"&&r)break}}' +
     `function ${trackerName}(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0${trackerLeadingFields},recentActivities:[]${trackerUpstreamFields},activeMessageId:null,responseOutputTokens:new Map}}`;
+  // The tracker is handed the raw usage object, not upstream's screened one.
+  // Both calls below reach the same tracker: this one, and the
+  // __calicoRefreshAgentUsage sweep that the progress and completion sites run
+  // over the transcript, where only the raw `message.usage` is available — the
+  // screening upstream does at this site is not recorded on the message. Two
+  // different admission rules writing one tracker means the same response can
+  // be counted or skipped depending on which path saw it last, so both use the
+  // raw object and __calicoTrackAgentUsage's own per-field numeric guard.
+  // That also keeps the tracked figures identical to every release before
+  // 2.1.273, where no screening existed at this site at all.
   const eventReplacement =
-    `if(${eventVar}.type==="stream_event"){if(${eventVar}.event.type==="message_start")${trackerVar}.activeMessageId=${eventVar}.event.message.id,__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.message.usage,${trackerVar}.activeMessageId,!1);else if(${eventVar}.event.type==="message_delta")__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.usage,${trackerVar}.activeMessageId,${eventVar}.event.delta.stop_reason!=null);else if(${eventVar}.event.type==="message_stop")${trackerVar}.activeMessageId=null;return}if(${eventVar}.type!=="assistant")return;let ${usageVar}=${eventVar}.message.usage;__calicoTrackAgentUsage(${trackerVar},${usageVar},${eventVar}.message.id,${eventVar}.message.stop_reason!=null);`;
+    `if(${eventVar}.type==="stream_event"){if(${eventVar}.event.type==="message_start")${trackerVar}.activeMessageId=${eventVar}.event.message.id,__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.message.usage,${trackerVar}.activeMessageId,!1);else if(${eventVar}.event.type==="message_delta")__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.usage,${trackerVar}.activeMessageId,${eventVar}.event.delta.stop_reason!=null);else if(${eventVar}.event.type==="message_stop")${trackerVar}.activeMessageId=null;return}if(${eventVar}.type!=="assistant")return;let ${usageVar}=${usageInitialiser};__calicoTrackAgentUsage(${trackerVar},${eventVar}.message.usage,${eventVar}.message.id,${eventVar}.message.stop_reason!=null);`;
   const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),__calicoRefreshAgentUsage(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
   const completionRefresh = `__calicoRefreshAgentUsage(${progressMatch[1]},${completionResult}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
 
@@ -2973,11 +3032,13 @@ function patchBackgroundAgentUsage(content) {
   // reach .replace only via a callback — a plain-string 2nd argument would
   // let `$$`/`$&`/`$1`-`$9` in a captured name expand against these regexes.
   let output = original.replace(trackerPattern, () => trackerReplacement);
-  // When the assignments were folded into an `if(`, re-emit that `if(` after our
-  // call so the condition it opened — and its closing paren — stay balanced.
+  // Re-emit, after our call, both the 2.1.273 null guard and the 2.1.257
+  // folded `if(` — each opened something the untouched code below this site
+  // still closes, and dropping either leaves a dangling brace or paren that no
+  // marker check would notice.
   output = output.replace(
-    accountingPattern,
-    () => `${eventReplacement}${accountingIfPrefix}`
+    accountingForm.pattern,
+    () => `${eventReplacement}${accountingGuard}${accountingIfPrefix}`
   );
   output = output.replace(progressPattern, () => progressReplacement);
   output = output.replace(
@@ -3002,8 +3063,23 @@ function patchBackgroundAgentUsage(content) {
 function patchStatuslineCommittedUsage(content) {
   const original = content;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
-  const reducerPattern = new RegExp(
-    `function (${identifierPattern})\\((${identifierPattern})\\)\\{for\\(let (${identifierPattern})=\\2\\.length-1;\\3>=0;\\3--\\)\\{let (${identifierPattern})=\\2\\[\\3\\],(${identifierPattern})=\\4\\?(${identifierPattern})\\(\\4\\):void 0;if\\(\\5\\)return\\{input_tokens:\\5\\.input_tokens,output_tokens:\\5\\.output_tokens,cache_creation_input_tokens:\\5\\.cache_creation_input_tokens\\?\\?0,cache_read_input_tokens:\\5\\.cache_read_input_tokens\\?\\?0\\}\\}return null\\}`,
+  // The last-assistant usage reducer, in the two spellings upstream has used.
+  // Nothing here consumes its body — the name is captured only to prove the
+  // bundle declares exactly one such reducer, which is what lets the selector
+  // below be located by position. So both forms are accepted, paired rather
+  // than crossed: through 2.1.272 the reducer builds the usage object inline;
+  // 2.1.273 moved that construction into a shared normaliser (the same one the
+  // background-agent accounting site now routes through) and returns its call.
+  //
+  //   2.1.272  …let r=e[n],s=r?QE(r):void 0;if(s)return{input_tokens:s.input_tokens,…}}return null}
+  //   2.1.273  …let r=e[n],s=r?aU(r):void 0;if(s)return VPe(s)}return null}
+  const reducerHead = `function (${identifierPattern})\\((${identifierPattern})\\)\\{for\\(let (${identifierPattern})=\\2\\.length-1;\\3>=0;\\3--\\)\\{let (${identifierPattern})=\\2\\[\\3\\],(${identifierPattern})=\\4\\?(${identifierPattern})\\(\\4\\):void 0;if\\(\\5\\)return`;
+  const inlineReducerPattern = new RegExp(
+    `${reducerHead}\\{input_tokens:\\5\\.input_tokens,output_tokens:\\5\\.output_tokens,cache_creation_input_tokens:\\5\\.cache_creation_input_tokens\\?\\?0,cache_read_input_tokens:\\5\\.cache_read_input_tokens\\?\\?0\\}\\}return null\\}`,
+    "g"
+  );
+  const normalizedReducerPattern = new RegExp(
+    `${reducerHead} ?${identifierPattern}\\(\\5\\)\\}return null\\}`,
     "g"
   );
   const legacyWrapperPattern = new RegExp(
@@ -3090,7 +3166,10 @@ function patchStatuslineCommittedUsage(content) {
     `for\\(let\\{src:(${identifierPattern}),dst:(${identifierPattern})\\}of (${identifierPattern})\\)\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details;`,
     "g"
   );
-  const reducerMatches = [...content.matchAll(reducerPattern)];
+  const reducerMatches = [
+    ...content.matchAll(inlineReducerPattern),
+    ...content.matchAll(normalizedReducerPattern),
+  ];
   const reducerName = reducerMatches[0]?.[1];
   // The reducer used to be identified at its call site by the name captured at
   // its definition. That stopped working on 2.1.242+: the bundle is split into
@@ -4275,15 +4354,26 @@ function patchActiveTurnPromptIdentity(content) {
 
     // 2.1.238 appends `,credentials:s` to the parameter object, which consumes
     // the `s` binding and shifts every following minified local by one letter
-    // (2.1.237 `c=…,u=…,p={` → 2.1.238 `u=…,d=…,f={`, and the header spread
-    // `...u,` → `...d,`). Capture the three local names and the extra-header
-    // spread name instead of pinning `c`/`u`/`p`/`u`, so a future rename does
-    // not silently drop this site.
+    // (2.1.237 `c=…,u=…,p={` → 2.1.238 `u=…,d=…,f={`), so the local names are
+    // captured rather than pinned.
+    //
+    // This used to pin the whole run from the sanitizer assignment through the
+    // header object's opening brace — `,<ctx>=<san>(h)?void 0:h,<extra>=<f>(),
+    // <hdr>={` — which assumed nothing sits between them. 2.1.273 put three
+    // locals there (`,fe=Tle(),ge=fe?hNr(d,h):void 0,ve=fe?yNr(d,h):void 0`)
+    // and the pattern stopped matching, taking the client half of the module
+    // to zero and the release with it.
+    //
+    // Nothing injected here reads the extra-header local or the header object
+    // local: the declarations only need to land after the sanitizer assignment
+    // (so `<ctx>` is in scope), and the header entry below finds the spread on
+    // its own shape. So pin only the sanitizer assignment and let upstream put
+    // whatever it likes between that and the header object.
     const sourceParam = clientStartMatch[2];
     const contextParam = clientStartMatch[3];
     const contextRe = escapeRegExp(contextParam);
     const localsPattern = new RegExp(
-      `,([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(${contextRe}\\)\\?void 0:${contextRe},([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(\\),([A-Za-z_$][\\w$]*)=\\{`
+      `,([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(${contextRe}\\)\\?void 0:${contextRe},`
     );
     const localsMatch = segment.match(localsPattern);
     if (!localsMatch) {
@@ -4291,28 +4381,33 @@ function patchActiveTurnPromptIdentity(content) {
     }
     const contextLocal = localsMatch[1];
     const sanitizer = localsMatch[2];
-    const extraHeadersLocal = localsMatch[3];
-    const extraHeadersFactory = localsMatch[4];
-    const headerObjectLocal = localsMatch[5];
 
     // This replacement interpolates sourceParam, contextParam, contextLocal,
     // sourceClassifier, promptGetter, and the other captured locals above —
     // all minified names that may legally contain `$`. localsPattern is a
-    // regex with 5 capture groups, so a captured name like `$1e` would be
+    // regex with capture groups, so a captured name like `$1e` would be
     // read back as a backreference if passed as a plain string; go through a
     // callback so it is emitted verbatim instead.
     let nextSegment = segment.replace(
       localsPattern,
       () =>
-        `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${querySourceRef}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetterCall}):void 0,${extraHeadersLocal}=${extraHeadersFactory}(),${headerObjectLocal}={`
+        `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${querySourceRef}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetterCall}):void 0,`
     );
+    // The spread that follows the session-id header is the extra-header local
+    // whichever name it carries, so it is matched on shape here instead of
+    // being carried down from the declaration run above.
     nextSegment = nextSegment.replace(
       new RegExp(
-        `(${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),)(\\.\\.\\.${escapeRegExp(extraHeadersLocal)},)`
+        `(${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,)`
       ),
-      '$1$2...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},'
+      (full) =>
+        `${full}...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},`
     );
-    if (nextSegment === segment) {
+    // Both injections or neither. The declaration replace always fires once
+    // localsPattern matched, so comparing against the original segment could
+    // only ever prove the first half ran; assert on the header entry, which is
+    // the half that can silently fail to land.
+    if (!nextSegment.includes('"x-calico-prompt-id"')) {
       continue;
     }
 
