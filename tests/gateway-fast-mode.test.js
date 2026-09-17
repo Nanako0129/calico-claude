@@ -700,3 +700,50 @@ test("module truncation stops at the first Bun module boundary", () => {
   assert.ok(spilled.includes("tengu_fast_mode_picker_shown"));
   assert.ok(!boundedToModule(spilled).includes("tengu_fast_mode_picker_shown"));
 });
+
+// Minified names may contain `$`, which is a regex metacharacter. The dispatch
+// record local is interpolated into two patterns that locate the worker
+// dispatch, and interpolating it raw made both unmatchable as soon as upstream
+// picked such a name: 2.1.274 named it `$e`, so `\(` + `$e` read as "open
+// paren, end of line, literal e".
+//
+// The failure is silent in the way that matters — all six anchors still match,
+// so `candidates` stays 6 and only `patched` drops to 0. Nothing but
+// --assert-all catches that, which is what blocked the 2.1.274 preflight.
+//
+// This is not a 2.1.274 shape change: the same bundle patches fine once the
+// name is escaped, and any earlier release would have failed identically had
+// the minifier chosen a `$` name there.
+test("tolerates a dispatch record local containing a regex metacharacter", async (t) => {
+  // `$` leading, trailing and interior. No doubled `$`: renameToken's
+  // replacement goes through String.replace, where `$$` collapses to one `$`
+  // and the fixture would not carry the name the test names.
+  for (const recordName of ["$e", "e$", "a$b"]) {
+    const source = renameToken(fixture, "U", recordName);
+    // The rename has to have landed on the record, or the test proves nothing.
+    assert.ok(
+      source.includes(`let ${recordName}={proto:nm`),
+      `${recordName}: fixture rename did not reach the dispatch record`
+    );
+
+    const result = patchGatewayFastMode(source);
+    assert.equal(result.candidates, 6, recordName);
+    assert.equal(result.patched, 6, recordName);
+    assert.equal(evaluatePatchModule("gateway-fast-mode", result.content), null, recordName);
+  }
+});
+
+// And the dispatch still carries the state-file locator to the worker, which is
+// the whole point of patching that site — a module that reports 6 patched but
+// hands the worker nothing would satisfy every count above.
+test("a `$`-named dispatch record still propagates the worker locator", async (t) => {
+  const main = runtime(t, {
+    source: renameToken(fixture, "U", "$e"),
+    env: { REMORA_ACTIVE: "1", CLAUDE_CODE_EXTRA_BODY: "{}" },
+  }).context;
+
+  const locator = main.process.env.CALICO_GATEWAY_FAST_STATE_FILE;
+  const dispatch = await main.BF_(null, { BASE: "1" }, main.process.env);
+
+  assert.equal(dispatch.env.CALICO_GATEWAY_FAST_STATE_FILE, locator);
+});

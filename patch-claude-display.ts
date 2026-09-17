@@ -4072,6 +4072,13 @@ function patchGatewayFastMode(content) {
   }
   const dispatchRecord = dispatchRecords[0];
   const dispatchRecordLocal = dispatchRecord.match[1];
+  // The record local is a minified name, and minified names may contain `$`,
+  // which is a regex metacharacter. Interpolating it raw made both patterns
+  // below unmatchable the moment upstream picked such a name: 2.1.274 named it
+  // `$e`, so `\(` + `$e` read as "open paren, end of line, literal e" and the
+  // module went to 0 patched while still reporting all 6 candidates — visible
+  // only because --assert-all fails at zero.
+  const escapedDispatchRecordLocal = escapeRegExp(dispatchRecordLocal);
   // 2.1.239 appended arguments to the dispatch call
   // (`_0c(K)` became `_0c(K,!1,Date.now(),s)`), which is why this module has
   // applied 0 changes since that release. Accept a trailing argument list, one
@@ -4084,14 +4091,14 @@ function patchGatewayFastMode(content) {
       ")\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(" +
       identifier +
       ")\\(" +
-      dispatchRecordLocal +
+      escapedDispatchRecordLocal +
       dispatchArguments +
       "\\)\\]\\)",
     "g"
   );
   const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
   const directDispatchPattern = new RegExp(
-    "(" + identifier + ")\\(" + dispatchRecordLocal + dispatchArguments + "\\)",
+    "(" + identifier + ")\\(" + escapedDispatchRecordLocal + dispatchArguments + "\\)",
     "g"
   );
   const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
