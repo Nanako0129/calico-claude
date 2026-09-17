@@ -1534,15 +1534,47 @@ const CHECKS: Check[] = [
     disabledMarker: /\.\.\.Object\.keys\([A-Za-z_$][\w$]*\)\.length>0&&\{rate_limits:/,
     run: (content: string): string | null => {
       const identifier = "[A-Za-z_$][\\w$]*";
-      const windowMarker = (key: string) =>
-        new RegExp(
-          `\\.\\.\\.(${identifier})\\.${key}&&\\{${key}:\\{used_percentage:\\1\\.${key}\\.utilization\\*100,resets_at:\\1\\.${key}\\.resets_at\\}\\}`
-        );
-      const missing = ["five_hour", "seven_day", "seven_day_overage_included", "overage"].filter(
-        (key) => !windowMarker(key).test(content)
+      const keys = ["five_hour", "seven_day", "seven_day_overage_included", "overage"];
+      // Kept in lockstep with patchStatuslineRateLimitWindows, which re-emits
+      // whichever percentage spelling the bundle already carries: inline
+      // `L.k.utilization*100` through 2.1.274, `helper(L.k.utilization)` from
+      // 2.1.275 on. Pinning only the inline form would report every window
+      // missing on a bundle the patcher handled correctly.
+      //
+      // Match the four windows as one run rather than a marker per key. Per-key
+      // markers let the alternation resolve independently for each window, so a
+      // payload carrying `helper(...)` on the two upstream windows and `*100` on
+      // the two this module adds — precisely the re-emission defect the patcher
+      // refuses to produce — would pass every marker and reach --assert-all.
+      // One sequence, with the local captured once and the helper captured once
+      // and back-referenced, can only match a payload that is internally
+      // consistent.
+      const windowRun = (percentage: (key: string, index: number) => string) =>
+        keys
+          .map(
+            (key, index) =>
+              `\\.\\.\\.${index === 0 ? `(${identifier})` : "\\1"}\\.${key}&&\\{${key}:\\{used_percentage:${percentage(key, index)},resets_at:\\1\\.${key}\\.resets_at\\}\\}`
+          )
+          .join(",");
+      const inlineRun = new RegExp(windowRun((key) => `\\1\\.${key}\\.utilization\\*100`));
+      const helperRun = new RegExp(
+        windowRun((key, index) =>
+          index === 0
+            ? `(${identifier})\\(\\1\\.${key}\\.utilization\\)`
+            : `\\2\\(\\1\\.${key}\\.utilization\\)`
+        )
       );
-      if (missing.length > 0) {
-        return `missing forwarded rate-limit window(s): ${missing.join(", ")}`;
+      if (!inlineRun.test(content) && !helperRun.test(content)) {
+        // Separate "the windows are not there" from "they are there but
+        // disagree", because the two mean different things about the patcher.
+        const anyWindow = (key: string) =>
+          new RegExp(
+            `\\.\\.\\.(${identifier})\\.${key}&&\\{${key}:\\{used_percentage:(?:\\1\\.${key}\\.utilization\\*100|${identifier}\\(\\1\\.${key}\\.utilization\\)),resets_at:\\1\\.${key}\\.resets_at\\}\\}`
+          ).test(content);
+        const missing = keys.filter((key) => !anyWindow(key));
+        return missing.length > 0
+          ? `missing forwarded rate-limit window(s): ${missing.join(", ")}`
+          : "forwarded rate-limit windows do not share one percentage spelling";
       }
       const widenedGuard = new RegExp(
         `\\.\\.\\.Object\\.keys\\((${identifier})\\)\\.length>0&&\\{rate_limits:\\1\\}`

@@ -3686,8 +3686,8 @@ function patchStickyPromptHeader(content) {
 function patchStatuslineRateLimitWindows(content) {
   const original = content;
   const identifier = "[A-Za-z_$][\\w$]*";
-  const window = (local, key) =>
-    `...${local}.${key}&&{${key}:{used_percentage:${local}.${key}.utilization*100,resets_at:${local}.${key}.resets_at}}`;
+  const window = (local, key, percentage) =>
+    `...${local}.${key}&&{${key}:{used_percentage:${percentage(local, key)},resets_at:${local}.${key}.resets_at}}`;
 
   // Match the projection object by its opening entries only, and find its end
   // by brace matching. 2.1.251 appended a third entry —
@@ -3696,8 +3696,32 @@ function patchStatuslineRateLimitWindows(content) {
   // zero candidates. Enumerating the new entry would only invite the next one,
   // and rewriting the object without it would silently drop an upstream field:
   // capture whatever follows seven_day and re-emit it verbatim.
-  const projectionPrefixPattern = new RegExp(
-    `\\{\\.\\.\\.(${identifier})\\.five_hour&&\\{five_hour:\\{used_percentage:\\1\\.five_hour\\.utilization\\*100,resets_at:\\1\\.five_hour\\.resets_at\\}\\},\\.\\.\\.\\1\\.seven_day&&\\{seven_day:\\{used_percentage:\\1\\.seven_day\\.utilization\\*100,resets_at:\\1\\.seven_day\\.resets_at\\}\\}`,
+  //
+  // How each entry spells its percentage is the second axis. Every bundle
+  // through 2.1.274 wrote it inline as `L.five_hour.utilization*100`; 2.1.275
+  // hoisted it into a helper and writes `wQe(L.five_hour.utilization)`, whose
+  // measured definition in that bundle is
+  // `function wQe(t){return Math.round(t*1000)/10}` — the same percentage,
+  // rounded to one decimal. Accept exactly the two spellings upstream emits,
+  // paired rather than crossed, and re-emit the added windows in whichever one
+  // this bundle carries: writing `*100` into a bundle that rounds would give
+  // the two added windows a visibly different precision from the two already
+  // there.
+  const projectionPrefix = (percentage) =>
+    `\\{\\.\\.\\.(${identifier})\\.five_hour&&\\{five_hour:\\{used_percentage:${percentage("five_hour")},resets_at:\\1\\.five_hour\\.resets_at\\}\\},\\.\\.\\.\\1\\.seven_day&&\\{seven_day:\\{used_percentage:${percentage("seven_day")},resets_at:\\1\\.seven_day\\.resets_at\\}\\}`;
+  const bareProjectionPattern = new RegExp(
+    projectionPrefix((key) => `\\1\\.${key}\\.utilization\\*100`),
+    "g"
+  );
+  // Group 2 is the helper, captured on the five_hour entry and back-referenced
+  // on seven_day so a bundle that somehow used two different helpers does not
+  // match at all.
+  const normalizedProjectionPattern = new RegExp(
+    projectionPrefix((key) =>
+      key === "five_hour"
+        ? `(${identifier})\\(\\1\\.five_hour\\.utilization\\)`
+        : `\\2\\(\\1\\.seven_day\\.utilization\\)`
+    ),
     "g"
   );
   // The guard was `(L.five_hour||L.seven_day)` and is `(L.five_hour||
@@ -3711,8 +3735,20 @@ function patchStatuslineRateLimitWindows(content) {
 
   // Expand each prefix match to the full object literal it opens, so the rest
   // of this function can go on treating a projection match as {text, index,
-  // local} and additionally knows what trailing entries to carry across.
-  const projectionMatches = [...content.matchAll(projectionPrefixPattern)].flatMap((match) => {
+  // local} and additionally knows what trailing entries to carry across and
+  // which percentage spelling to re-emit.
+  const projectionForms = [
+    ...[...content.matchAll(bareProjectionPattern)].map((match) => ({
+      match,
+      percentage: (local, key) => `${local}.${key}.utilization*100`,
+    })),
+    ...[...content.matchAll(normalizedProjectionPattern)].map((match) => ({
+      match,
+      percentage: (local, key) => `${match[2]}(${local}.${key}.utilization)`,
+    })),
+  ];
+  const projectionMatches = projectionForms.flatMap((form) => {
+    const match = form.match;
     const start = match.index ?? -1;
     const end = start === -1 ? -1 : closingBraceIndex(content, start);
     if (start === -1 || end === -1) {
@@ -3723,6 +3759,7 @@ function patchStatuslineRateLimitWindows(content) {
         text: content.slice(start, end + 1),
         index: start,
         local: match[1],
+        percentage: form.percentage,
         // Everything upstream appended after seven_day, closing `}` excluded.
         tail: content.slice(start + match[0].length, end),
       },
@@ -3818,13 +3855,14 @@ function patchStatuslineRateLimitWindows(content) {
   // without them would silently drop a field the statusline payload is supposed
   // to carry — 2.1.251's `spend_limit` being the first one.
   const projectionTail = projectionMatches[0].tail;
+  const projectionPercentage = projectionMatches[0].percentage;
   const projectionReplacement = `{${[
     "five_hour",
     "seven_day",
     "seven_day_overage_included",
     "overage",
   ]
-    .map((key) => window(projectionLocal, key))
+    .map((key) => window(projectionLocal, key, projectionPercentage))
     .join(",")}${projectionTail}}`;
   const guardReplacement = `...Object.keys(${guardLocal}).length>0&&{rate_limits:${guardLocal}}`;
 
