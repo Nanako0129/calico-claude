@@ -3011,6 +3011,17 @@ function patchBackgroundAgentUsage(content) {
   const trackerReplacement =
     'function __calicoTrackAgentUsage(e,t,r,n){if(!t||typeof t!=="object")return;let o=["input_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((s)=>typeof t[s]==="number"),i=(t.input_tokens??0)+(t.cache_creation_input_tokens??0)+(t.cache_read_input_tokens??0);if(o&&(n||i>0))e.latestInputTokens=i;let s=typeof t.output_tokens==="number"&&Number.isFinite(t.output_tokens)?Math.max(0,t.output_tokens):0;if(r==null){if(s>0)e.cumulativeOutputTokens+=s;return}let a=e.responseOutputTokens.get(r)??0;if(s>a)e.cumulativeOutputTokens+=s-a;if(s>a||!e.responseOutputTokens.has(r))e.responseOutputTokens.set(r,Math.max(a,s))}' +
     'function __calicoRefreshAgentUsage(e,t){if(!Array.isArray(t))return;let r=!1;for(let n=t.length-1;n>=0;n--){let o=t[n];if(o?.type==="assistant")r=!0,__calicoTrackAgentUsage(e,o.message?.usage,o.message?.id,o.message?.stop_reason!=null);else if(o?.type==="user"&&r)break}}' +
+    // The sweep is declared here, next to the tracker factory, but called from
+    // the progress and completion sites. Those used to sit in the same Bun
+    // chunk; on 2.1.274 they do not, and a chunk is a separate ES module scope,
+    // so the bare name resolved to nothing there. native-bun's module-scope
+    // guard caught it and refused the build rather than shipping a binary whose
+    // progress path throws on every background agent. Publish the sweep on
+    // globalThis at its declaration and call it through globalThis everywhere
+    // else — the same treatment active-turn's prompt getter needed for the same
+    // reason. __calicoTrackAgentUsage stays a bare call: it is only used from
+    // this chunk and from the sweep declared in it.
+    'globalThis.__calicoRefreshAgentUsage=__calicoRefreshAgentUsage;' +
     `function ${trackerName}(){return{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0${trackerLeadingFields},recentActivities:[]${trackerUpstreamFields},activeMessageId:null,responseOutputTokens:new Map}}`;
   // The tracker is handed the raw usage object, not upstream's screened one.
   // Both calls below reach the same tracker: this one, and the
@@ -3024,8 +3035,11 @@ function patchBackgroundAgentUsage(content) {
   // 2.1.273, where no screening existed at this site at all.
   const eventReplacement =
     `if(${eventVar}.type==="stream_event"){if(${eventVar}.event.type==="message_start")${trackerVar}.activeMessageId=${eventVar}.event.message.id,__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.message.usage,${trackerVar}.activeMessageId,!1);else if(${eventVar}.event.type==="message_delta")__calicoTrackAgentUsage(${trackerVar},${eventVar}.event.usage,${trackerVar}.activeMessageId,${eventVar}.event.delta.stop_reason!=null);else if(${eventVar}.event.type==="message_stop")${trackerVar}.activeMessageId=null;return}if(${eventVar}.type!=="assistant")return;let ${usageVar}=${usageInitialiser};__calicoTrackAgentUsage(${trackerVar},${eventVar}.message.usage,${eventVar}.message.id,${eventVar}.message.stop_reason!=null);`;
-  const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),__calicoRefreshAgentUsage(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
-  const completionRefresh = `__calicoRefreshAgentUsage(${progressMatch[1]},${completionResult}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
+  // Called through globalThis: these two sites are in a different Bun chunk
+  // from the declaration on 2.1.274, and a bare name does not cross that scope.
+  const refreshCall = "globalThis.__calicoRefreshAgentUsage";
+  const progressReplacement = `${eventName}(${progressMatch[1]},${progressMatch[2]},${progressMatch[3]},${progressMatch[4]}.options.tools),${refreshCall}(${progressMatch[1]},${completionTranscript}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
+  const completionRefresh = `${refreshCall}(${progressMatch[1]},${completionResult}),${progressMatch[5]}(${progressOwner},${summaryName}(${progressMatch[1]}),${progressStatus});`;
 
   // Every *Replacement string below interpolates captured minified locals
   // (trackerName, eventVar, usageVar, progressMatch[...], …), so each must
@@ -4072,6 +4086,13 @@ function patchGatewayFastMode(content) {
   }
   const dispatchRecord = dispatchRecords[0];
   const dispatchRecordLocal = dispatchRecord.match[1];
+  // The record local is a minified name, and minified names may contain `$`,
+  // which is a regex metacharacter. Interpolating it raw made both patterns
+  // below unmatchable the moment upstream picked such a name: 2.1.274 named it
+  // `$e`, so `\(` + `$e` read as "open paren, end of line, literal e" and the
+  // module went to 0 patched while still reporting all 6 candidates — visible
+  // only because --assert-all fails at zero.
+  const escapedDispatchRecordLocal = escapeRegExp(dispatchRecordLocal);
   // 2.1.239 appended arguments to the dispatch call
   // (`_0c(K)` became `_0c(K,!1,Date.now(),s)`), which is why this module has
   // applied 0 changes since that release. Accept a trailing argument list, one
@@ -4084,14 +4105,14 @@ function patchGatewayFastMode(content) {
       ")\\]=await Promise\\.all\\(\\[(?:(?!\\]\\))[\\s\\S])*?,(" +
       identifier +
       ")\\(" +
-      dispatchRecordLocal +
+      escapedDispatchRecordLocal +
       dispatchArguments +
       "\\)\\]\\)",
     "g"
   );
   const awaitedDispatches = [...workerSegment.matchAll(awaitedDispatchPattern)];
   const directDispatchPattern = new RegExp(
-    "(" + identifier + ")\\(" + dispatchRecordLocal + dispatchArguments + "\\)",
+    "(" + identifier + ")\\(" + escapedDispatchRecordLocal + dispatchArguments + "\\)",
     "g"
   );
   const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];

@@ -65,7 +65,7 @@ function storageV5BatchFixture(source = committedUsageFixture) {
 }
 
 const modelsUsedCompletionSignal =
-  "function backgroundCompletionSignal(){let ie=BBg(s,e,g),de=Yns(ie,e,{...n,modelsUsed:_},{suppressTelemetry:re});__calicoRefreshAgentUsage(re,ie),Z0u(e,a9r(re),s);return de}";
+  "function backgroundCompletionSignal(){let ie=BBg(s,e,g),de=Yns(ie,e,{...n,modelsUsed:_},{suppressTelemetry:re});globalThis.__calicoRefreshAgentUsage(re,ie),Z0u(e,a9r(re),s);return de}";
 
 function renamedCommittedUsageFixture() {
   const renames = [
