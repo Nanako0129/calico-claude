@@ -3,6 +3,10 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const { patchStatuslineRateLimitWindows } = require("../patch-claude-display.ts");
+const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
+
+const verify = (content) =>
+  evaluatePatchModule("statusline-rate-limit-windows", content) ?? "PASS";
 
 // Mirrors the upstream statusline payload builder: the header-derived state is
 // read once, projected into a two-window object, and spread into the payload
@@ -151,6 +155,55 @@ test("rejects a projection whose two entries use different helpers", () => {
   assert.equal(result.candidates, 1);
   assert.equal(result.patched, 0);
   assert.equal(result.content, twoHelpers);
+});
+
+// The verifier is the last thing standing between a malformed re-emission and
+// a published release, so it has to reject the shape the patcher refuses to
+// produce — not merely confirm the four keys are present. Reading each window's
+// spelling independently accepted a payload whose upstream windows rounded and
+// whose added windows did not.
+test("the verifier accepts both spellings when all four windows agree", () => {
+  assert.equal(verify(patchStatuslineRateLimitWindows(fixture).content), "PASS");
+  assert.equal(verify(patchStatuslineRateLimitWindows(normalizedFixture()).content), "PASS");
+});
+
+test("the verifier rejects a payload whose windows disagree on the spelling", () => {
+  const patched = patchStatuslineRateLimitWindows(normalizedFixture()).content;
+  const mixed = patched
+    .replace(
+      "seven_day_overage_included:{used_percentage:wQe(k.seven_day_overage_included.utilization)",
+      "seven_day_overage_included:{used_percentage:k.seven_day_overage_included.utilization*100"
+    )
+    .replace(
+      "overage:{used_percentage:wQe(k.overage.utilization)",
+      "overage:{used_percentage:k.overage.utilization*100"
+    );
+  assert.notEqual(mixed, patched, "the mutation must reach the payload");
+  assert.equal(verify(mixed), "forwarded rate-limit windows do not share one percentage spelling");
+});
+
+test("the verifier rejects a payload using two different helpers", () => {
+  const patched = patchStatuslineRateLimitWindows(normalizedFixture()).content;
+  const twoHelpers = patched.replace(
+    "seven_day:{used_percentage:wQe(k.seven_day.utilization)",
+    "seven_day:{used_percentage:xQe(k.seven_day.utilization)"
+  );
+  assert.notEqual(twoHelpers, patched);
+  assert.equal(
+    verify(twoHelpers),
+    "forwarded rate-limit windows do not share one percentage spelling"
+  );
+});
+
+test("the verifier still names a window that is genuinely absent", () => {
+  // The consistency check must not swallow the older failure it replaced.
+  const patched = patchStatuslineRateLimitWindows(normalizedFixture()).content;
+  const dropped = patched.replace(
+    ",...k.overage&&{overage:{used_percentage:wQe(k.overage.utilization),resets_at:k.overage.resets_at}}",
+    ""
+  );
+  assert.notEqual(dropped, patched);
+  assert.equal(verify(dropped), "missing forwarded rate-limit window(s): overage");
 });
 
 test("keeps the existing two-window payload byte-identical when only those exist", () => {
