@@ -1534,9 +1534,16 @@ const CHECKS: Check[] = [
     disabledMarker: /\.\.\.Object\.keys\([A-Za-z_$][\w$]*\)\.length>0&&\{rate_limits:/,
     run: (content: string): string | null => {
       const identifier = "[A-Za-z_$][\\w$]*";
+      // Kept in lockstep with patchStatuslineRateLimitWindows, which re-emits
+      // whichever percentage spelling the bundle already carries: inline
+      // `L.k.utilization*100` through 2.1.274, `helper(L.k.utilization)` from
+      // 2.1.275 on. Pinning only the inline form would report every window
+      // missing on a bundle the patcher handled correctly.
+      const percentage = (key: string) =>
+        `(?:\\1\\.${key}\\.utilization\\*100|${identifier}\\(\\1\\.${key}\\.utilization\\))`;
       const windowMarker = (key: string) =>
         new RegExp(
-          `\\.\\.\\.(${identifier})\\.${key}&&\\{${key}:\\{used_percentage:\\1\\.${key}\\.utilization\\*100,resets_at:\\1\\.${key}\\.resets_at\\}\\}`
+          `\\.\\.\\.(${identifier})\\.${key}&&\\{${key}:\\{used_percentage:${percentage(key)},resets_at:\\1\\.${key}\\.resets_at\\}\\}`
         );
       const missing = ["five_hour", "seven_day", "seven_day_overage_included", "overage"].filter(
         (key) => !windowMarker(key).test(content)
