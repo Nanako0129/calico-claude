@@ -304,11 +304,11 @@ test("matches renamed function, parameter, and seam locals", () => {
   assert.match(result.content, /function uQn\(\)\{return\{toolUseCount:0/);
   assert.match(
     result.content,
-    /pQn\(trackerRecord,eventRecord,activityContext,contentItem\.options\.tools\),__calicoRefreshAgentUsage\(trackerRecord,transcriptEntries\)/
+    /pQn\(trackerRecord,eventRecord,activityContext,contentItem\.options\.tools\),globalThis\.__calicoRefreshAgentUsage\(trackerRecord,transcriptEntries\)/
   );
   assert.match(
     result.content,
-    /__calicoRefreshAgentUsage\(trackerRecord,resultMessage\),i9u\(trackerState,l3r\(trackerRecord\),toolInput\)/
+    /globalThis\.__calicoRefreshAgentUsage\(trackerRecord,resultMessage\),i9u\(trackerState,l3r\(trackerRecord\),toolInput\)/
   );
 
   const tracker = context.uQn();
@@ -325,7 +325,7 @@ test("accepts the 2.1.267 handback fields on the completion options object", () 
   // The options object is re-emitted verbatim, so the new fields survive.
   assert.match(
     result.content,
-    /\{suppressTelemetry:ee,handback:ha\?void 0:V9\(y\.get\(e\),e\),handbackInterim:ee\}\);__calicoRefreshAgentUsage\(re,oe\),Z0u\(e,a9r\(re\),s\);/
+    /\{suppressTelemetry:ee,handback:ha\?void 0:V9\(y\.get\(e\),e\),handbackInterim:ee\}\);globalThis\.__calicoRefreshAgentUsage\(re,oe\),Z0u\(e,a9r\(re\),s\);/
   );
   assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
 });
@@ -338,12 +338,12 @@ test("accepts the 2.1.212 modelsUsed completion variant without changing metadat
   assert.equal(result.patched, 4);
   assert.match(
     result.content,
-    /de=fCs\(oe,e,\{\.\.\.n,modelsUsed:_\},\{suppressTelemetry:ee\}\);__calicoRefreshAgentUsage\(re,oe\),Z0u\(e,a9r\(re\),s\);/
+    /de=fCs\(oe,e,\{\.\.\.n,modelsUsed:_\},\{suppressTelemetry:ee\}\);globalThis\.__calicoRefreshAgentUsage\(re,oe\),Z0u\(e,a9r\(re\),s\);/
   );
   assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
   const wrongTranscriptRefresh = result.content.replace(
-    "__calicoRefreshAgentUsage(re,g)",
-    "__calicoRefreshAgentUsage(re,otherTranscript)"
+    "globalThis.__calicoRefreshAgentUsage(re,g)",
+    "globalThis.__calicoRefreshAgentUsage(re,otherTranscript)"
   );
   assert.notEqual(wrongTranscriptRefresh, result.content);
   assert.notEqual(
@@ -388,7 +388,7 @@ test("binary verifier rejects empty helpers hidden behind dead exact markers", (
     /function __calicoTrackAgentUsage[\s\S]*?(?=function __calicoRefreshAgentUsage)/
   )?.[0];
   const refreshHelper = patched.match(
-    /function __calicoRefreshAgentUsage[\s\S]*?(?=function fQn\()/
+    /function __calicoRefreshAgentUsage[\s\S]*?(?=globalThis\.__calicoRefreshAgentUsage=)/
   )?.[0];
   assert.ok(trackHelper);
   assert.ok(refreshHelper);
@@ -563,4 +563,42 @@ test("rejects a normalised read without its guard", () => {
   assert.equal(result.patched, 0);
   assert.equal(result.content, broken);
   assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
+});
+
+// The sweep is declared beside the tracker factory but called from the progress
+// and completion sites. Through 2.1.273 those shared a Bun chunk, so a bare
+// name resolved; 2.1.274 split them, and a chunk is a separate ES module scope.
+// native-bun's module-scope guard caught it and refused the build rather than
+// shipping a binary whose background-agent progress path throws on every call.
+//
+// Every call therefore goes through globalThis. A bare call would pass every
+// count and marker check in this file — it only fails at build time, on a
+// bundle whose chunk split nothing here reproduces — so the shape is asserted
+// directly.
+test("reaches the transcript sweep through globalThis, never a bare name", () => {
+  const { content } = patchBackgroundAgentUsage(fixture);
+
+  // One declaration, and one publish naming it on both sides.
+  assert.equal(
+    content.split("function __calicoRefreshAgentUsage").length - 1,
+    1
+  );
+  assert.equal(
+    content.split("globalThis.__calicoRefreshAgentUsage=__calicoRefreshAgentUsage;").length - 1,
+    1
+  );
+
+  // No call site reaches it by bare name. `(?<![.\w$])` is what native-bun's
+  // guard uses to decide a reference is unqualified; `(?<!function )` drops
+  // the declaration, which is the one bare occurrence that must stay.
+  const bareCalls = [
+    ...content.matchAll(/(?<![.\w$])(?<!function )__calicoRefreshAgentUsage\s*\(/g),
+  ];
+  assert.deepEqual(bareCalls.map((m) => m[0]), []);
+
+  // And the two qualified call sites are present.
+  assert.equal(
+    content.split("globalThis.__calicoRefreshAgentUsage(").length - 1,
+    2
+  );
 });

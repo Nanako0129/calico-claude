@@ -879,9 +879,13 @@ const CHECKS: Check[] = [
       if (countOccurrences(content, trackHelper + refreshHelper) !== 1) {
         return "background usage helpers are not one adjacent executable injection block";
       }
+      // The sweep is published on globalThis at its declaration so the progress
+      // and completion sites can reach it from another Bun chunk (2.1.274 split
+      // them apart). That publish line names it twice, so the total went from
+      // 3 — declaration plus two call sites — to 5.
       for (const [name, expected] of [
         ["__calicoTrackAgentUsage", 5],
-        ["__calicoRefreshAgentUsage", 3],
+        ["__calicoRefreshAgentUsage", 5],
       ] as const) {
         const actual = countOccurrences(content, name);
         if (actual !== expected) {
@@ -900,10 +904,16 @@ const CHECKS: Check[] = [
       if (trackerMatches.length !== 1) {
         return `expected 1 semantic background tracker state, found ${trackerMatches.length}`;
       }
+      // The globalThis publish sits between the sweep and the tracker factory,
+      // and it is required here rather than merely tolerated: without it the
+      // progress and completion sites cannot reach the sweep once upstream puts
+      // them in another Bun chunk, which is what 2.1.274 did.
+      const refreshPublish =
+        "globalThis.__calicoRefreshAgentUsage=__calicoRefreshAgentUsage;";
       if (
         countOccurrences(
           content,
-          trackHelper + refreshHelper + trackerMatches[0][0]
+          trackHelper + refreshHelper + refreshPublish + trackerMatches[0][0]
         ) !== 1
       ) {
         return "background helper block is not executable code adjacent to tracker construction";
@@ -956,7 +966,7 @@ const CHECKS: Check[] = [
       const eventFunction = eventHeader[1];
 
       const progressPattern = new RegExp(
-        `(${identifier})\\((${identifier}),(${identifier}),(${identifier}),(${identifier})\\.options\\.tools\\),__calicoRefreshAgentUsage\\(\\2,(${identifier})\\),(${identifier})\\((${identifier}),(${identifier})\\(\\2\\),(${identifier})\\);`,
+        `(${identifier})\\((${identifier}),(${identifier}),(${identifier}),(${identifier})\\.options\\.tools\\),globalThis\\.__calicoRefreshAgentUsage\\(\\2,(${identifier})\\),(${identifier})\\((${identifier}),(${identifier})\\(\\2\\),(${identifier})\\);`,
         "g"
       );
       const progressMatches = [...content.matchAll(progressPattern)];
@@ -969,11 +979,11 @@ const CHECKS: Check[] = [
       }
 
       const legacyCompletionPattern = new RegExp(
-        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,(${identifier}),\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,(${identifier}),\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);globalThis\\.__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
       const modelsUsedCompletionPattern = new RegExp(
-        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);globalThis\\.__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
       const completionMatches = [
@@ -1165,7 +1175,7 @@ const CHECKS: Check[] = [
         return "statusline effort condition and property use different locals";
       }
       const modelsUsedCompletionSignalPattern = new RegExp(
-        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);globalThis\\.__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
       const modelsUsedCompletionSignals = [
