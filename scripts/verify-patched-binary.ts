@@ -123,8 +123,20 @@ const SESSION_ID_HEADER_KEY =
 const CLIENT_FACTORY_SOURCE =
   "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
 
+// Kept in lockstep with maskStringLiterals/clientFactoryLocal in
+// patch-claude-display.ts. Sharing the lookup is what makes the masking matter
+// here: an unmasked quoted default would resolve the same fake local in both,
+// so the verifier would certify the undeclared gate instead of rejecting it.
+function maskStringLiterals(fields: string): string {
+  return fields.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g, (literal) =>
+    " ".repeat(literal.length)
+  );
+}
+
 function clientFactoryLocal(fields: string, name: string): string | null {
-  const match = fields.match(new RegExp(`(?:^|,)${name}:([A-Za-z_$][\\w$]*)`));
+  const match = maskStringLiterals(fields).match(
+    new RegExp(`(?:^|,)${name}:([A-Za-z_$][\\w$]*)`)
+  );
   return match ? match[1] : null;
 }
 

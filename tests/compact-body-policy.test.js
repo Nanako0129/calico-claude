@@ -283,6 +283,44 @@ const fixtureNoSource = fixture238.replace(
   "querySource:qs,agentContext:i"
 );
 
+// A destructured default may be a quoted string, and its contents are not
+// fields. Raised by Copilot on #46: because the verifier shares this lookup, an
+// unmasked literal would resolve the same fake local in both, so --assert-all
+// would certify a gate reading an identifier declared nowhere.
+const fixtureStringDefault = fixture238.replace(
+  "source:o,agentContext:i",
+  'querySource:qs=",source:fake",agentContext:i'
+);
+
+test("a field name inside a quoted default is not a field", () => {
+  const result = patchCompactBodyPolicy(fixtureStringDefault);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, fixtureStringDefault);
+  assert.equal(result.content.includes("__calicoCompactWrapFetch"), false);
+  // The whole point: `fake` is bound nowhere, so a gate built from it would
+  // throw inside the request path rather than fail the patch.
+  assert.equal(result.content.includes('fake==="compact"'), false);
+
+  const requestSource = patchCompactRequestSource(fixtureStringDefault);
+  assert.equal(requestSource.patched, 0);
+  assert.equal(requestSource.content, fixtureStringDefault);
+});
+
+test("a real source is still found past a quoted default", () => {
+  // Masking must not swallow fields that follow a string literal.
+  const withBoth = fixture238.replace(
+    "source:o,agentContext:i",
+    'querySource:qs=",source:fake",source:o,agentContext:i'
+  );
+  const result = patchCompactBodyPolicy(withBoth);
+  assert.equal(result.patched, 1);
+  assert.match(
+    result.content,
+    /&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/
+  );
+  assert.equal(result.content.includes('fake==="compact"'), false);
+});
+
 test("fails closed when the factory no longer passes source", () => {
   const result = patchCompactBodyPolicy(fixtureNoSource);
   assert.equal(result.patched, 0);

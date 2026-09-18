@@ -4317,11 +4317,29 @@ function clientFactoryPattern() {
   return new RegExp(CLIENT_FACTORY_SOURCE, "g");
 }
 
+// A destructured field may carry a default, and a default may be a quoted
+// string whose contents are not fields at all. Blank string literals out —
+// same length, so nothing else shifts — before any field lookup reads the list.
+// Without this, a default such as `querySource:h=",source:fake"` resolves
+// `source` to `fake`, which is declared nowhere: the gate injected from it
+// throws a ReferenceError inside the request path, behind the REMORA_ACTIVE
+// gate where no smoke test reaches. The verifier shares this lookup, so it
+// would certify that gate rather than catch it.
+function maskStringLiterals(fields) {
+  return fields.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g, (literal) =>
+    " ".repeat(literal.length)
+  );
+}
+
 // `fields` is the captured parameter list. Returns the local bound to `name`,
-// or null when upstream no longer passes it. The `(?:^|,)` boundary is what
-// keeps `source` from matching inside `querySource`.
+// or null when upstream no longer passes it. The `(?:^|,)` boundary rejects a
+// field whose name merely ends in `name` — `xsource:` for `source`. (It does
+// not, measured, do anything about upstream's camel-cased `querySource`, which
+// a lowercase lookup cannot match either way.)
 function clientFactoryLocal(fields, name) {
-  const match = fields.match(new RegExp(`(?:^|,)${name}:([A-Za-z_$][\\w$]*)`));
+  const match = maskStringLiterals(fields).match(
+    new RegExp(`(?:^|,)${name}:([A-Za-z_$][\\w$]*)`)
+  );
   return match ? match[1] : null;
 }
 
