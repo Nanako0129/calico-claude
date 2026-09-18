@@ -218,6 +218,50 @@ test("wraps the swapped fetchOverride local on cross-platform builds", async () 
   assert.equal(rewritten.model, "gpt-5.6-sol");
 });
 
+// 2.1.277 inserted `querySource:h=g` between `source` and `agentContext` — a
+// field carrying a default, and one whose name ends in the very field name the
+// anchor looks up. Pinning the fields in order took all three modules that
+// share this factory to zero at once. The locals the wrap reads are unchanged;
+// only their position in the parameter list is.
+const fixture277 = fixture238.replace(
+  "source:o,agentContext:i",
+  "source:o,querySource:qs=o,agentContext:i"
+);
+
+test("wraps through the 2.1.277 inserted querySource field", async () => {
+  const result = patchCompactBodyPolicy(fixture277);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("compact-body-policy", result.content), null);
+  // The gate must read `source`, not the `querySource` that now precedes
+  // `agentContext` — a lookup without a name boundary would bind `qs`.
+  assert.match(
+    result.content,
+    /&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/
+  );
+
+  const context = runPatched(result.content);
+  const { calls } = await callWrappedFetch(context, "compact", {
+    model: "gpt-5.6-sol",
+    output_config: { effort: "xhigh" },
+  });
+  assert.equal(JSON.parse(calls[0].init.body).output_config.effort, "medium");
+});
+
+test("compact-request-source also survives the inserted querySource field", () => {
+  const result = patchCompactRequestSource(fixture277);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+  assert.equal(
+    evaluatePatchModule("compact-request-source", result.content),
+    null
+  );
+  assert.match(
+    result.content,
+    /\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/
+  );
+});
+
 test("fails atomically when Zie anchor is missing", () => {
   // Rename the destructured property itself; renaming only the minified
   // local must NOT break the anchor (that varies per platform build).

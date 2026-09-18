@@ -4295,6 +4295,36 @@ const SESSION_ID_HEADER_ENTRY = new RegExp(
   `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,`
 );
 
+// The client factory those same three modules open on. Its destructured
+// parameter list was pinned field by field, in order, and that broke twice for
+// the same reason: 2.1.238 appended `credentials:s`, absorbed only because a
+// trailing `(?:,name:local)*` had been added for it, and 2.1.277 inserted
+// `querySource:h=g` *between* `source` and `agentContext` — a field carrying a
+// default, which that trailing group does not admit either. Both times all
+// three modules went to zero at once and the preflight gate held the release.
+//
+// Capture the parameter list as one run and look fields up by name instead, so
+// upstream may reorder, insert, rename around, or default anything as long as
+// the fields this patcher actually reads are still present. `[^{}]*` keeps the
+// run inside the one parameter object: a nested destructure or an object
+// default would end the match early rather than swallow the function body.
+const CLIENT_FACTORY_SOURCE =
+  "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
+
+// A fresh RegExp per call: these are `g`-flagged and driven by exec() loops, so
+// a shared instance would carry lastIndex between modules.
+function clientFactoryPattern() {
+  return new RegExp(CLIENT_FACTORY_SOURCE, "g");
+}
+
+// `fields` is the captured parameter list. Returns the local bound to `name`,
+// or null when upstream no longer passes it. The `(?:^|,)` boundary is what
+// keeps `source` from matching inside `querySource`.
+function clientFactoryLocal(fields, name) {
+  const match = fields.match(new RegExp(`(?:^|,)${name}:([A-Za-z_$][\\w$]*)`));
+  return match ? match[1] : null;
+}
+
 function patchActiveTurnPromptIdentity(content) {
   const original = content;
   let agentCandidates = 0;
@@ -4392,8 +4422,7 @@ function patchActiveTurnPromptIdentity(content) {
   // Add a versioned, Calico-owned header only inside a remora child process.
   // Main-session requests use the live prompt id; agent requests prefer the
   // value frozen at their AsyncLocalStorage entry point.
-  const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
+  const clientStartPattern = clientFactoryPattern();
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -4428,8 +4457,11 @@ function patchActiveTurnPromptIdentity(content) {
     // (so `<ctx>` is in scope), and the header entry below finds the spread on
     // its own shape. So pin only the sanitizer assignment and let upstream put
     // whatever it likes between that and the header object.
-    const sourceParam = clientStartMatch[2];
-    const contextParam = clientStartMatch[3];
+    const sourceParam = clientFactoryLocal(clientStartMatch[1], "source");
+    const contextParam = clientFactoryLocal(clientStartMatch[1], "agentContext");
+    if (!sourceParam || !contextParam) {
+      continue;
+    }
     const contextRe = escapeRegExp(contextParam);
     const localsPattern = new RegExp(
       `,([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*)\\(${contextRe}\\)\\?void 0:${contextRe},`
@@ -4509,8 +4541,7 @@ function patchCompactRequestSource(content) {
 `;
 
   // Same Zie-shaped client factory active-turn targets: owns source + agentContext.
-  const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
+  const clientStartPattern = clientFactoryPattern();
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -4543,7 +4574,10 @@ function patchCompactRequestSource(content) {
     );
     // Inject after Session-Id + custom-header spread (...u,). Works with or
     // without a subsequent active-turn __calicoPromptId spread.
-    const sourceParam = clientStartMatch[2];
+    const sourceParam = clientFactoryLocal(clientStartMatch[1], "source");
+    if (!sourceParam) {
+      continue;
+    }
     // sourceParam is a captured minified local, so it may itself begin with
     // `$1` (or contain any `$` sequence). This regex has one capture group,
     // so a plain-string replacement would let `$1`-in-sourceParam expand as
@@ -4616,8 +4650,7 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
   let output = content;
 
   // Same Zie-shaped client factory: wrap fetchOverride when this client is for compact.
-  const clientStartPattern =
-    /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{/g;
+  const clientStartPattern = clientFactoryPattern();
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
     const start = clientStartMatch.index;
@@ -4633,8 +4666,11 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     }
 
     candidates += 1;
-    const fetchOverrideParam = clientStartMatch[1];
-    const sourceParam = clientStartMatch[2];
+    const fetchOverrideParam = clientFactoryLocal(clientStartMatch[1], "fetchOverride");
+    const sourceParam = clientFactoryLocal(clientStartMatch[1], "source");
+    if (!fetchOverrideParam || !sourceParam) {
+      continue;
+    }
     const inject =
       `if(process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"){${fetchOverrideParam}=__calicoCompactWrapFetch(${fetchOverrideParam})}`;
     const nextSegment =
