@@ -233,8 +233,11 @@ test("wraps through the 2.1.277 inserted querySource field", async () => {
   assert.equal(result.candidates, 1);
   assert.equal(result.patched, 1);
   assert.equal(evaluatePatchModule("compact-body-policy", result.content), null);
-  // The gate must read `source`, not the `querySource` that now precedes
-  // `agentContext` — a lookup without a name boundary would bind `qs`.
+  // The gate reads `source`, which the inserted field displaced but did not
+  // replace. `querySource` is camel-cased, so a lookup for lowercase `source:`
+  // cannot bind its local whether or not it has a name boundary — measured, and
+  // the reason this test alone does not exercise that boundary. The two tests
+  // below cover it and the fail-closed path.
   assert.match(
     result.content,
     /&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/
@@ -246,6 +249,50 @@ test("wraps through the 2.1.277 inserted querySource field", async () => {
     output_config: { effort: "xhigh" },
   });
   assert.equal(JSON.parse(calls[0].init.body).output_config.effort, "medium");
+});
+
+// What the `(?:^|,)` boundary in clientFactoryLocal actually guards. Raised by
+// Copilot on #46 after the fixture above was described as exercising it and
+// measurably does not: a field whose name merely *ends* in lowercase `source`
+// is what a boundary-less lookup binds instead.
+const fixtureCollidingField = fixture238.replace(
+  "source:o,agentContext:i",
+  "xsource:zz,source:o,agentContext:i"
+);
+
+test("the field lookup ignores a field whose name ends in the one it wants", () => {
+  const result = patchCompactBodyPolicy(fixtureCollidingField);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("compact-body-policy", result.content), null);
+  // `zz` is what a lookup without the boundary returns here; the gate must
+  // still be keyed to the real `source` binding.
+  assert.match(
+    result.content,
+    /&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/
+  );
+  assert.equal(result.content.includes('&&zz==="compact"'), false);
+});
+
+// Upstream could drop or rename `source` outright. The lookup returns null and
+// the module must then apply nothing at all, rather than injecting a gate that
+// reads an undeclared identifier — which would be a ReferenceError at runtime
+// inside the request path, behind the REMORA_ACTIVE gate where no smoke test
+// would reach it.
+const fixtureNoSource = fixture238.replace(
+  "source:o,agentContext:i",
+  "querySource:qs,agentContext:i"
+);
+
+test("fails closed when the factory no longer passes source", () => {
+  const result = patchCompactBodyPolicy(fixtureNoSource);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, fixtureNoSource);
+  assert.equal(result.content.includes("__calicoCompactWrapFetch"), false);
+
+  const requestSource = patchCompactRequestSource(fixtureNoSource);
+  assert.equal(requestSource.patched, 0);
+  assert.equal(requestSource.content, fixtureNoSource);
+  assert.equal(requestSource.content.includes("x-calico-request-source"), false);
 });
 
 test("compact-request-source also survives the inserted querySource field", () => {
