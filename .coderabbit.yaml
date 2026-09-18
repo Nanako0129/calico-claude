@@ -1,0 +1,18 @@
+# CodeRabbit configuration.
+# Schema: https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+
+reviews:
+  auto_review:
+    # 0 disables the pause entirely, which is the schema's documented sentinel
+    # ("Set to 0 to disable"), not a large number chosen by hand. At the default
+    # of 5, automatic review stops silently once a pull request has five
+    # reviewed commits, and a poller waiting on the verdict reads that pause as
+    # a timeout rather than as a stop. Measured: sepia#250 ran four rounds.
+    auto_pause_after_reviewed_commits: 0
+
+knowledge_base:
+  code_guidelines:
+    # Enabled by default, but pointed at nothing by default. These are the
+    # files this repository already states its rules in.
+    filePatterns:
+      - "README.md"
