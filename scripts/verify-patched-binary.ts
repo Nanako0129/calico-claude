@@ -128,21 +128,39 @@ function clientFactoryLocal(fields: string, name: string): string | null {
   return match ? match[1] : null;
 }
 
-// Each factory in the bundle, as {opening, fields, body-to-next-factory}, so a
-// check can resolve the locals it needs by name and then assert on the body.
+// Each factory in the bundle, as {index, opening, fields, body}, so a check can
+// resolve the locals it needs by name and then assert on the body.
+//
+// `index` is the factory's own offset and is what callers must use to locate
+// it again: `opening` is minified text that another chunk may repeat verbatim,
+// so searching for it would silently resolve the wrong factory.
+//
+// The body is cut at the next `async function ` and then bounded to its Bun
+// module, for the reason boundedToModule exists: a segment cut that way
+// routinely runs past the end of its chunk, and an unbounded one would let a
+// factory near a chunk's end be proved "owned" by injection text belonging to
+// the next module entirely.
 function clientFactorySegments(
   content: string
-): { opening: string; fields: string; segment: string }[] {
+): { index: number; opening: string; fields: string; segment: string }[] {
   const pattern = new RegExp(CLIENT_FACTORY_SOURCE, "g");
-  const segments: { opening: string; fields: string; segment: string }[] = [];
+  const segments: {
+    index: number;
+    opening: string;
+    fields: string;
+    segment: string;
+  }[] = [];
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(content)) !== null) {
     const start = match.index;
     const next = content.indexOf("async function ", start + match[0].length);
     segments.push({
+      index: start,
       opening: match[0],
       fields: match[1],
-      segment: content.slice(start, next === -1 ? content.length : next),
+      segment: boundedToModule(
+        content.slice(start, next === -1 ? content.length : next)
+      ),
     });
   }
   return segments;
@@ -876,8 +894,8 @@ const CHECKS: Check[] = [
       // The wrap must be the first statement of a factory, gated on that same
       // factory's own `source` binding and rewriting its own `fetchOverride` —
       // resolved by name so an inserted or defaulted field cannot hide them.
-      const ownedOpenings = clientFactorySegments(content)
-        .filter(({ opening, fields, segment }) => {
+      const ownedFactories = clientFactorySegments(content).filter(
+        ({ opening, fields, segment }) => {
           const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
           const sourceLocal = clientFactoryLocal(fields, "source");
           if (!fetchOverrideLocal || !sourceLocal) {
@@ -887,16 +905,20 @@ const CHECKS: Check[] = [
             `if(process.env.REMORA_ACTIVE==="1"&&${sourceLocal}==="compact")` +
             `{${fetchOverrideLocal}=__calicoCompactWrapFetch(${fetchOverrideLocal})}`;
           return segment.startsWith(opening + wrap);
-        })
-        .map(({ opening }) => opening);
-      if (ownedOpenings.length !== 1) {
+        }
+      );
+      if (ownedFactories.length !== 1) {
         return "compact fetch wrap is not owned by the Zie client factory";
       }
       const wrapInjectMatches = content.match(wrapInjectPattern) ?? [];
       if (wrapInjectMatches.length !== 1) {
         return "expected exactly one compact fetch wrap inject at Zie factory";
       }
-      const factoryIndex = content.indexOf(ownedOpenings[0]);
+      // The wrapped factory's own offset, not a search for its opening text:
+      // that text is minified and another chunk may repeat it, which would
+      // anchor the adjacency proof below to the wrong factory and reject a
+      // correctly patched bundle.
+      const factoryIndex = ownedFactories[0].index;
       const blockIndex = content.lastIndexOf(helperBlock, factoryIndex);
       if (blockIndex === -1 || blockIndex + helperBlock.length !== factoryIndex) {
         return "compact helper block is not executable and adjacent to its Zie factory";

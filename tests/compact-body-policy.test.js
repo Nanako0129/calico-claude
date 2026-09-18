@@ -262,6 +262,57 @@ test("compact-request-source also survives the inserted querySource field", () =
   );
 });
 
+// The verifier cuts a factory's body at the next `async function `, which on a
+// chunked bundle routinely runs past the end of the chunk the factory lives in.
+// Both checks below would then accept injection text belonging to an entirely
+// different module. Raised by Copilot on #46; these two tests are what shows
+// the bounding actually rejects it, rather than the claim being taken on faith.
+const BUN_MODULE_BOUNDARY = "\n/*@@calico-bun-module-boundary@@*/\n";
+
+test("the verifier rejects a request-source inject that crosses a chunk boundary", () => {
+  const patched = patchCompactRequestSource(fixture).content;
+  assert.equal(evaluatePatchModule("compact-request-source", patched), null);
+
+  // Inside the factory, after the sanitizer the adjacency check reads, and
+  // before the header inject the ownership regex must still reach. Without
+  // bounding, that regex's `[\s\S]*?` walks straight over the boundary and the
+  // module verifies clean on a header entry from the next chunk.
+  const injectIndex = patched.indexOf(
+    '...process.env.REMORA_ACTIVE==="1"&&o==="compact"'
+  );
+  assert.notEqual(injectIndex, -1);
+  const headerIndex = patched.lastIndexOf('"X-Claude-Code-Session-Id"', injectIndex);
+  assert.notEqual(headerIndex, -1, "the header entry must precede the inject");
+  const split =
+    patched.slice(0, headerIndex) +
+    BUN_MODULE_BOUNDARY +
+    patched.slice(headerIndex);
+  assert.equal(
+    evaluatePatchModule("compact-request-source", split),
+    "compact request-source sanitize/header inject is not owned by Zie factory"
+  );
+});
+
+test("the verifier locates the wrapped factory by offset, not by its text", () => {
+  // Two factories whose opening text is byte-identical: the wrapped one is
+  // second. Resolving the opening with indexOf finds the first, so the helper
+  // block sitting immediately before the wrapped factory reads as detached and
+  // a correctly patched bundle is rejected.
+  const patched = patchCompactBodyPolicy(fixture).content;
+  assert.equal(evaluatePatchModule("compact-body-policy", patched), null);
+
+  const opening = patched.match(/async function Zie\(\{[^{}]*\}\)\{/)[0];
+  const decoy = `${opening}return{headers:{},fetch:n}}\n`;
+  // Ahead of everything, so the duplicate opening is the first occurrence.
+  const withDecoy = decoy + patched;
+  assert.equal(
+    withDecoy.indexOf(opening) < withDecoy.indexOf(decoy) + decoy.length,
+    true,
+    "the decoy must own the first occurrence of the opening text"
+  );
+  assert.equal(evaluatePatchModule("compact-body-policy", withDecoy), null);
+});
+
 test("fails atomically when Zie anchor is missing", () => {
   // Rename the destructured property itself; renaming only the minified
   // local must NOT break the anchor (that varies per platform build).
