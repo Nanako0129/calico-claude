@@ -1,0 +1,16 @@
+# CodeRabbit configuration.
+# Schema: https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+
+reviews:
+  auto_review:
+    # Default is 5: after five reviewed commits CodeRabbit silently stops
+    # auto-reviewing, and a poller then reads that as a timeout rather than
+    # as a pause. A fix loop on a contested PR passes five rounds easily.
+    auto_pause_after_reviewed_commits: 20
+
+knowledge_base:
+  code_guidelines:
+    # Enabled by default, but pointed at nothing by default. These are the
+    # files this repository already states its rules in.
+    filePatterns:
+      - "README.md"
