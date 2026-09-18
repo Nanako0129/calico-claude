@@ -146,6 +146,91 @@ test("emits the prompt id on the 2.1.238 credentials/shifted-local shape", async
   assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
 });
 
+// 2.1.277 inserted `querySource:h=g` between `source` and `agentContext`. The
+// field carries a default and its name ends in `source`, so both the
+// field-order assumption and a boundary-less name lookup would misread it —
+// and this factory is shared with compact-request-source and
+// compact-body-policy, so all three went to zero on the same upstream edit.
+const fixture277 = fixture238.replace(
+  "source:o,agentContext:i",
+  "source:o,querySource:qs=o,agentContext:i"
+);
+
+test("emits the prompt id through the 2.1.277 inserted querySource field", async () => {
+  const result = patchActiveTurnPromptIdentity(fixture277);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
+
+  const context = { process: { env: { REMORA_ACTIVE: "1" } } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
+  assert.equal(mainHeaders["x-calico-active-turn-version"], "1");
+
+  // The sanitizer run is keyed to `agentContext`'s local, which the inserted
+  // field displaced but did not replace.
+  const auxHeaders = await context.Zie({
+    source: "quota_check",
+    agentContext: { agentType: "main" },
+  });
+  assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
+});
+
+// What the `(?:^|,)` boundary in clientFactoryLocal actually guards — measured
+// after Copilot pointed out on #46 that the fixture above does not: upstream's
+// `querySource` is camel-cased, so a lookup for lowercase `source:` cannot bind
+// it with or without a boundary. A field whose name *ends* in lowercase
+// `source` is the one that collides.
+const fixtureCollidingField = fixture238.replace(
+  "source:o,agentContext:i",
+  "xsource:zz,source:o,agentContext:i"
+);
+
+test("the field lookup ignores a field whose name ends in the one it wants", async () => {
+  const result = patchActiveTurnPromptIdentity(fixtureCollidingField);
+  assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
+
+  const context = { process: { env: { REMORA_ACTIVE: "1" } } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+
+  // Keyed to the real `source`: an auxiliary call is still excluded, which a
+  // gate bound to `zz` (undefined at every call) could not do.
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
+  const auxHeaders = await context.Zie({
+    source: "quota_check",
+    agentContext: { agentType: "main" },
+  });
+  assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
+});
+
+// Upstream could drop or rename `source` outright. The lookup returns null and
+// the client half must apply nothing, rather than injecting a gate that reads
+// an undeclared identifier — a ReferenceError inside the request path, behind
+// the REMORA_ACTIVE gate where no smoke test would reach it.
+const fixtureNoSource = fixture238.replace(
+  "source:o,agentContext:i",
+  "querySource:qs,agentContext:i"
+);
+
+test("fails closed when the factory no longer passes source", () => {
+  const result = patchActiveTurnPromptIdentity(fixtureNoSource);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, fixtureNoSource);
+  assert.equal(result.content.includes("x-calico-prompt-id"), false);
+});
+
 // linux-arm64 and windows-arm64 builds of 2.1.238 swap the minified locals
 // for model/fetchOverride (`model:n,fetchOverride:r`) in the same factory;
 // the signature matcher captures locals instead of pinning them.

@@ -115,6 +115,69 @@ function inSameModule(content: string, first: number, second: number): boolean {
 const SESSION_ID_HEADER_KEY =
   '(?:"X-Claude-Code-Session-Id"|\\[[A-Za-z_$][\\w$]*\\])';
 
+// Kept in lockstep with CLIENT_FACTORY_SOURCE in patch-claude-display.ts. Both
+// checks below used to pin the factory's destructured fields in order, which
+// broke on 2.1.277's inserted `querySource:h=g` for the same reason the patcher
+// did — and this copy is the reason "both halves fixed" would have been wrong
+// here: the contract lives in five places, three in the patcher and two here.
+const CLIENT_FACTORY_SOURCE =
+  "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
+
+// Kept in lockstep with maskStringLiterals/clientFactoryLocal in
+// patch-claude-display.ts. Sharing the lookup is what makes the masking matter
+// here: an unmasked quoted default would resolve the same fake local in both,
+// so the verifier would certify the undeclared gate instead of rejecting it.
+function maskStringLiterals(fields: string): string {
+  return fields.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g, (literal) =>
+    " ".repeat(literal.length)
+  );
+}
+
+function clientFactoryLocal(fields: string, name: string): string | null {
+  const match = maskStringLiterals(fields).match(
+    new RegExp(`(?:^|,)${name}:([A-Za-z_$][\\w$]*)`)
+  );
+  return match ? match[1] : null;
+}
+
+// Each factory in the bundle, as {index, opening, fields, body}, so a check can
+// resolve the locals it needs by name and then assert on the body.
+//
+// `index` is the factory's own offset and is what callers must use to locate
+// it again: `opening` is minified text that another chunk may repeat verbatim,
+// so searching for it would silently resolve the wrong factory.
+//
+// The body is cut at the next `async function ` and then bounded to its Bun
+// module, for the reason boundedToModule exists: a segment cut that way
+// routinely runs past the end of its chunk, and an unbounded one would let a
+// factory near a chunk's end be proved "owned" by injection text belonging to
+// the next module entirely.
+function clientFactorySegments(
+  content: string
+): { index: number; opening: string; fields: string; segment: string }[] {
+  const pattern = new RegExp(CLIENT_FACTORY_SOURCE, "g");
+  const segments: {
+    index: number;
+    opening: string;
+    fields: string;
+    segment: string;
+  }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) !== null) {
+    const start = match.index;
+    const next = content.indexOf("async function ", start + match[0].length);
+    segments.push({
+      index: start,
+      opening: match[0],
+      fields: match[1],
+      segment: boundedToModule(
+        content.slice(start, next === -1 ? content.length : next)
+      ),
+    });
+  }
+  return segments;
+}
+
 // Kept in lockstep with the identically named helpers in
 // patch-claude-display.ts: the guard that owns a statement is the `if(` whose
 // condition closes immediately before it, not whichever `if(` is nearest.
@@ -782,10 +845,23 @@ const CHECKS: Check[] = [
       // shifts the extra-header local and header-object local by one letter
       // (`u=…(),p={` → `d=…(),f={`); the signature tail and both locals are
       // matched generically. The IIFE parameter stays the literal `u`.
-      const ownedFactory = new RegExp(
-        `async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,maxRetries:[A-Za-z_$][\\w$]*,model:[A-Za-z_$][\\w$]*,fetchOverride:([A-Za-z_$][\\w$]*),source:([A-Za-z_$][\\w$]*),agentContext:[A-Za-z_$][\\w$]*(?:,[A-Za-z_$][\\w$]*:[A-Za-z_$][\\w$]*)*\\}\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&\\2==="compact"\\)\\{\\1=__calicoCompactWrapFetch\\(\\1\\)\\})?let [\\s\\S]*?[A-Za-z_$][\\w$]*=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\([A-Za-z_$][\\w$]*\\(\\)\\),[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\2==="compact"&&\\{"x-calico-request-source":"compact"\\}`
-      );
-      if (!ownedFactory.test(content)) {
+      // Resolve the factory's locals by name first, then assert the injected
+      // run against those exact locals — the ownership proof is that the header
+      // gate reads the factory's own `source` binding, which a single regex can
+      // only express by pinning where that field sits.
+      const owned = clientFactorySegments(content).some(({ fields, segment }) => {
+        const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
+        const sourceLocal = clientFactoryLocal(fields, "source");
+        if (!fetchOverrideLocal || !sourceLocal) {
+          return false;
+        }
+        const source = escapeRegExp(sourceLocal);
+        const fetchOverride = escapeRegExp(fetchOverrideLocal);
+        return new RegExp(
+          `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?[A-Za-z_$][\\w$]*=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\([A-Za-z_$][\\w$]*\\(\\)\\),[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`
+        ).test(segment);
+      });
+      if (!owned) {
         return "compact request-source sanitize/header inject is not owned by Zie factory";
       }
       return null;
@@ -827,19 +903,34 @@ const CHECKS: Check[] = [
       // fetchOverride locals captured, never pinned.
       const wrapInjectPattern =
         /if\(process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*==="compact"\)\{([A-Za-z_$][\w$]*)=__calicoCompactWrapFetch\(\1\)\}/g;
-      // 2.1.238 appends `,credentials:s` to the factory parameter object; the
-      // signature tail after `agentContext:i` is matched generically.
-      const ownedFactory =
-        /async function [A-Za-z_$][\w$]*\(\{apiKey:[A-Za-z_$][\w$]*,maxRetries:[A-Za-z_$][\w$]*,model:[A-Za-z_$][\w$]*,fetchOverride:([A-Za-z_$][\w$]*),source:([A-Za-z_$][\w$]*),agentContext:[A-Za-z_$][\w$]*(?:,[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*)*\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&\2==="compact"\)\{\1=__calicoCompactWrapFetch\(\1\)\}/;
-      const factoryMatch = ownedFactory.exec(content);
-      if (!factoryMatch || factoryMatch.index === undefined) {
+      // The wrap must be the first statement of a factory, gated on that same
+      // factory's own `source` binding and rewriting its own `fetchOverride` —
+      // resolved by name so an inserted or defaulted field cannot hide them.
+      const ownedFactories = clientFactorySegments(content).filter(
+        ({ opening, fields, segment }) => {
+          const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
+          const sourceLocal = clientFactoryLocal(fields, "source");
+          if (!fetchOverrideLocal || !sourceLocal) {
+            return false;
+          }
+          const wrap =
+            `if(process.env.REMORA_ACTIVE==="1"&&${sourceLocal}==="compact")` +
+            `{${fetchOverrideLocal}=__calicoCompactWrapFetch(${fetchOverrideLocal})}`;
+          return segment.startsWith(opening + wrap);
+        }
+      );
+      if (ownedFactories.length !== 1) {
         return "compact fetch wrap is not owned by the Zie client factory";
       }
       const wrapInjectMatches = content.match(wrapInjectPattern) ?? [];
       if (wrapInjectMatches.length !== 1) {
         return "expected exactly one compact fetch wrap inject at Zie factory";
       }
-      const factoryIndex = factoryMatch.index;
+      // The wrapped factory's own offset, not a search for its opening text:
+      // that text is minified and another chunk may repeat it, which would
+      // anchor the adjacency proof below to the wrong factory and reject a
+      // correctly patched bundle.
+      const factoryIndex = ownedFactories[0].index;
       const blockIndex = content.lastIndexOf(helperBlock, factoryIndex);
       if (blockIndex === -1 || blockIndex + helperBlock.length !== factoryIndex) {
         return "compact helper block is not executable and adjacent to its Zie factory";

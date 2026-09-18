@@ -218,6 +218,186 @@ test("wraps the swapped fetchOverride local on cross-platform builds", async () 
   assert.equal(rewritten.model, "gpt-5.6-sol");
 });
 
+// 2.1.277 inserted `querySource:h=g` between `source` and `agentContext` — a
+// field carrying a default, and one whose name ends in the very field name the
+// anchor looks up. Pinning the fields in order took all three modules that
+// share this factory to zero at once. The locals the wrap reads are unchanged;
+// only their position in the parameter list is.
+const fixture277 = fixture238.replace(
+  "source:o,agentContext:i",
+  "source:o,querySource:qs=o,agentContext:i"
+);
+
+test("wraps through the 2.1.277 inserted querySource field", async () => {
+  const result = patchCompactBodyPolicy(fixture277);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("compact-body-policy", result.content), null);
+  // The gate reads `source`, which the inserted field displaced but did not
+  // replace. `querySource` is camel-cased, so a lookup for lowercase `source:`
+  // cannot bind its local whether or not it has a name boundary — measured, and
+  // the reason this test alone does not exercise that boundary. The two tests
+  // below cover it and the fail-closed path.
+  assert.match(
+    result.content,
+    /&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/
+  );
+
+  const context = runPatched(result.content);
+  const { calls } = await callWrappedFetch(context, "compact", {
+    model: "gpt-5.6-sol",
+    output_config: { effort: "xhigh" },
+  });
+  assert.equal(JSON.parse(calls[0].init.body).output_config.effort, "medium");
+});
+
+// What the `(?:^|,)` boundary in clientFactoryLocal actually guards. Raised by
+// Copilot on #46 after the fixture above was described as exercising it and
+// measurably does not: a field whose name merely *ends* in lowercase `source`
+// is what a boundary-less lookup binds instead.
+const fixtureCollidingField = fixture238.replace(
+  "source:o,agentContext:i",
+  "xsource:zz,source:o,agentContext:i"
+);
+
+test("the field lookup ignores a field whose name ends in the one it wants", () => {
+  const result = patchCompactBodyPolicy(fixtureCollidingField);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("compact-body-policy", result.content), null);
+  // `zz` is what a lookup without the boundary returns here; the gate must
+  // still be keyed to the real `source` binding.
+  assert.match(
+    result.content,
+    /&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/
+  );
+  assert.equal(result.content.includes('&&zz==="compact"'), false);
+});
+
+// Upstream could drop or rename `source` outright. The lookup returns null and
+// the module must then apply nothing at all, rather than injecting a gate that
+// reads an undeclared identifier — which would be a ReferenceError at runtime
+// inside the request path, behind the REMORA_ACTIVE gate where no smoke test
+// would reach it.
+const fixtureNoSource = fixture238.replace(
+  "source:o,agentContext:i",
+  "querySource:qs,agentContext:i"
+);
+
+// A destructured default may be a quoted string, and its contents are not
+// fields. Raised by Copilot on #46: because the verifier shares this lookup, an
+// unmasked literal would resolve the same fake local in both, so --assert-all
+// would certify a gate reading an identifier declared nowhere.
+const fixtureStringDefault = fixture238.replace(
+  "source:o,agentContext:i",
+  'querySource:qs=",source:fake",agentContext:i'
+);
+
+test("a field name inside a quoted default is not a field", () => {
+  const result = patchCompactBodyPolicy(fixtureStringDefault);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, fixtureStringDefault);
+  assert.equal(result.content.includes("__calicoCompactWrapFetch"), false);
+  // The whole point: `fake` is bound nowhere, so a gate built from it would
+  // throw inside the request path rather than fail the patch.
+  assert.equal(result.content.includes('fake==="compact"'), false);
+
+  const requestSource = patchCompactRequestSource(fixtureStringDefault);
+  assert.equal(requestSource.patched, 0);
+  assert.equal(requestSource.content, fixtureStringDefault);
+});
+
+test("a real source is still found past a quoted default", () => {
+  // Masking must not swallow fields that follow a string literal.
+  const withBoth = fixture238.replace(
+    "source:o,agentContext:i",
+    'querySource:qs=",source:fake",source:o,agentContext:i'
+  );
+  const result = patchCompactBodyPolicy(withBoth);
+  assert.equal(result.patched, 1);
+  assert.match(
+    result.content,
+    /&&o==="compact"\)\{n=__calicoCompactWrapFetch\(n\)\}/
+  );
+  assert.equal(result.content.includes('fake==="compact"'), false);
+});
+
+test("fails closed when the factory no longer passes source", () => {
+  const result = patchCompactBodyPolicy(fixtureNoSource);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, fixtureNoSource);
+  assert.equal(result.content.includes("__calicoCompactWrapFetch"), false);
+
+  const requestSource = patchCompactRequestSource(fixtureNoSource);
+  assert.equal(requestSource.patched, 0);
+  assert.equal(requestSource.content, fixtureNoSource);
+  assert.equal(requestSource.content.includes("x-calico-request-source"), false);
+});
+
+test("compact-request-source also survives the inserted querySource field", () => {
+  const result = patchCompactRequestSource(fixture277);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+  assert.equal(
+    evaluatePatchModule("compact-request-source", result.content),
+    null
+  );
+  assert.match(
+    result.content,
+    /\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/
+  );
+});
+
+// The verifier cuts a factory's body at the next `async function `, which on a
+// chunked bundle routinely runs past the end of the chunk the factory lives in.
+// Both checks below would then accept injection text belonging to an entirely
+// different module. Raised by Copilot on #46; these two tests are what shows
+// the bounding actually rejects it, rather than the claim being taken on faith.
+const BUN_MODULE_BOUNDARY = "\n/*@@calico-bun-module-boundary@@*/\n";
+
+test("the verifier rejects a request-source inject that crosses a chunk boundary", () => {
+  const patched = patchCompactRequestSource(fixture).content;
+  assert.equal(evaluatePatchModule("compact-request-source", patched), null);
+
+  // Inside the factory, after the sanitizer the adjacency check reads, and
+  // before the header inject the ownership regex must still reach. Without
+  // bounding, that regex's `[\s\S]*?` walks straight over the boundary and the
+  // module verifies clean on a header entry from the next chunk.
+  const injectIndex = patched.indexOf(
+    '...process.env.REMORA_ACTIVE==="1"&&o==="compact"'
+  );
+  assert.notEqual(injectIndex, -1);
+  const headerIndex = patched.lastIndexOf('"X-Claude-Code-Session-Id"', injectIndex);
+  assert.notEqual(headerIndex, -1, "the header entry must precede the inject");
+  const split =
+    patched.slice(0, headerIndex) +
+    BUN_MODULE_BOUNDARY +
+    patched.slice(headerIndex);
+  assert.equal(
+    evaluatePatchModule("compact-request-source", split),
+    "compact request-source sanitize/header inject is not owned by Zie factory"
+  );
+});
+
+test("the verifier locates the wrapped factory by offset, not by its text", () => {
+  // Two factories whose opening text is byte-identical: the wrapped one is
+  // second. Resolving the opening with indexOf finds the first, so the helper
+  // block sitting immediately before the wrapped factory reads as detached and
+  // a correctly patched bundle is rejected.
+  const patched = patchCompactBodyPolicy(fixture).content;
+  assert.equal(evaluatePatchModule("compact-body-policy", patched), null);
+
+  const opening = patched.match(/async function Zie\(\{[^{}]*\}\)\{/)[0];
+  const decoy = `${opening}return{headers:{},fetch:n}}\n`;
+  // Ahead of everything, so the duplicate opening is the first occurrence.
+  const withDecoy = decoy + patched;
+  assert.equal(
+    withDecoy.indexOf(opening) < withDecoy.indexOf(decoy) + decoy.length,
+    true,
+    "the decoy must own the first occurrence of the opening text"
+  );
+  assert.equal(evaluatePatchModule("compact-body-policy", withDecoy), null);
+});
+
 test("fails atomically when Zie anchor is missing", () => {
   // Rename the destructured property itself; renaming only the minified
   // local must NOT break the anchor (that varies per platform build).
