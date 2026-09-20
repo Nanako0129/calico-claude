@@ -2418,6 +2418,60 @@ function patchInstallerMigrationMessage(content, ctx = {}) {
   };
 }
 
+// `/list-agents` renders through `formatForUser`, which builds a leading
+// "This session: <name> [<ref>] (the name other sessions use to message it)"
+// line and then suppresses it on connections that withhold names and
+// directories not chosen by a human (Remote Control, Desktop and IDE hosts):
+//
+//   f = messagingDisabled || !self || (omitDirectories && !self.nameIsUserChosen)
+//     ? null : `This session: ...`
+//
+// Withholding OTHER sessions' auto-generated names is the point of that flag.
+// Withholding your own is not: it is the name you hand to someone so they can
+// message you, and you already know which session you are sitting in. Measured
+// 2026-09-20 on a Remote Control connection: every peer rendered as
+// "(unnamed session)" and the self line was gone entirely, leaving no way to
+// learn your own address from inside the session. Upstream's own hint points at
+// `/rename`, which flips nameIsUserChosen, but that renames the session as a
+// side effect of wanting to read one line.
+//
+// Drop only the omitDirectories half of the gate. messagingDisabled and the
+// missing-self guard stay: with either of those the line has nothing true to
+// say. Peers' names and directories keep being withheld -- this does not touch
+// the branches that render them.
+function patchSelfNameInUserListing(content) {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  let candidates = 0;
+  let patched = 0;
+
+  // Anchored on `.self.nameIsUserChosen`, which survives minification as an
+  // object-literal key and occurs exactly twice in the bundle: once where the
+  // self descriptor is built, once here. The locals are captured and emitted
+  // back verbatim rather than pinned, and the omitDirectories local is matched
+  // only through its use in this clause, so a rename cannot silently drop the
+  // match to zero.
+  const pattern = new RegExp(
+    `(${identifier})=(${identifier})\\|\\|!(${identifier})\\.self\\|\\|` +
+      `(${identifier})&&!\\3\\.self\\.nameIsUserChosen\\?null:`,
+    "g"
+  );
+
+  const output = content.replace(
+    pattern,
+    (full, target, messagingDisabled, extras) => {
+      candidates += 1;
+      patched += 1;
+      return `${target}=${messagingDisabled}||!${extras}.self?null:`;
+    }
+  );
+
+  return {
+    content: output,
+    candidates,
+    patched,
+  };
+}
+
 function patchVersionOutput(content) {
   const needle = "}.VERSION} (Claude Code)";
   const marker = "\\n(patched)";
@@ -4837,6 +4891,12 @@ const PATCH_MODULES = [
     apply: patchDisableUsageWrapUpHints,
   },
   {
+    id: "self-name-in-user-listing",
+    description:
+      "Keep the /list-agents self-name line on connections that withhold peer names",
+    apply: patchSelfNameInUserListing,
+  },
+  {
     id: "version-output",
     description: "Append (patched) to plain --version output",
     apply: patchVersionOutput,
@@ -5078,6 +5138,7 @@ module.exports = {
   // Exported for tests: the positional stream-reducer branch is only reachable
   // on older bundle shapes, so nothing else exercises it.
   patchThinkingStreaming,
+  patchSelfNameInUserListing,
 };
 
 if (require.main === module) {

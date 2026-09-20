@@ -2142,6 +2142,43 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "self-name-in-user-listing",
+    kind: "custom",
+    describe:
+      "/list-agents self-name gate no longer keyed off omitDirectories, and still guards the same branch",
+    run: (content: string): string | null => {
+      const identifier = "[A-Za-z_$][\\w$]*";
+      const problems: string[] = [];
+
+      // Assert the rewritten gate sits directly in front of the branch it
+      // guards, so the check fails if the clause is relocated away from the
+      // self line rather than merely if some text disappeared. The self
+      // descriptor local is captured once and back-referenced, so a gate
+      // testing one object while the branch reads another does not pass.
+      const injected = new RegExp(
+        `${identifier}=${identifier}\\|\\|!(${identifier})\\.self\\?null:` +
+          `\\1\\.self\\.callerIsSubagent\\?`,
+        "g"
+      );
+      const injectedCount = (content.match(injected) ?? []).length;
+      if (injectedCount !== 1) {
+        problems.push(
+          `expected exactly 1 rewritten self-name gate adjacent to its branch, found ${injectedCount}`
+        );
+      }
+
+      // The omitDirectories half must be gone from this clause. Deliberately
+      // not paired with a count of `nameIsUserChosen` bundle-wide: the two
+      // assertions above already pin what this module changes, and a count
+      // would also fail the day upstream reads that field somewhere unrelated.
+      if (content.includes("nameIsUserChosen?null:")) {
+        problems.push("residual omitDirectories clause in the self-name gate");
+      }
+
+      return problems.length > 0 ? problems.join("; ") : null;
+    },
+  },
+  {
     id: "version-output",
     kind: "presence",
     // The literal marker; \n here is a backslash + n (two chars) inside the bundle's
