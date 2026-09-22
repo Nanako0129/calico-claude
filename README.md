@@ -146,8 +146,9 @@ claude --version
 
 Windows will not overwrite `claude.exe` while any Claude Code session is running it, but it will
 rename it, which is why the old file is moved aside first. Sessions already open keep running the old
-build until restarted; delete the `claude.exe.calico-old.*` file once they have exited. The installer
-does the same, and removes leftovers from earlier runs itself.
+build until restarted; delete the `claude.exe.calico-old.*` file once they have exited. If the copy
+fails, delete whatever it left at `$target` and move the `.calico-old.*` file back to that name. The
+installer does all of this itself, including removing leftovers from earlier runs.
 
 ### Side by side with official Claude
 

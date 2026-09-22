@@ -68,8 +68,8 @@ if (-not $claudePath) {
 # Joined before matching, because the binary this installer upgrades is usually
 # one it installed itself: the version-output patch module appends a "(patched)"
 # line, so `claude --version` prints two lines and PowerShell hands them back as
-# a string array. `-notmatch` against an array filters instead of testing — it
-# returns the elements that did not match, and a non-empty array is truthy — so
+# a string array. `-notmatch` against an array filters instead of testing: it
+# returns the elements that did not match, and a non-empty array is truthy, so
 # the check failed on exactly the machines that already had a patched build,
 # while a first install over the official single-line binary always passed.
 # $Matches is not populated by the array form either, so the $claudeVersion
@@ -152,6 +152,15 @@ function Install-OverRunningExe {
   } catch {
     $copyError = $_.Exception.Message
     try {
+      # A copy that fails partway (a full disk) can leave a partial file at
+      # $Target, and Move-Item will not overwrite an existing file. Measured with
+      # a fault-injected copy that wrote part of the target and then threw: the
+      # restore failed and left a 7-byte claude.exe with the original stranded
+      # in the aside. Anything at $Target now is that partial copy, since the
+      # original was moved away above.
+      if (Test-Path -LiteralPath $Target) {
+        Remove-Item -LiteralPath $Target -Force -ErrorAction Stop
+      }
       Move-Item -LiteralPath $aside -Destination $Target -ErrorAction Stop
     } catch {
       Fail "Could not install the patched build ($copyError), and could not restore the original from $aside ($($_.Exception.Message)). Rename it back to $leaf by hand."
