@@ -45,6 +45,7 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 | `statusline-committed-usage` | Exposes only committed terminal assistant usage to status-line payloads |
 | `statusline-rate-limit-windows` | Forwards the Fable 5 and usage-credit rate-limit windows to status-line payloads |
 | `version-output` | Appends `(patched)` to plain `--version` output |
+| `disable-official-updater` | Never runs Anthropic's embedded updater, in the background or through `claude update`; plugin and marketplace auto-update keep working |
 | `welcome-badge` | Renames the startup and help titles to `Calico Claude` |
 
 > **Note:** `tool-call-verbose` is **disabled in published releases** (thinking-only expansion, by
@@ -94,9 +95,10 @@ curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/insta
 irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.ps1 | iex
 ```
 
-The installers replace the `claude` binary that Anthropic's updater manages, so the next upstream
-release puts `claude` back on an unpatched build; both say so when they finish. See
-[Keeping it updated](#keeping-it-updated) for the two ways around that.
+The installers replace the `claude` binary that Anthropic's updater manages. Calico builds never run
+that updater themselves (`disable-official-updater`), so an installed build stays patched but does
+not upgrade itself either; re-run the installer to upgrade. See
+[Keeping it updated](#keeping-it-updated).
 
 Listing releases uses the GitHub API. The installers take the first credential available, in this
 order: `GITHUB_TOKEN`, then `GH_TOKEN`, then an authenticated `gh` (`gh auth token`). With none, the
@@ -174,11 +176,13 @@ differently named binary, which is exactly why the Calico one never moves on its
 The official updater can install a new version and repoint the `claude` symlink at an unpatched
 binary. The renamed Calico binary is immune to that, but it also stops receiving updates.
 
-If you installed over `claude` instead, there are two ways to keep it patched. Start Claude Code with
-`DISABLE_AUTOUPDATER=1` in its environment — the native updater's check returns early on that
-variable (read from the 2.1.280 bundle) — and re-run the installer yourself after each upgrade. Do
-not rely on `autoUpdates: false` in the settings file for this: native installs can ignore it. Or
-switch to the side-by-side install and the updater below.
+Calico builds never run Anthropic's embedded updater: neither in the background nor through
+`claude update`, which prints that it is a Calico build and installs nothing. Plugin and marketplace
+auto-update are unaffected. So a build installed over `claude` is no longer reverted by its own
+sessions, but it also does not upgrade itself; re-run the installer to upgrade. Sessions that were
+already running before the install still run the previous build, and if that build is an official
+one its updater can still replace yours, so restart them after installing. Or switch to the
+side-by-side install and the updater below.
 
 [`examples/local-auto-update/`](./examples/local-auto-update/) closes that gap: a SessionStart hook
 that checks at most hourly and never blocks startup, plus an optional launchd timer for macOS —
@@ -496,10 +500,11 @@ compatible active-turn bridges.
 
 ### Will Claude Code updates remove the patches?
 
-Yes, if Calico is installed over `claude` itself — the official updater installs a new version and
-repoints the symlink at the unpatched binary. Either re-run the Calico installer after every update,
-or use a [side-by-side install](#side-by-side-with-official-claude) plus
-[`examples/local-auto-update/`](./examples/local-auto-update/).
+Not from Calico's own sessions: Calico builds never run Anthropic's updater. An official Claude
+Code session still can. If Calico is installed over `claude` itself, a session of the official build
+that was already open, or any other official build on the machine, can install a new version over it.
+The side-by-side install is not affected: [side-by-side install](#side-by-side-with-official-claude)
+plus [`examples/local-auto-update/`](./examples/local-auto-update/).
 
 ### Why can the startup banner say Calico while a newer adapter is missing?
 

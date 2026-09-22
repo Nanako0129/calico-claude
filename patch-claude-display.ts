@@ -2472,6 +2472,187 @@ function patchSelfNameInUserListing(content) {
   };
 }
 
+// Every Claude Code binary carries Anthropic's native auto-updater, and that
+// updater always manages the OFFICIAL install -- ~/.local/bin/claude and
+// ~/.local/share/claude/versions -- whichever binary happens to be running it.
+// A Calico build runs side by side as calico-claude and is updated by Calico's
+// own updater, so the embedded one can only fail or reach across into the
+// official install. Measured 2026-09-22: all eleven open sessions on the
+// maintainer's Mac were calico-claude, and ~/.claude/.last-update-result.json
+// recorded {"path":"native","outcome":"failed","status":"install_failed",
+// "version_from":"2.1.280"}, surfacing as "Auto-update failed · Run claude
+// doctor" in the UI.
+//
+// Every updater path starts from one predicate, P, which returns a reason
+// object when updates are disabled and null otherwise. Its wrapper
+// `W(){return P()!==null}` is checked by all three AutoUpdater components
+// (native, npm, package manager) before they do any work; in the native one it
+// follows two other early returns (no write permission, locked exe) that also
+// skip the update. P's final `return null` is its
+// only null exit: measured on 2.1.276, 2.1.277, 2.1.278 and 2.1.280, P is 347
+// characters with five returns, four of them reason objects. Replacing that tail
+// with a Calico reason therefore disables the updater on every path the user
+// has not already disabled it on, and leaves a user's own DISABLE_UPDATES /
+// DISABLE_AUTOUPDATER / config reason exactly as upstream reports it.
+//
+// That alone would also turn off plugin and marketplace auto-update: the same
+// module's `G(){return W()&&!a.FORCE_AUTOUPDATE_PLUGINS}` gates the background
+// plugin pass, per-plugin eligibility, marketplace refresh and the /plugin
+// toggle. Disabling those was never the point, so G is rewritten to ignore the
+// Calico reason alone. With a user-set reason G behaves as upstream does.
+//
+// The reason formatter R (`switch(e.type){case"development":...}`) renders the
+// text shown by doctor and by the auto-updates row in /config, both through
+// `disabled (${R(reason)})`. It gains a case so that row says what is true
+// instead of `disabled (undefined)`.
+//
+// Those three rewrites happen inside P's own Bun module or none do. A build
+// with P rewritten but G untouched would silently disable plugin updates, and
+// one with G rewritten but P untouched would change nothing; either is worse
+// than a loud zero. Minified names are captured, never pinned: 2.1.277 and
+// 2.1.280 each have an unrelated function elsewhere in the bundle with P's name.
+//
+// A fourth rewrite, in the CLI's command registration, covers the explicit
+// `update` subcommand, which does not go through P at all; see below. It counts
+// as its own candidate, and verify-patched-binary requires it.
+const CALICO_UPDATER_REASON_TYPE = "calico";
+const CALICO_UPDATER_REASON_TEXT = "Calico build; updated by the Calico updater";
+const CALICO_UPDATE_COMMAND_MESSAGE =
+  "This is a Calico build. It is updated by the Calico updater, not by `update`,\n" +
+  "and nothing was installed. See https://github.com/Nanako0129/calico-claude#keeping-it-updated\n";
+
+function patchDisableOfficialUpdater(content) {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let candidates = 0;
+  let patched = 0;
+
+  const predicateStart = new RegExp(
+    `function (${identifier})\\(\\)\\{if\\((${identifier})\\.DISABLE_UPDATES\\)` +
+      `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
+    "g"
+  );
+
+  const edits = [];
+  let match;
+  while ((match = predicateStart.exec(content)) !== null) {
+    candidates += 1;
+    const predicateName = match[1];
+    const envObject = match[2];
+
+    // P's body, found by brace depth from its opening brace. Safe here only
+    // because P is checked afterwards: its strings are short literals with no
+    // braces, and the post-conditions below reject anything else.
+    const bodyOpen = match.index + match[0].indexOf("{");
+    let depth = 0;
+    let bodyEnd = -1;
+    for (let i = bodyOpen; i < content.length; i++) {
+      if (content[i] === "{") depth += 1;
+      else if (content[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          bodyEnd = i + 1;
+          break;
+        }
+      }
+    }
+    if (bodyEnd === -1) continue;
+    const predicate = content.slice(match.index, bodyEnd);
+    if (
+      !predicate.endsWith("return null}") ||
+      predicate.split("return null").length !== 2 ||
+      /return;|return void/.test(predicate)
+    ) {
+      continue;
+    }
+
+    const moduleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, match.index);
+    const moduleFrom = moduleStart === -1 ? 0 : moduleStart;
+    const moduleNext = content.indexOf(BUN_MODULE_BOUNDARY, bodyEnd);
+    const moduleTo = moduleNext === -1 ? content.length : moduleNext;
+    const moduleText = content.slice(moduleFrom, moduleTo);
+
+    const wrapper = new RegExp(
+      `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\(\\)!==null\\}`
+    ).exec(moduleText);
+    if (!wrapper) continue;
+
+    const pluginGate = new RegExp(
+      `function (${identifier})\\(\\)\\{return ${escape(wrapper[1])}\\(\\)` +
+        `&&!${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\}`
+    ).exec(moduleText);
+    if (!pluginGate) continue;
+
+    const formatter = new RegExp(
+      `function (${identifier})\\((${identifier})\\)\\{switch\\(\\2\\.type\\)\\{` +
+        `(?=case"development":return"development build";)`
+    ).exec(moduleText);
+    if (!formatter) continue;
+
+    const reasonLocal = "__calicoUpdaterReason";
+    edits.push(
+      {
+        at: bodyEnd - "return null}".length,
+        remove: "return null}".length,
+        insert: `return{type:"${CALICO_UPDATER_REASON_TYPE}"}}`,
+      },
+      {
+        at: moduleFrom + pluginGate.index,
+        remove: pluginGate[0].length,
+        insert:
+          `function ${pluginGate[1]}(){let ${reasonLocal}=${predicateName}();` +
+          `return ${reasonLocal}!==null&&${reasonLocal}.type!=="${CALICO_UPDATER_REASON_TYPE}"` +
+          `&&!${envObject}.FORCE_AUTOUPDATE_PLUGINS}`,
+      },
+      {
+        at: moduleFrom + formatter.index + formatter[0].length,
+        remove: 0,
+        insert: `case"${CALICO_UPDATER_REASON_TYPE}":return"${CALICO_UPDATER_REASON_TEXT}";`,
+      }
+    );
+    patched += 1;
+  }
+
+  // Spliced back to front with slices, never String#replace: minified names
+  // may contain `$`, which a replacement string would read as a pattern.
+  let output = content;
+  for (const edit of edits.sort((a, b) => b.at - a.at)) {
+    output = output.slice(0, edit.at) + edit.insert + output.slice(edit.at + edit.remove);
+  }
+
+  // The explicit `update` subcommand (alias `upgrade`) does not consult P.
+  // Measured 2026-09-23 in a sandbox HOME holding an official 2.1.278 layout:
+  // run from there, the unpatched binary printed "Successfully updated from
+  // 2.1.278 to version 2.1.280", wrote versions/2.1.280 and repointed the
+  // launcher -- and so did the binary carrying the three rewrites above. Run as
+  // calico-claude it would update the official install, not this one. Its
+  // action lazily imports the update chunk, so replacing that body means
+  // nothing installs; the registration is identical in 2.1.276 through 2.1.280
+  // apart from locals and the chunk's hashed name, which are captured.
+  //
+  // It must end the process itself. The update function it replaces calls
+  // process.exit when done; setting process.exitCode and returning instead left
+  // the real binary running, measured: still alive after ten minutes because
+  // other handles keep the event loop open. The write is awaited first so the
+  // message is flushed on a pipe before exiting.
+  const updateCommand = new RegExp(
+    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available"\\)` +
+      `\\.action\\(${identifier}\\(async\\((${identifier})\\)=>)\\{let\\{update:(${identifier})\\}=` +
+      `await import\\("[^"]+"\\);await \\3\\(\\2\\)\\}`,
+    "g"
+  );
+  output = output.replace(updateCommand, (full, head) => {
+    candidates += 1;
+    patched += 1;
+    return (
+      `${head}{await new Promise((r)=>process.stderr.write(${JSON.stringify(CALICO_UPDATE_COMMAND_MESSAGE)},r));` +
+      `process.exit(1)}`
+    );
+  });
+
+  return { content: output, candidates, patched };
+}
+
 function patchVersionOutput(content) {
   const needle = "}.VERSION} (Claude Code)";
   const marker = "\\n(patched)";
@@ -4897,6 +5078,12 @@ const PATCH_MODULES = [
     apply: patchSelfNameInUserListing,
   },
   {
+    id: "disable-official-updater",
+    description:
+      "Never run Anthropic's embedded updater in a Calico build, keeping plugin auto-update",
+    apply: patchDisableOfficialUpdater,
+  },
+  {
     id: "version-output",
     description: "Append (patched) to plain --version output",
     apply: patchVersionOutput,
@@ -5139,6 +5326,10 @@ module.exports = {
   // on older bundle shapes, so nothing else exercises it.
   patchThinkingStreaming,
   patchSelfNameInUserListing,
+  patchDisableOfficialUpdater,
+  CALICO_UPDATER_REASON_TYPE,
+  CALICO_UPDATER_REASON_TEXT,
+  CALICO_UPDATE_COMMAND_MESSAGE,
 };
 
 if (require.main === module) {
