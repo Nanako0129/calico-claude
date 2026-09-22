@@ -19,6 +19,7 @@ const {
   patchDisableOfficialUpdater,
   CALICO_UPDATER_REASON_TEXT,
   CALICO_UPDATE_COMMAND_MESSAGE,
+  CALICO_INSTALL_COMMAND_MESSAGE,
 } = require("../patch-claude-display.ts");
 const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
@@ -76,9 +77,19 @@ function updateCommand(action = "R", arg = "j", fn = "q", chunk = "/$bunfs/root/
   );
 }
 
+// The CLI registration of `install [target]`, as it ships in 2.1.276 through
+// 2.1.280 apart from its three locals and the chunk's hashed name.
+function installCommand(action = "R", a = "j", b = "q", c = "W", fn = "X", chunk = "/$bunfs/root/chunk-3z93j279.js") {
+  return (
+    `P.command("install [target]").description("Install Claude Code native build. Use [target] to specify version (stable, latest, or specific version)")` +
+    `.option("--force","Force installation even if already installed")` +
+    `.action(${action}(async(${a},${b},${c})=>{let{installHandler:${fn}}=await import("${chunk}");await ${fn}(${b},${c},${a})}))`
+  );
+}
+
 function patched(n = NAMES) {
   const result = patchDisableOfficialUpdater(
-    `${updateCommand()}${BOUNDARY}${updaterModule(n)}${BOUNDARY}suffix()`
+    `${updateCommand()};${installCommand()}${BOUNDARY}${updaterModule(n)}${BOUNDARY}suffix()`
   );
   const module = result.content.split(BOUNDARY)[1];
   return { result, module };
@@ -86,7 +97,7 @@ function patched(n = NAMES) {
 
 // Runs the registered action with a stub `import` and reports whether the
 // update chunk was loaded, what was written to stderr, and the exit code.
-async function runUpdateCommand(registration) {
+async function runRegisteredAction(registration, ...args) {
   const calls = { imported: false, stderr: "", exitCode: undefined };
   const sandbox = {
     process: {
@@ -94,16 +105,21 @@ async function runUpdateCommand(registration) {
       exit: (code) => { calls.exitCode = code; },
     },
     R: (fn) => fn,
-    P: { command() { return this; }, alias() { return this; }, description() { return this; }, action(fn) { this.fn = fn; return this; } },
-    load: async () => { calls.imported = true; return { update: async () => {} }; },
+    P: {
+      command() { return this; }, alias() { return this; }, description() { return this; },
+      option() { return this; }, action(fn) { this.fn = fn; return this; },
+    },
+    load: async () => { calls.imported = true; return { update: async () => {}, installHandler: async () => {} }; },
   };
   vm.createContext(sandbox);
   // Dynamic import is not available in a vm context; route it to the stub.
   const source = registration.replace(/await import\("[^"]+"\)/, "await load()");
   vm.runInContext(source, sandbox);
-  await sandbox.P.fn({});
+  await sandbox.P.fn(...(args.length ? args : [{}]));
   return calls;
 }
+const runUpdateCommand = (registration) => runRegisteredAction(registration);
+const runInstallCommand = (registration) => runRegisteredAction(registration, undefined, {}, {});
 
 test("control: unpatched, nothing disables the updater or plugins", () => {
   const out = behaviour(updaterModule(NAMES), NAMES);
@@ -114,8 +130,8 @@ test("control: unpatched, nothing disables the updater or plugins", () => {
 
 test("patched: the embedded updater is disabled, plugin auto-update is not", () => {
   const { result, module } = patched();
-  assert.equal(result.candidates, 2, "the updater module and the update command");
-  assert.equal(result.patched, 2);
+  assert.equal(result.candidates, 3, "the updater module, the update command and the install command");
+  assert.equal(result.patched, 3);
   const out = behaviour(module, NAMES);
   assert.equal(out.reason.type, "calico");
   assert.equal(out.updaterDisabled, true, "every AutoUpdater component returns early");
@@ -151,7 +167,7 @@ test("the assertions above can tell end placement from an early return", () => {
 
 test("names containing $ survive the rewrite", () => {
   const { result, module } = patched(DOLLAR_NAMES);
-  assert.equal(result.patched, 2);
+  assert.equal(result.patched, 3);
   const out = behaviour(module, DOLLAR_NAMES);
   assert.equal(out.reason.type, "calico");
   assert.equal(out.updaterDisabled, true);
@@ -212,8 +228,8 @@ test("control: unpatched, the update command loads the updater", async () => {
 
 test("patched: the update command installs nothing, says why, and exits 1", async () => {
   const { result } = patched();
-  const [registration] = result.content.split(BOUNDARY);
-  const calls = await runUpdateCommand(registration);
+  const [registrations] = result.content.split(BOUNDARY);
+  const calls = await runUpdateCommand(registrations.slice(0, registrations.indexOf(';P.command("install [target]")')));
   assert.equal(calls.imported, false, "the update chunk is never loaded");
   assert.equal(calls.stderr, CALICO_UPDATE_COMMAND_MESSAGE);
   assert.equal(calls.exitCode, 1, "exits itself, and nothing was installed, so not a success");
@@ -230,4 +246,34 @@ test("verifier rejects a build whose update command still imports the updater", 
   const check = (content) => evaluatePatchModule("disable-official-updater", content);
   const moduleOnly = patchDisableOfficialUpdater(updaterModule(NAMES)).content;
   assert.match(check(`${updateCommand()}${BOUNDARY}${moduleOnly}`), /residual update command/);
+});
+
+test("control: unpatched, the install command loads the installer", async () => {
+  const calls = await runInstallCommand(installCommand());
+  assert.equal(calls.imported, true);
+  assert.equal(calls.exitCode, undefined);
+});
+
+test("patched: the install command installs nothing, says why, and exits 1", async () => {
+  const { result } = patched();
+  const [registrations] = result.content.split(BOUNDARY);
+  const install = registrations.slice(registrations.indexOf('P.command("install [target]")'));
+  assert.ok(install.startsWith('P.command("install [target]")'));
+  const calls = await runInstallCommand(install);
+  assert.equal(calls.imported, false, "the installer chunk is never loaded");
+  assert.equal(calls.stderr, CALICO_INSTALL_COMMAND_MESSAGE);
+  assert.equal(calls.exitCode, 1);
+});
+
+test("install command rewrite survives $ in locals and a different chunk name", () => {
+  const input = installCommand("R$", "$a", "b$", "$c", "X$", "/$bunfs/root/chunk-11111111.js");
+  const result = patchDisableOfficialUpdater(input);
+  assert.equal(result.patched, 1);
+  assert.equal(result.content.includes("{let{installHandler:"), false);
+});
+
+test("verifier rejects a build whose install command still imports the installer", () => {
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  const rest = patchDisableOfficialUpdater(`${updateCommand()}${BOUNDARY}${updaterModule(NAMES)}`).content;
+  assert.match(check(`${installCommand()}${rest}`), /residual install command/);
 });

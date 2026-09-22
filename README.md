@@ -45,7 +45,7 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 | `statusline-committed-usage` | Exposes only committed terminal assistant usage to status-line payloads |
 | `statusline-rate-limit-windows` | Forwards the Fable 5 and usage-credit rate-limit windows to status-line payloads |
 | `version-output` | Appends `(patched)` to plain `--version` output |
-| `disable-official-updater` | Never runs Anthropic's embedded updater, in the background or through `claude update`; plugin and marketplace auto-update keep working |
+| `disable-official-updater` | Never runs Anthropic's embedded updater, in the background or through `claude update`, and disables `claude install`, which would put the official build over a Calico one; plugin and marketplace auto-update keep working |
 | `welcome-badge` | Renames the startup and help titles to `Calico Claude` |
 
 > **Note:** `tool-call-verbose` is **disabled in published releases** (thinking-only expansion, by
@@ -176,8 +176,9 @@ The official updater can install a new version and repoint the `claude` symlink 
 binary. The renamed Calico binary is immune to that, but it also stops receiving updates.
 
 Calico builds never run Anthropic's embedded updater: neither in the background nor through
-`claude update`, which prints that it is a Calico build and installs nothing. Plugin and marketplace
-auto-update are unaffected. So a build installed over `claude` is no longer reverted by its own
+`claude update`, which prints that it is a Calico build and installs nothing. `claude install` is
+disabled the same way, because it would put the official build at the official location, over a
+Calico build installed there. Plugin and marketplace auto-update are unaffected. So a build installed over `claude` is no longer reverted by its own
 sessions, but it also does not upgrade itself. The installers pick the Calico release matching the
 version `claude --version` reports, so re-running one on its own reinstalls the same version. To move
 to a newer Claude Code, install it first with Anthropic's installer, then re-run the Calico installer.

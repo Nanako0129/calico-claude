@@ -2512,14 +2512,19 @@ function patchSelfNameInUserListing(content) {
 // than a loud zero. Minified names are captured, never pinned: 2.1.277 and
 // 2.1.280 each have an unrelated function elsewhere in the bundle with P's name.
 //
-// A fourth rewrite, in the CLI's command registration, covers the explicit
-// `update` subcommand, which does not go through P at all; see below. It counts
-// as its own candidate, and verify-patched-binary requires it.
+// Two more rewrites, in the CLI's command registration, cover the explicit
+// `update` and `install` subcommands, which do not go through P at all; see
+// below. Each counts as its own candidate, and verify-patched-binary requires
+// both.
 const CALICO_UPDATER_REASON_TYPE = "calico";
 const CALICO_UPDATER_REASON_TEXT = "Calico build; updated by the Calico updater";
 const CALICO_UPDATE_COMMAND_MESSAGE =
   "This is a Calico build. It is updated by the Calico updater, not by `update`,\n" +
   "and nothing was installed. See https://github.com/Nanako0129/calico-claude#keeping-it-updated\n";
+const CALICO_INSTALL_COMMAND_MESSAGE =
+  "This is a Calico build, so `install` is disabled: it installs the official Claude Code\n" +
+  "into the official location, which would replace a Calico build installed there. Nothing\n" +
+  "was installed. Use Anthropic's installer for the official build.\n";
 
 function patchDisableOfficialUpdater(content) {
   const identifier = "[A-Za-z_$][\\w$]*";
@@ -2646,6 +2651,38 @@ function patchDisableOfficialUpdater(content) {
     patched += 1;
     return (
       `${head}{await new Promise((r)=>process.stderr.write(${JSON.stringify(CALICO_UPDATE_COMMAND_MESSAGE)},r));` +
+      `process.exit(1)}`
+    );
+  });
+
+  // `install [target]` downloads the official native build and makes it the
+  // official launcher. Measured 2026-09-23 on macOS, run from a Calico build in
+  // an empty sandbox HOME: it created ~/.local/share/claude/versions/2.1.280 and
+  // ~/.local/bin/claude pointing at it, and that binary reported
+  // "2.1.280 (Claude Code)" with no "(patched)". Where Calico was installed over
+  // `claude`, that is the file it replaces: in a sandbox with a patched 2.1.278
+  // as ~/.local/bin/claude, `claude install` from that build exited 0 and left
+  // the launcher on the official 2.1.280, patch gone. With the installed version
+  // already equal to the latest it downloaded nothing and the patch survived, so
+  // the damage lands exactly when a user on an older build runs it. Same
+  // treatment as `update`; the
+  // registration is identical in 2.1.276 through 2.1.280 apart from its three
+  // locals and the chunk's hashed name. Anthropic's own installer runs the
+  // downloaded official binary's `install`, not this one, so upgrading an
+  // in-place install that way is unaffected.
+  const installCommand = new RegExp(
+    `(\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.[^"]*"\\)` +
+      `\\.option\\("--force","Force installation even if already installed"\\)` +
+      `\\.action\\(${identifier}\\(async\\((${identifier}),(${identifier}),(${identifier})\\)=>)` +
+      `\\{let\\{installHandler:(${identifier})\\}=await import\\("[^"]+"\\);` +
+      `await \\5\\(\\3,\\4,\\2\\)\\}`,
+    "g"
+  );
+  output = output.replace(installCommand, (full, head) => {
+    candidates += 1;
+    patched += 1;
+    return (
+      `${head}{await new Promise((r)=>process.stderr.write(${JSON.stringify(CALICO_INSTALL_COMMAND_MESSAGE)},r));` +
       `process.exit(1)}`
     );
   });
@@ -5330,6 +5367,7 @@ module.exports = {
   CALICO_UPDATER_REASON_TYPE,
   CALICO_UPDATER_REASON_TEXT,
   CALICO_UPDATE_COMMAND_MESSAGE,
+  CALICO_INSTALL_COMMAND_MESSAGE,
 };
 
 if (require.main === module) {
