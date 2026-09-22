@@ -130,11 +130,29 @@ github_api_get() {
       "$url" \
       -o "$output_file"
   else
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "User-Agent: patch-claude-code-installer" \
-      "$url" \
-      -o "$output_file"
+    # Anonymous calls are capped at 60 an hour per address, and a shared egress
+    # (a VPN, an office NAT) spends that for everyone behind it: a re-run on a
+    # Windows box behind Cloudflare WARP failed here with the limit at
+    # remaining=0. An authenticated gh is the credential most users already
+    # have, so use it before falling back to anonymous.
+    local gh_token=""
+    if command -v gh >/dev/null 2>&1; then
+      gh_token="$(gh auth token 2>/dev/null || true)"
+    fi
+    if [[ -n "$gh_token" ]]; then
+      curl -fsSL \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer ${gh_token}" \
+        -H "User-Agent: patch-claude-code-installer" \
+        "$url" \
+        -o "$output_file"
+    else
+      curl -fsSL \
+        -H "Accept: application/vnd.github+json" \
+        -H "User-Agent: patch-claude-code-installer" \
+        "$url" \
+        -o "$output_file"
+    fi
   fi
 }
 

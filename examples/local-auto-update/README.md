@@ -185,7 +185,7 @@ script itself needs no editing:
 | `CALICO_STATE_DIR` | `~/.claude/calico` | Lock, throttle stamp, installed release tag, and `update.log`. |
 | `CALICO_KEEP_VERSIONS` | `3` | Newest builds to keep. `0` disables pruning. The current symlink target is always kept — after a rollback it survives on top of the newest N. |
 | `CALICO_THROTTLE_SECONDS` | `3600` | Minimum gap between `--hook` checks. |
-| `GH_TOKEN` / `GITHUB_TOKEN` | unset | Bearer token for the releases API, if you hit the anonymous rate limit. |
+| `GH_TOKEN` / `GITHUB_TOKEN` | unset | Bearer token for the releases API. When neither is set, an authenticated `gh` supplies one (`gh auth token`); with neither, the call is anonymous and capped at 60 an hour per address. |
 
 Pruning is not cosmetic. Each build is roughly 300 MB, so an unattended updater
 left alone for a few months will quietly consume several gigabytes.
@@ -194,10 +194,19 @@ left alone for a few months will quietly consume several gigabytes.
 
 `bash` 3.2+, `curl`, `python3`, and `shasum` (macOS) or `sha256sum` (Linux).
 
-`gh` is optional but strongly recommended: without an authenticated `gh`, build
-provenance attestation cannot be checked and the script logs a warning and
-proceeds on the checksum alone. The checksum proves the file matches the release
-asset; the attestation proves the release asset came out of this repo's CI.
+`gh` is optional but strongly recommended, for two reasons. Without an
+authenticated `gh`, build provenance attestation cannot be checked and the
+script logs a warning and proceeds on the checksum alone. The checksum proves
+the file matches the release asset; the attestation proves the release asset
+came out of this repo's CI.
+
+It is also what keeps the releases query off GitHub's anonymous limit, 60 an
+hour per address. Neither launchd nor the SessionStart hook exports a token, so
+without an authenticated `gh` every check goes out anonymous, and on a shared
+address that allowance is spent by everyone behind it. Measured on one machine: 4 of 12
+consecutive checks failed with `curl: (56) ... error: 403`, one of them the only
+check after a new release was published. The hook stamps its throttle before it
+queries, so each of those 403s also cost the next hour.
 
 The launchd timer needs that authentication to be **persistent** — `gh auth
 login`, which stores the credential on disk. launchd starts the agent with a

@@ -34,6 +34,18 @@ function Get-GitHubHeaders {
     $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)"
   } elseif ($env:GH_TOKEN) {
     $headers["Authorization"] = "Bearer $($env:GH_TOKEN)"
+  } elseif (Get-Command gh -ErrorAction SilentlyContinue) {
+    # Anonymous calls are capped at 60 an hour per address, and a shared egress
+    # spends that for everyone behind it: a re-run behind Cloudflare WARP failed
+    # to list releases with the limit at remaining=0. An authenticated gh is the
+    # credential most users already have. An unauthenticated one prints nothing
+    # to stdout and exits 1 ("no oauth token found for <host>" on stderr,
+    # measured with gh on macOS; not measured on Windows), which leaves the
+    # request anonymous as before.
+    $ghToken = (& gh auth token 2>$null) -join ""
+    if ($ghToken) {
+      $headers["Authorization"] = "Bearer $ghToken"
+    }
   }
 
   return $headers

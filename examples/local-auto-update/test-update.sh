@@ -44,6 +44,11 @@ url=""
 prev=""
 for arg in "$@"; do
   [ "$prev" = "-o" ] && out="$arg"
+  # Records which credential, if any, reached the API, so the token-source
+  # cases can assert on what was sent rather than on what the script meant to.
+  if [ "$prev" = "-H" ] && [ -n "$FAKE_AUTH_LOG" ]; then
+    case "$arg" in Authorization:*) printf '%s\n' "$arg" >> "$FAKE_AUTH_LOG" ;; esac
+  fi
   case "$arg" in http*) url="$arg" ;; esac
   prev="$arg"
 done
@@ -358,6 +363,55 @@ if [[ -x /bin/bash ]]; then
 else
   printf 'skip /bin/bash not present\n'
 fi
+
+# --- 7b. which credential reaches the releases API ----------------------------
+# The releases query is the only call that counts against GitHub's API limit,
+# and anonymously that is 60 an hour per address. Neither launchd nor the
+# SessionStart hook exports GH_TOKEN, so every check used to go out anonymous:
+# on the maintainer's machine 4 of 12 consecutive checks got a 403, including
+# the only one after 2.1.280 was published (2026-09-23 00:52:11), and the hook
+# stamps its throttle before querying, so each 403 also cost the next hour.
+# `gh` is already this script's optional dependency for attestation, so an
+# authenticated one is the credential most installs already have.
+GH_AUTHED_BIN="${SANDBOX}/stub-bin-gh-authed"
+mkdir -p "$GH_AUTHED_BIN"
+cat > "${GH_AUTHED_BIN}/gh" <<'STUB'
+#!/bin/sh
+# Authenticated gh: answers `gh auth token`, refuses everything else so the
+# token lookup is the only behaviour these cases can depend on.
+if [ "$1" = "auth" ] && [ "$2" = "token" ]; then echo "stub-gh-token"; exit 0; fi
+exit 1
+STUB
+chmod +x "${GH_AUTHED_BIN}/gh"
+
+run_auth_case() { # <bash-binary> <extra-PATH-prefix> [VAR=value ...] ; echoes the Authorization lines curl received
+  local bin="$1" prefix="$2"; shift 2
+  local log="${SANDBOX}/auth.log"
+  : > "$log"
+  env -u GH_TOKEN -u GITHUB_TOKEN "$@" \
+    PATH="${prefix}${STUB_BIN}:${PATH}" \
+    FAKE_RELEASES="${SANDBOX}/releases.json" \
+    FAKE_AUTH_LOG="$log" \
+    CALICO_PLATFORM=linux-x64 \
+    CALICO_REPO="calico-test/stubbed" \
+    "$bin" "$UPDATE_SH" --check >/dev/null 2>&1
+  cat "$log"
+}
+
+for sh_bin in bash /bin/bash; do
+  [[ -x "$(command -v "$sh_bin")" ]] || continue
+  label="$("$sh_bin" -c 'echo bash $BASH_VERSION' | cut -d'(' -f1)"
+  check "[$label] no env token, authenticated gh -> gh's token is sent" \
+    "Authorization: Bearer stub-gh-token" "$(run_auth_case "$sh_bin" "${GH_AUTHED_BIN}:")"
+  check "[$label] GH_TOKEN wins over gh" \
+    "Authorization: Bearer env-gh-token" "$(run_auth_case "$sh_bin" "${GH_AUTHED_BIN}:" GH_TOKEN=env-gh-token)"
+  check "[$label] GITHUB_TOKEN wins over gh" \
+    "Authorization: Bearer env-github-token" "$(run_auth_case "$sh_bin" "${GH_AUTHED_BIN}:" GITHUB_TOKEN=env-github-token)"
+  # The default stub gh is unauthenticated. Falling back must not break the
+  # anonymous path that worked before: no header at all, not an empty one.
+  check "[$label] unauthenticated gh -> no Authorization header" \
+    "" "$(run_auth_case "$sh_bin" "")"
+done
 
 # --- 8. end-to-end --run ------------------------------------------------------
 # Drives the real install path with stubbed curl and gh. These cover the parts

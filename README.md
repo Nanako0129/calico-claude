@@ -94,6 +94,10 @@ curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/insta
 irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.ps1 | iex
 ```
 
+Listing releases uses the GitHub API. `GITHUB_TOKEN` or `GH_TOKEN` is used when set, otherwise an
+authenticated `gh`, otherwise the request is anonymous and shares GitHub's limit of 60 an hour per
+address — which a VPN or office NAT can exhaust for everyone behind it.
+
 > **Prefer not to pipe a script from the internet?** Use the manual path below. The binaries are built
 > in GitHub Actions and the patcher is readable and modifiable, so convenience is the only reason to
 > trust this repo's release builds over your own.
