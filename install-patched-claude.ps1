@@ -202,9 +202,11 @@ try {
   # they become true.
   Write-Host ""
   Write-Host "Note: this replaced the claude.exe that Anthropic's updater manages. Calico builds"
-  Write-Host "never run that updater, so this one does not upgrade itself: re-run this installer"
-  Write-Host "to upgrade. Claude Code sessions that were already open still run the previous"
-  Write-Host "build, and an official build's updater can replace this one; restart them. See:"
+  Write-Host "never run that updater, so this one does not upgrade itself. This installer picks the"
+  Write-Host "release matching the installed Claude Code version, so to upgrade, install a newer"
+  Write-Host "Claude Code with Anthropic's installer first, then re-run this one. Claude Code"
+  Write-Host "sessions that were already open still run the previous build, and an official"
+  Write-Host "build's updater can replace this one; restart them. See:"
   Write-Host "  https://github.com/Nanako0129/calico-claude#keeping-it-updated"
 } finally {
   Remove-Item -LiteralPath $tmpDir.FullName -Recurse -Force -ErrorAction SilentlyContinue

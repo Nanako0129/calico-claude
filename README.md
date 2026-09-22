@@ -97,8 +97,7 @@ irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patc
 
 The installers replace the `claude` binary that Anthropic's updater manages. Calico builds never run
 that updater themselves (`disable-official-updater`), so an installed build stays patched but does
-not upgrade itself either; re-run the installer to upgrade. See
-[Keeping it updated](#keeping-it-updated).
+not upgrade itself either. See [Keeping it updated](#keeping-it-updated) for how to upgrade.
 
 Listing releases uses the GitHub API. The installers take the first credential available, in this
 order: `GITHUB_TOKEN`, then `GH_TOKEN`, then an authenticated `gh` (`gh auth token`). With none, the
@@ -179,10 +178,12 @@ binary. The renamed Calico binary is immune to that, but it also stops receiving
 Calico builds never run Anthropic's embedded updater: neither in the background nor through
 `claude update`, which prints that it is a Calico build and installs nothing. Plugin and marketplace
 auto-update are unaffected. So a build installed over `claude` is no longer reverted by its own
-sessions, but it also does not upgrade itself; re-run the installer to upgrade. Sessions that were
-already running before the install still run the previous build, and if that build is an official
-one its updater can still replace yours, so restart them after installing. Or switch to the
-side-by-side install and the updater below.
+sessions, but it also does not upgrade itself. The installers pick the Calico release matching the
+version `claude --version` reports, so re-running one on its own reinstalls the same version. To move
+to a newer Claude Code, install it first with Anthropic's installer, then re-run the Calico installer.
+Sessions that were already running before the install still run the previous build, and if that
+build is an official one its updater can still replace yours, so restart them after installing. Or
+switch to the side-by-side install and the updater below.
 
 [`examples/local-auto-update/`](./examples/local-auto-update/) closes that gap: a SessionStart hook
 that checks at most hourly and never blocks startup, plus an optional launchd timer for macOS —

@@ -333,8 +333,10 @@ warn_about_official_updater() {
   cat >&2 <<'EOF'
 
 Note: this replaced the `claude` binary that Anthropic's updater manages. Calico
-builds never run that updater, so this one does not upgrade itself: re-run this
-installer to upgrade. Claude Code sessions that were already open still run the
+builds never run that updater, so this one does not upgrade itself. This
+installer picks the release matching the installed Claude Code version, so to
+upgrade, install a newer Claude Code with Anthropic's installer first, then
+re-run this one. Claude Code sessions that were already open still run the
 previous build, and an official build's updater can replace this one; restart
 them. To have Calico update itself, install it side by side as `calico-claude`:
     https://github.com/Nanako0129/calico-claude#keeping-it-updated
