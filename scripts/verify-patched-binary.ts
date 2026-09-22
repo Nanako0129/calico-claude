@@ -2276,6 +2276,24 @@ const CHECKS: Check[] = [
         problems.push("residual update command that still imports the updater");
       }
 
+      // `install [target]` would put the official build at the official
+      // launcher, over a Calico build installed there; held the same way.
+      const rewrittenInstall = new RegExp(
+        `\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.[^"]*"\\)` +
+          `\\.option\\("--force","Force installation even if already installed"\\)` +
+          `\\.action\\(${identifier}\\(async\\(${identifier},${identifier},${identifier}\\)=>` +
+          `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build, so \`install\` is disabled[^"]*",r\\)\\);` +
+          `process\\.exit\\(1\\)\\}`,
+        "g"
+      );
+      const rewrittenInstallCount = (content.match(rewrittenInstall) ?? []).length;
+      if (rewrittenInstallCount !== 1) {
+        problems.push(`expected exactly 1 rewritten install command, found ${rewrittenInstallCount}`);
+      }
+      if (content.includes("{let{installHandler:")) {
+        problems.push("residual install command that still imports the installer");
+      }
+
       return problems.length > 0 ? problems.join("; ") : null;
     },
   },
