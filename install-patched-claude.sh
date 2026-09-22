@@ -288,6 +288,34 @@ PY
 verify_install() {
   log "Installed patched Claude to ${INSTALLED_PATH}"
   "${INSTALLED_PATH}" --version
+  warn_about_official_updater
+}
+
+# This installer writes over the binary Anthropic's updater manages, and the
+# next upstream release puts `claude` back on an unpatched build without a word.
+# Observed on macOS: the updater wrote ~/.local/share/claude/versions/2.1.280
+# and repointed the ~/.local/bin/claude symlink at it, so whatever the link
+# pointed to before is no longer what runs. On Windows it copies versions\<new>
+# over claude.exe instead (observed; see install-patched-claude.ps1). Linux was
+# not observed. Users found out by noticing "(patched)" had gone from
+# `claude --version`. Say so at the moment it becomes true.
+#
+# DISABLE_AUTOUPDATER is the switch the native updater reads: its update check
+# returns early on it (measured in the 2.1.280 bundle). The settings-file
+# `autoUpdates: false` is not offered because native installs can ignore it.
+warn_about_official_updater() {
+  cat >&2 <<'EOF'
+
+Note: this replaced the `claude` binary that Anthropic's updater manages. When
+the next Claude Code release installs, `claude` goes back to an unpatched build
+and `claude --version` stops showing "(patched)". Either:
+
+  - start Claude Code with DISABLE_AUTOUPDATER=1 in its environment, and re-run
+    this installer yourself after upgrading; or
+  - install Calico side by side as `calico-claude` and let it update itself:
+    https://github.com/Nanako0129/calico-claude#keeping-it-updated
+
+EOF
 }
 
 main() {

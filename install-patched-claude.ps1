@@ -121,6 +121,23 @@ try {
 
   Write-Host "Installed patched Claude to $claudePath"
   & $claudePath --version
+
+  # The next upstream release puts claude back on an unpatched build without a
+  # word; users found out by noticing "(patched)" had gone from
+  # `claude --version`. Observed on a Windows x64 install, within half an hour
+  # of this installer putting a patched 2.1.278 there: the updater wrote
+  # versions\2.1.280 and, in the same second, rewrote claude.exe (a plain file,
+  # no link) to the identical byte length, after which `claude --version` read
+  # "2.1.280 (Claude Code)" and nothing else. Say so at the moment it becomes
+  # true. DISABLE_AUTOUPDATER is the switch the native updater reads: its update
+  # check returns early on it (measured in the 2.1.280 bundle).
+  Write-Host ""
+  Write-Host "Note: this replaced the claude.exe that Anthropic's updater manages. When the"
+  Write-Host "next Claude Code release installs, claude goes back to an unpatched build and"
+  Write-Host "``claude --version`` stops showing ""(patched)"". To keep it patched, start Claude"
+  Write-Host "Code with DISABLE_AUTOUPDATER=1 in its environment and re-run this installer"
+  Write-Host "yourself after upgrading. See:"
+  Write-Host "  https://github.com/Nanako0129/calico-claude#keeping-it-updated"
 } finally {
   Remove-Item -LiteralPath $tmpDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
 }
