@@ -190,21 +190,23 @@ try {
   Write-Host "Installed patched Claude to $claudePath"
   & $claudePath --version
 
-  # The next upstream release puts claude back on an unpatched build without a
-  # word; users found out by noticing "(patched)" had gone from
-  # `claude --version`. Observed on a Windows x64 install, within half an hour
-  # of this installer putting a patched 2.1.278 there: the updater wrote
-  # versions\2.1.280 and, in the same second, rewrote claude.exe (a plain file,
-  # no link) to the identical byte length, after which `claude --version` read
-  # "2.1.280 (Claude Code)" and nothing else. Say so at the moment it becomes
-  # true. DISABLE_AUTOUPDATER is the switch the native updater reads: its update
-  # check returns early on it (measured in the 2.1.280 bundle).
+  # Calico builds carry disable-official-updater, so the build installed here
+  # never runs Anthropic's updater and never upgrades itself. An official
+  # build's updater in another process still can replace it. Observed on a
+  # Windows x64 install, within half an hour of a patched 2.1.278 going in:
+  # versions\2.1.280 was written and, in the same second, claude.exe (a plain
+  # file, no link) was rewritten to the identical byte length, after which
+  # `claude --version` read "2.1.280 (Claude Code)" and nothing else. The only
+  # Claude Code process running then had been open since before the install;
+  # which process made the write was not traced. Say both things at the moment
+  # they become true.
   Write-Host ""
-  Write-Host "Note: this replaced the claude.exe that Anthropic's updater manages. When the"
-  Write-Host "next Claude Code release installs, claude goes back to an unpatched build and"
-  Write-Host "``claude --version`` stops showing ""(patched)"". To keep it patched, start Claude"
-  Write-Host "Code with DISABLE_AUTOUPDATER=1 in its environment and re-run this installer"
-  Write-Host "yourself after upgrading. See:"
+  Write-Host "Note: this replaced the claude.exe that Anthropic's updater manages. Calico builds"
+  Write-Host "never run that updater, so this one does not upgrade itself. This installer picks the"
+  Write-Host "release matching the installed Claude Code version, so to upgrade, install a newer"
+  Write-Host "Claude Code with Anthropic's installer first, then re-run this one. Claude Code"
+  Write-Host "sessions that were already open still run the previous build, and an official"
+  Write-Host "build's updater can replace this one; restart them. See:"
   Write-Host "  https://github.com/Nanako0129/calico-claude#keeping-it-updated"
 } finally {
   Remove-Item -LiteralPath $tmpDir.FullName -Recurse -Force -ErrorAction SilentlyContinue

@@ -2179,6 +2179,107 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "disable-official-updater",
+    kind: "custom",
+    describe:
+      "embedded updater predicate returns the Calico reason, and plugin auto-update ignores exactly that reason",
+    run: (content: string): string | null => {
+      const identifier = "[A-Za-z_$][\\w$]*";
+      const problems: string[] = [];
+
+      // P located by its first statement, then read by brace depth. The tail
+      // must be the Calico reason and P must keep no null exit at all: a second
+      // `return null` would be a path on which the updater still runs, which a
+      // count of rewritten tails alone would not see.
+      const starts = [
+        ...content.matchAll(
+          new RegExp(
+            `function (${identifier})\\(\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
+              `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
+            "g"
+          )
+        ),
+      ];
+      if (starts.length !== 1) {
+        problems.push(`expected exactly 1 updater-disabled predicate, found ${starts.length}`);
+        return problems.join("; ");
+      }
+      const start = starts[0];
+      const predicateName = start[1];
+      const open = (start.index ?? 0) + start[0].indexOf("{");
+      let depth = 0;
+      let end = -1;
+      for (let i = open; i < content.length; i++) {
+        if (content[i] === "{") depth += 1;
+        else if (content[i] === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            end = i + 1;
+            break;
+          }
+        }
+      }
+      const predicate = end === -1 ? "" : content.slice(start.index ?? 0, end);
+      if (!predicate.endsWith('return{type:"calico"}}')) {
+        problems.push("predicate does not end with the Calico reason");
+      }
+      if (/return null|return;|return void/.test(predicate)) {
+        problems.push("predicate still has a null or undefined exit");
+      }
+
+      // G must call the same P and exclude only the Calico reason, and the
+      // unmodified gate must be gone (measured: exactly one in each unpatched
+      // bundle from 2.1.276 to 2.1.280).
+      const escapedPredicate = predicateName.replace(/\$/g, "\\$");
+      const gate = new RegExp(
+        `function ${identifier}\\(\\)\\{let (${identifier})=${escapedPredicate}\\(\\);` +
+          `return \\1!==null&&\\1\\.type!=="calico"&&!${identifier}\\.FORCE_AUTOUPDATE_PLUGINS\\}`,
+        "g"
+      );
+      const gateCount = (content.match(gate) ?? []).length;
+      if (gateCount !== 1) {
+        problems.push(`expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount}`);
+      }
+      const residualGate = new RegExp(
+        `function ${identifier}\\(\\)\\{return ${identifier}\\(\\)&&!${identifier}\\.FORCE_AUTOUPDATE_PLUGINS\\}`,
+        "g"
+      );
+      if ((content.match(residualGate) ?? []).length !== 0) {
+        problems.push("residual unmodified plugin gate: plugin auto-update would be disabled");
+      }
+
+      const formatterCase = new RegExp(
+        `\\{switch\\(${identifier}\\.type\\)\\{case"calico":return"[^"]+";` +
+          `case"development":return"development build";`,
+        "g"
+      );
+      const formatterCount = (content.match(formatterCase) ?? []).length;
+      if (formatterCount !== 1) {
+        problems.push(`expected exactly 1 reason formatter with the Calico case, found ${formatterCount}`);
+      }
+
+      // The explicit `update` subcommand bypasses P, so it is held separately:
+      // its action must print instead of importing the update chunk.
+      const updateHead =
+        '.command("update").alias("upgrade").description("Check for updates and install if available").action(';
+      const rewrittenUpdate = new RegExp(
+        `${updateHead.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${identifier}\\(async\\(${identifier}\\)=>` +
+          `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build\\.[^"]*",r\\)\\);` +
+          `process\\.exit\\(1\\)\\}`,
+        "g"
+      );
+      const rewrittenUpdateCount = (content.match(rewrittenUpdate) ?? []).length;
+      if (rewrittenUpdateCount !== 1) {
+        problems.push(`expected exactly 1 rewritten update command, found ${rewrittenUpdateCount}`);
+      }
+      if (/\.command\("update"\)\.alias\("upgrade"\)[^;]{0,200}let\{update:/.test(content)) {
+        problems.push("residual update command that still imports the updater");
+      }
+
+      return problems.length > 0 ? problems.join("; ") : null;
+    },
+  },
+  {
     id: "version-output",
     kind: "presence",
     // The literal marker; \n here is a backslash + n (two chars) inside the bundle's

@@ -319,28 +319,26 @@ verify_install() {
   warn_about_official_updater
 }
 
-# This installer writes over the binary Anthropic's updater manages, and the
-# next upstream release puts `claude` back on an unpatched build without a word.
-# Observed on macOS: the updater wrote ~/.local/share/claude/versions/2.1.280
-# and repointed the ~/.local/bin/claude symlink at it, so whatever the link
-# pointed to before is no longer what runs. On Windows it copies versions\<new>
-# over claude.exe instead (observed; see install-patched-claude.ps1). Linux was
-# not observed. Users found out by noticing "(patched)" had gone from
-# `claude --version`. Say so at the moment it becomes true.
-#
-# DISABLE_AUTOUPDATER is the switch the native updater reads: its update check
-# returns early on it (measured in the 2.1.280 bundle). The settings-file
-# `autoUpdates: false` is not offered because native installs can ignore it.
+# This installer writes over the binary Anthropic's updater manages. Calico
+# builds carry disable-official-updater, so the installed build never runs that
+# updater, in the background or through `claude update`; it stays patched and
+# never upgrades itself. What can still replace it is an official build's
+# updater running in some other process: a session started before the install
+# keeps the old binary in memory. Observed on Windows: claude.exe went from a
+# patched 2.1.278 to the official 2.1.280 within half an hour of the install,
+# and the only Claude Code process running at that moment had been open since
+# before it (which process made the write was not traced). Say both things at
+# the moment they become true.
 warn_about_official_updater() {
   cat >&2 <<'EOF'
 
-Note: this replaced the `claude` binary that Anthropic's updater manages. When
-the next Claude Code release installs, `claude` goes back to an unpatched build
-and `claude --version` stops showing "(patched)". Either:
-
-  - start Claude Code with DISABLE_AUTOUPDATER=1 in its environment, and re-run
-    this installer yourself after upgrading; or
-  - install Calico side by side as `calico-claude` and let it update itself:
+Note: this replaced the `claude` binary that Anthropic's updater manages. Calico
+builds never run that updater, so this one does not upgrade itself. This
+installer picks the release matching the installed Claude Code version, so to
+upgrade, install a newer Claude Code with Anthropic's installer first, then
+re-run this one. Claude Code sessions that were already open still run the
+previous build, and an official build's updater can replace this one; restart
+them. To have Calico update itself, install it side by side as `calico-claude`:
     https://github.com/Nanako0129/calico-claude#keeping-it-updated
 
 EOF
