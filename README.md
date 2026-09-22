@@ -139,9 +139,15 @@ claude --version
 ```powershell
 # Windows
 $target = (Get-Command claude).Source
-Copy-Item .\claude.native.windows.patched.exe $target -Force
+Move-Item $target "$target.calico-old.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+Copy-Item .\claude.native.windows.patched.exe $target
 claude --version
 ```
+
+Windows will not overwrite `claude.exe` while any Claude Code session is running it, but it will
+rename it, which is why the old file is moved aside first. Sessions already open keep running the old
+build until restarted; delete the `claude.exe.calico-old.*` file once they have exited. The installer
+does the same, and removes leftovers from earlier runs itself.
 
 ### Side by side with official Claude
 

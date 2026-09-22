@@ -111,13 +111,72 @@ if (-not $asset) {
   Fail "Could not find the $assetName asset in release $releaseTag"
 }
 
+# Windows refuses to overwrite an executable that any process is running, and
+# people usually re-run this installer from inside a Claude Code session: a
+# plain Copy-Item then failed with "The process cannot access the file ...
+# because it is being used by another process" (two sessions held claude.exe on
+# the Windows box this was found on). Renaming a running executable is allowed,
+# though, and frees its name. Measured on Windows x64 against a running
+# stand-in: the overwrite failed, the rename succeeded, the new file copied into
+# the freed name and ran, and the old process kept running. Anthropic's updater
+# does the same, moving the exe aside as <exe>.old.<ms> and moving it back if
+# the replacement fails (read from the 2.1.280 bundle).
+#
+# The aside name is deliberately not <exe>.old.<ms>: the official updater keeps
+# its own files under that name in this directory and has sweep and restore
+# logic for them that was not traced, so the two sets must not be mistaken for
+# each other.
+function Install-OverRunningExe {
+  param([string]$Source, [string]$Target)
+
+  $leaf = Split-Path -Leaf $Target
+  $dir = Split-Path -Parent $Target
+  $asidePrefix = "$leaf.calico-old."
+
+  # Asides from earlier runs whose process has since exited. One still in use
+  # cannot be deleted (measured: UnauthorizedAccessException) and is left for
+  # the next run.
+  Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name.StartsWith($asidePrefix) } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+
+  $aside = Join-Path $dir ($asidePrefix + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  try {
+    Move-Item -LiteralPath $Target -Destination $aside -ErrorAction Stop
+  } catch {
+    Fail "Could not move the existing $leaf aside to replace it: $($_.Exception.Message)"
+  }
+
+  try {
+    Copy-Item -LiteralPath $Source -Destination $Target -ErrorAction Stop
+  } catch {
+    $copyError = $_.Exception.Message
+    try {
+      Move-Item -LiteralPath $aside -Destination $Target -ErrorAction Stop
+    } catch {
+      Fail "Could not install the patched build ($copyError), and could not restore the original from $aside ($($_.Exception.Message)). Rename it back to $leaf by hand."
+    }
+    Fail "Could not install the patched build: $copyError. The original $leaf was restored."
+  }
+
+  try {
+    Remove-Item -LiteralPath $aside -Force -ErrorAction Stop
+  } catch {
+    # A process is still running the previous build. It keeps working, but it
+    # is the old binary: only sessions started from now on run the patched one.
+    Write-Host "The previous $leaf is still in use by a running Claude Code session; it was"
+    Write-Host "moved to $(Split-Path -Leaf $aside) and will be removed on a later run. Restart"
+    Write-Host "open sessions to run the patched build."
+  }
+}
+
 $tmpDir = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString()))
 try {
   $downloadedPath = Join-Path $tmpDir.FullName $assetName
   Write-Host "Downloading $assetName from $releaseTag"
   Invoke-WebRequest -Uri $asset.browser_download_url -Headers $headers -OutFile $downloadedPath
 
-  Copy-Item -LiteralPath $downloadedPath -Destination $claudePath -Force
+  Install-OverRunningExe -Source $downloadedPath -Target $claudePath
 
   Write-Host "Installed patched Claude to $claudePath"
   & $claudePath --version
