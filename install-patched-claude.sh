@@ -115,44 +115,33 @@ github_api_get() {
   local url="$1"
   local output_file="$2"
 
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    curl -fsSL \
+  # Anonymous calls are capped at 60 an hour per address, and a shared egress
+  # (a VPN, an office NAT) spends that for everyone behind it: a re-run on a
+  # Windows box behind Cloudflare WARP failed here with the limit at
+  # remaining=0. An authenticated gh is the credential most users already have,
+  # so it comes after the explicit variables and before anonymous.
+  local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
+    token="$(gh auth token 2>/dev/null || true)"
+  fi
+
+  # The header travels on stdin (`-H @-`), never in curl's argv, which other
+  # local users can read through `ps` while the request runs. printf is a
+  # builtin, so no process carries the token in its argv at all. See the same
+  # block in examples/local-auto-update/update.sh for the measurement.
+  if [[ -n "$token" ]]; then
+    printf 'Authorization: Bearer %s\n' "$token" | curl -fsSL \
       -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
       -H "User-Agent: patch-claude-code-installer" \
-      "$url" \
-      -o "$output_file"
-  elif [[ -n "${GH_TOKEN:-}" ]]; then
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer ${GH_TOKEN}" \
-      -H "User-Agent: patch-claude-code-installer" \
+      -H @- \
       "$url" \
       -o "$output_file"
   else
-    # Anonymous calls are capped at 60 an hour per address, and a shared egress
-    # (a VPN, an office NAT) spends that for everyone behind it: a re-run on a
-    # Windows box behind Cloudflare WARP failed here with the limit at
-    # remaining=0. An authenticated gh is the credential most users already
-    # have, so use it before falling back to anonymous.
-    local gh_token=""
-    if command -v gh >/dev/null 2>&1; then
-      gh_token="$(gh auth token 2>/dev/null || true)"
-    fi
-    if [[ -n "$gh_token" ]]; then
-      curl -fsSL \
-        -H "Accept: application/vnd.github+json" \
-        -H "Authorization: Bearer ${gh_token}" \
-        -H "User-Agent: patch-claude-code-installer" \
-        "$url" \
-        -o "$output_file"
-    else
-      curl -fsSL \
-        -H "Accept: application/vnd.github+json" \
-        -H "User-Agent: patch-claude-code-installer" \
-        "$url" \
-        -o "$output_file"
-    fi
+    curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "User-Agent: patch-claude-code-installer" \
+      "$url" \
+      -o "$output_file"
   fi
 }
 

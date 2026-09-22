@@ -46,8 +46,16 @@ for arg in "$@"; do
   [ "$prev" = "-o" ] && out="$arg"
   # Records which credential, if any, reached the API, so the token-source
   # cases can assert on what was sent rather than on what the script meant to.
+  # `-H @-` means the headers arrive on stdin, which is how a token is meant to
+  # travel; any Bearer value in argv is recorded separately as a leak, because
+  # argv is what `ps` shows other local users.
   if [ "$prev" = "-H" ] && [ -n "$FAKE_AUTH_LOG" ]; then
-    case "$arg" in Authorization:*) printf '%s\n' "$arg" >> "$FAKE_AUTH_LOG" ;; esac
+    case "$arg" in
+      @-) while IFS= read -r line; do
+            case "$line" in Authorization:*) printf '%s\n' "$line" >> "$FAKE_AUTH_LOG" ;; esac
+          done ;;
+      Authorization:*) printf 'ARGV-LEAK %s\n' "$arg" >> "$FAKE_AUTH_LOG" ;;
+    esac
   fi
   case "$arg" in http*) url="$arg" ;; esac
   prev="$arg"
@@ -373,6 +381,10 @@ fi
 # stamps its throttle before querying, so each 403 also cost the next hour.
 # `gh` is already this script's optional dependency for attestation, so an
 # authenticated one is the credential most installs already have.
+#
+# The expected values are exact, so they also hold the token out of argv: the
+# stub records a header that arrived on the command line as
+# "ARGV-LEAK Authorization: ...", which matches none of them.
 GH_AUTHED_BIN="${SANDBOX}/stub-bin-gh-authed"
 mkdir -p "$GH_AUTHED_BIN"
 cat > "${GH_AUTHED_BIN}/gh" <<'STUB'

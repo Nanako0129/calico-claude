@@ -98,9 +98,12 @@ The installers replace the `claude` binary that Anthropic's updater manages, so 
 release puts `claude` back on an unpatched build; both say so when they finish. See
 [Keeping it updated](#keeping-it-updated) for the two ways around that.
 
-Listing releases uses the GitHub API. `GITHUB_TOKEN` or `GH_TOKEN` is used when set, otherwise an
-authenticated `gh`, otherwise the request is anonymous and shares GitHub's limit of 60 an hour per
-address — which a VPN or office NAT can exhaust for everyone behind it.
+Listing releases uses the GitHub API. The installers take the first credential available, in this
+order: `GITHUB_TOKEN`, then `GH_TOKEN`, then an authenticated `gh` (`gh auth token`). With none, the
+request is anonymous and shares GitHub's limit of 60 an hour per address, which a VPN or office NAT
+can exhaust for everyone behind it. The shell installer hands the token to `curl` on stdin rather than
+on its command line, where other local users could read it through `ps`; the PowerShell installer
+makes the request in-process and starts no subprocess for it.
 
 > **Prefer not to pipe a script from the internet?** Use the manual path below. The binaries are built
 > in GitHub Actions and the patcher is readable and modifiable, so convenience is the only reason to

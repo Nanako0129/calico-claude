@@ -286,19 +286,26 @@ query_latest_release() {
   # script's optional dependency for attestation — is the credential most
   # installs have, so it is the fallback. An explicit token still wins, and an
   # unauthenticated or missing gh leaves the request anonymous as before.
-  local gh_token=""
-  if [[ -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
-    gh_token="$(gh auth token 2>/dev/null || true)"
-  fi
-  if [[ -n "${GH_TOKEN:-}" ]]; then
-    curl_args+=(-H "Authorization: Bearer ${GH_TOKEN}")
-  elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  elif [[ -n "$gh_token" ]]; then
-    curl_args+=(-H "Authorization: Bearer ${gh_token}")
+  local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
+    token="$(gh auth token 2>/dev/null || true)"
   fi
 
-  if ! curl "${curl_args[@]}" "$API_URL" -o "$json_file"; then
+  # The header travels on stdin (`-H @-`), never in curl's argv: argv is
+  # readable by other local users through `ps` for as long as the request runs,
+  # and the gh fallback would otherwise put a keychain-held credential there
+  # for users who never exported one. printf is a builtin, so it spawns no
+  # process whose argv could carry the token either. Measured: the running
+  # curl's `ps -ww` line read `curl -fsS -H @- ... <url>`, and the request
+  # authenticated (rate_limit reported 5000) under bash 5.3 and /bin/bash 3.2.
+  local curl_rc=0
+  if [[ -n "$token" ]]; then
+    printf 'Authorization: Bearer %s\n' "$token" \
+      | curl "${curl_args[@]}" -H @- "$API_URL" -o "$json_file" || curl_rc=$?
+  else
+    curl "${curl_args[@]}" "$API_URL" -o "$json_file" || curl_rc=$?
+  fi
+  if (( curl_rc != 0 )); then
     rm -f "$json_file"
     fail "Failed to query GitHub releases API for ${REPO}"
   fi

@@ -185,7 +185,7 @@ script itself needs no editing:
 | `CALICO_STATE_DIR` | `~/.claude/calico` | Lock, throttle stamp, installed release tag, and `update.log`. |
 | `CALICO_KEEP_VERSIONS` | `3` | Newest builds to keep. `0` disables pruning. The current symlink target is always kept — after a rollback it survives on top of the newest N. |
 | `CALICO_THROTTLE_SECONDS` | `3600` | Minimum gap between `--hook` checks. |
-| `GH_TOKEN` / `GITHUB_TOKEN` | unset | Bearer token for the releases API. When neither is set, an authenticated `gh` supplies one (`gh auth token`); with neither, the call is anonymous and capped at 60 an hour per address. |
+| `GH_TOKEN` / `GITHUB_TOKEN` | unset | Bearer token for the releases API, `GH_TOKEN` first. When neither is set, an authenticated `gh` supplies one (`gh auth token`); with none of the three, the call is anonymous and capped at 60 an hour per address. Whichever is used reaches `curl` on stdin, never on its command line. |
 
 Pruning is not cosmetic. Each build is roughly 300 MB, so an unattended updater
 left alone for a few months will quietly consume several gigabytes.
