@@ -53,7 +53,16 @@ if (-not $claudePath) {
   Fail "Could not resolve the installed Claude executable path."
 }
 
-$versionOutput = & $claudePath --version 2>$null
+# Joined before matching, because the binary this installer upgrades is usually
+# one it installed itself: the version-output patch module appends a "(patched)"
+# line, so `claude --version` prints two lines and PowerShell hands them back as
+# a string array. `-notmatch` against an array filters instead of testing — it
+# returns the elements that did not match, and a non-empty array is truthy — so
+# the check failed on exactly the machines that already had a patched build,
+# while a first install over the official single-line binary always passed.
+# $Matches is not populated by the array form either, so the $claudeVersion
+# assignment below could not have worked even if the test had.
+$versionOutput = (& $claudePath --version 2>$null) -join "`n"
 if ($versionOutput -notmatch "([0-9]+\.[0-9]+\.[0-9]+)") {
   Fail "Could not parse Claude version from: $versionOutput"
 }
