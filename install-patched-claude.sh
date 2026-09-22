@@ -227,6 +227,45 @@ download_asset() {
   chmod +x "$DOWNLOADED_PATH"
 }
 
+# Windows refuses to overwrite an executable any process is running, and this
+# installer is usually re-run from inside a Claude Code session, so a plain cp
+# failed. A running executable can be renamed, which frees its name; see
+# Install-OverRunningExe in install-patched-claude.ps1 for the measurements and
+# for why the aside is not named like Anthropic's own <exe>.old.<ms>. Measured
+# under Git Bash (MINGW64) against a running stand-in: cp over it failed, mv
+# aside succeeded, cp into the freed name succeeded and ran, and — unlike
+# PowerShell's Remove-Item — rm -f removed the aside while the old process
+# still ran.
+replace_windows_exe() {
+  local source="$1" target="$2" old aside
+
+  for old in "${target}".calico-old.*; do
+    if [[ -e "$old" ]]; then
+      rm -f "$old" 2>/dev/null || true
+    fi
+  done
+
+  if [[ ! -e "$target" ]]; then
+    cp "$source" "$target"
+    return
+  fi
+
+  aside="${target}.calico-old.$(date +%s).$$"
+  mv "$target" "$aside" || fail "Could not move the existing ${target##*/} aside to replace it."
+  if ! cp "$source" "$target"; then
+    mv "$aside" "$target" || fail "Could not install the patched build, and could not restore the original from ${aside}. Rename it back to ${target##*/} by hand."
+    fail "Could not install the patched build. The original ${target##*/} was restored."
+  fi
+
+  rm -f "$aside" 2>/dev/null || true
+  if [[ -e "$aside" ]]; then
+    log "The previous ${target##*/} is still in use by a running Claude Code session; it was moved to ${aside##*/} and will be removed on a later run."
+  fi
+  # Git Bash can delete the aside even while it runs, so whether a session is
+  # open cannot be told from here. The sentence is true either way.
+  log "Any Claude Code session already open keeps running the previous build until it is restarted."
+}
+
 install_asset() {
   local target_dir target_real owner_cmd
   target_real="$(python3 - "$CLAUDE_PATH" <<'PY'
@@ -247,7 +286,7 @@ PY
 
   if is_windows_shell; then
     if [[ -w "$target_dir" && ( ! -e "$target_real" || -w "$target_real" ) ]]; then
-      cp "$DOWNLOADED_PATH" "$target_real"
+      replace_windows_exe "$DOWNLOADED_PATH" "$target_real"
     else
       fail "Target is not writable: ${target_real}. Re-run from an elevated shell or install manually."
     fi
