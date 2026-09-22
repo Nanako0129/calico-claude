@@ -6,8 +6,10 @@ on:
   # always 30-50 minutes late, then degrading to 2.3h, 4.3h, 10.3h and 10.7h
   # gaps over 2026-08-26/27, which left a merged 2.1.247 compat fix unreleased
   # for hours. Asking every 15 minutes does not make GitHub punctual, it just
-  # gives four chances per hour instead of one. Every run past the first is a
-  # ~15s no-op: the release-existence check short-circuits before checkout.
+  # gives four chances per hour instead of one. A run with nothing to do still
+  # checks out and resolves the version — the only gate before that is whether a
+  # patch run is already active — but it stops before installing dependencies or
+  # touching a binary, and dispatches nothing.
   schedule:
     - cron: "*/15 * * * *"
   # The schedule is a backstop, not the primary trigger. A compat fix landing on
@@ -49,18 +51,6 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Get latest Claude version from npm
-        id: latest
-        run: |
-          set -euo pipefail
-          VERSION="$(npm view @anthropic-ai/claude-code dist-tags.latest --silent)"
-          if [ -z "$VERSION" ]; then
-            echo "npm did not return a Claude version" >&2
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Latest Claude version: $VERSION"
-
       - name: Skip if patch workflow is already running
         id: active
         env:
@@ -82,6 +72,50 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # Checked out before the version is resolved, because that step now runs a
+      # script from this repository. It costs nothing to do it here: this
+      # checkout is gated only on a patch run being active, never on what npm
+      # reports, so every run that gets past the gate above was going to check
+      # out anyway. It also feeds the preflight below, which gates the release
+      # on a cheap patch+verify of one platform. Without that, upstream drift is
+      # only discovered when the release run fails on all five platforms, after
+      # the tags have already been attempted. One platform is not proof for the
+      # others — minified locals differ per build, and the release run still
+      # verifies each — but every drift seen so far has shown up identically
+      # everywhere, so this catches it a full release earlier and names the
+      # module.
+      - name: Check out the patcher
+        if: steps.active.outputs.skip != 'true'
+        uses: actions/checkout@v5
+        with:
+          # The staleness check below diffs the commit a release was built from
+          # against this one, so the shallow default is not enough.
+          fetch-depth: 0
+
+      - name: Get newest published Claude version from npm
+        if: steps.active.outputs.skip != 'true'
+        id: latest
+        run: |
+          set -euo pipefail
+
+          # Reads every dist-tag, not just `latest`: upstream published 2.1.280
+          # onto `next` while `latest` still read 2.1.278, and this step could
+          # not see it at all. scripts/newest-dist-tag-version.ts carries the
+          # reasoning and the ordering rules, and
+          # tests/newest-dist-tag-version.test.js holds them.
+          RESOLVED="$(npm view @anthropic-ai/claude-code dist-tags --json --silent \
+            | node scripts/newest-dist-tag-version.ts)"
+
+          TAG="${RESOLVED%% *}"
+          VERSION="${RESOLVED##* }"
+          if [ -z "$VERSION" ]; then
+            echo "npm did not return a Claude version" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Newest Claude version: $VERSION (from dist-tag $TAG)"
+          npm view @anthropic-ai/claude-code dist-tags --silent
 
       - name: Check whether patched releases already exist
         if: steps.active.outputs.skip != 'true'
@@ -105,21 +139,6 @@ jobs:
           done
 
           echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
-
-      # Gate the release on a cheap patch+verify of one platform first. Without
-      # it, upstream drift is only discovered when the release run fails on all
-      # five platforms, after the tags have already been attempted. One platform
-      # is not proof for the others — minified locals differ per build, and the
-      # release run still verifies each — but every drift seen so far has shown
-      # up identically everywhere, so this catches it a full release earlier and
-      # names the module.
-      - name: Check out the patcher
-        if: steps.active.outputs.skip != 'true'
-        uses: actions/checkout@v5
-        with:
-          # The staleness check below diffs the commit a release was built from
-          # against this one, so the shallow default is not enough.
-          fetch-depth: 0
 
       # A release existing is not the same as it being current. "Was this
       # version released?" is what the check above asks, and it answered yes for
