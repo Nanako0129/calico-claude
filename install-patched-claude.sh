@@ -115,18 +115,25 @@ github_api_get() {
   local url="$1"
   local output_file="$2"
 
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    curl -fsSL \
+  # Anonymous calls are capped at 60 an hour per address, and a shared egress
+  # (a VPN, an office NAT) spends that for everyone behind it: a re-run on a
+  # Windows box behind Cloudflare WARP failed here with the limit at
+  # remaining=0. An authenticated gh is the credential most users already have,
+  # so it comes after the explicit variables and before anonymous.
+  local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
+    token="$(gh auth token 2>/dev/null || true)"
+  fi
+
+  # The header travels on stdin (`-H @-`), never in curl's argv, which other
+  # local users can read through `ps` while the request runs. printf is a
+  # builtin, so no process carries the token in its argv at all. See the same
+  # block in examples/local-auto-update/update.sh for the measurement.
+  if [[ -n "$token" ]]; then
+    printf 'Authorization: Bearer %s\n' "$token" | curl -fsSL \
       -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
       -H "User-Agent: patch-claude-code-installer" \
-      "$url" \
-      -o "$output_file"
-  elif [[ -n "${GH_TOKEN:-}" ]]; then
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer ${GH_TOKEN}" \
-      -H "User-Agent: patch-claude-code-installer" \
+      -H @- \
       "$url" \
       -o "$output_file"
   else
@@ -270,6 +277,34 @@ PY
 verify_install() {
   log "Installed patched Claude to ${INSTALLED_PATH}"
   "${INSTALLED_PATH}" --version
+  warn_about_official_updater
+}
+
+# This installer writes over the binary Anthropic's updater manages, and the
+# next upstream release puts `claude` back on an unpatched build without a word.
+# Observed on macOS: the updater wrote ~/.local/share/claude/versions/2.1.280
+# and repointed the ~/.local/bin/claude symlink at it, so whatever the link
+# pointed to before is no longer what runs. On Windows it copies versions\<new>
+# over claude.exe instead (observed; see install-patched-claude.ps1). Linux was
+# not observed. Users found out by noticing "(patched)" had gone from
+# `claude --version`. Say so at the moment it becomes true.
+#
+# DISABLE_AUTOUPDATER is the switch the native updater reads: its update check
+# returns early on it (measured in the 2.1.280 bundle). The settings-file
+# `autoUpdates: false` is not offered because native installs can ignore it.
+warn_about_official_updater() {
+  cat >&2 <<'EOF'
+
+Note: this replaced the `claude` binary that Anthropic's updater manages. When
+the next Claude Code release installs, `claude` goes back to an unpatched build
+and `claude --version` stops showing "(patched)". Either:
+
+  - start Claude Code with DISABLE_AUTOUPDATER=1 in its environment, and re-run
+    this installer yourself after upgrading; or
+  - install Calico side by side as `calico-claude` and let it update itself:
+    https://github.com/Nanako0129/calico-claude#keeping-it-updated
+
+EOF
 }
 
 main() {

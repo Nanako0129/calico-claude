@@ -34,6 +34,18 @@ function Get-GitHubHeaders {
     $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)"
   } elseif ($env:GH_TOKEN) {
     $headers["Authorization"] = "Bearer $($env:GH_TOKEN)"
+  } elseif (Get-Command gh -ErrorAction SilentlyContinue) {
+    # Anonymous calls are capped at 60 an hour per address, and a shared egress
+    # spends that for everyone behind it: a re-run behind Cloudflare WARP failed
+    # to list releases with the limit at remaining=0. An authenticated gh is the
+    # credential most users already have. An unauthenticated one prints nothing
+    # to stdout and exits 1 ("no oauth token found for <host>" on stderr,
+    # measured with gh on macOS; not measured on Windows), which leaves the
+    # request anonymous as before.
+    $ghToken = (& gh auth token 2>$null) -join ""
+    if ($ghToken) {
+      $headers["Authorization"] = "Bearer $ghToken"
+    }
   }
 
   return $headers
@@ -109,6 +121,23 @@ try {
 
   Write-Host "Installed patched Claude to $claudePath"
   & $claudePath --version
+
+  # The next upstream release puts claude back on an unpatched build without a
+  # word; users found out by noticing "(patched)" had gone from
+  # `claude --version`. Observed on a Windows x64 install, within half an hour
+  # of this installer putting a patched 2.1.278 there: the updater wrote
+  # versions\2.1.280 and, in the same second, rewrote claude.exe (a plain file,
+  # no link) to the identical byte length, after which `claude --version` read
+  # "2.1.280 (Claude Code)" and nothing else. Say so at the moment it becomes
+  # true. DISABLE_AUTOUPDATER is the switch the native updater reads: its update
+  # check returns early on it (measured in the 2.1.280 bundle).
+  Write-Host ""
+  Write-Host "Note: this replaced the claude.exe that Anthropic's updater manages. When the"
+  Write-Host "next Claude Code release installs, claude goes back to an unpatched build and"
+  Write-Host "``claude --version`` stops showing ""(patched)"". To keep it patched, start Claude"
+  Write-Host "Code with DISABLE_AUTOUPDATER=1 in its environment and re-run this installer"
+  Write-Host "yourself after upgrading. See:"
+  Write-Host "  https://github.com/Nanako0129/calico-claude#keeping-it-updated"
 } finally {
   Remove-Item -LiteralPath $tmpDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
 }

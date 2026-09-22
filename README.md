@@ -94,6 +94,17 @@ curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/insta
 irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.ps1 | iex
 ```
 
+The installers replace the `claude` binary that Anthropic's updater manages, so the next upstream
+release puts `claude` back on an unpatched build; both say so when they finish. See
+[Keeping it updated](#keeping-it-updated) for the two ways around that.
+
+Listing releases uses the GitHub API. The installers take the first credential available, in this
+order: `GITHUB_TOKEN`, then `GH_TOKEN`, then an authenticated `gh` (`gh auth token`). With none, the
+request is anonymous and shares GitHub's limit of 60 an hour per address, which a VPN or office NAT
+can exhaust for everyone behind it. The shell installer hands the token to `curl` on stdin rather than
+on its command line, where other local users could read it through `ps`; the PowerShell installer
+makes the request in-process and starts no subprocess for it.
+
 > **Prefer not to pipe a script from the internet?** Use the manual path below. The binaries are built
 > in GitHub Actions and the patcher is readable and modifiable, so convenience is the only reason to
 > trust this repo's release builds over your own.
@@ -155,6 +166,12 @@ differently named binary, which is exactly why the Calico one never moves on its
 
 The official updater can install a new version and repoint the `claude` symlink at an unpatched
 binary. The renamed Calico binary is immune to that, but it also stops receiving updates.
+
+If you installed over `claude` instead, there are two ways to keep it patched. Start Claude Code with
+`DISABLE_AUTOUPDATER=1` in its environment — the native updater's check returns early on that
+variable (read from the 2.1.280 bundle) — and re-run the installer yourself after each upgrade. Do
+not rely on `autoUpdates: false` in the settings file for this: native installs can ignore it. Or
+switch to the side-by-side install and the updater below.
 
 [`examples/local-auto-update/`](./examples/local-auto-update/) closes that gap: a SessionStart hook
 that checks at most hourly and never blocks startup, plus an optional launchd timer for macOS —

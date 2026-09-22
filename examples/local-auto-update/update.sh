@@ -33,7 +33,9 @@
 #   CALICO_STATE_DIR      Lock/log/throttle state directory.
 #   CALICO_KEEP_VERSIONS  How many old versions to keep (default 3, 0 = keep all).
 #   CALICO_THROTTLE_SECONDS  Minimum seconds between --hook checks (default 3600).
-#   GH_TOKEN / GITHUB_TOKEN  Used as a bearer token for the releases API.
+#   GH_TOKEN / GITHUB_TOKEN  Used as a bearer token for the releases API. When
+#                         neither is set, an authenticated `gh` supplies one;
+#                         with neither, the call is anonymous (60/hour/address).
 
 set -euo pipefail
 
@@ -276,13 +278,34 @@ query_latest_release() {
     -H "Accept: application/vnd.github+json"
     -H "User-Agent: calico-claude-updater"
   )
-  if [[ -n "${GH_TOKEN:-}" ]]; then
-    curl_args+=(-H "Authorization: Bearer ${GH_TOKEN}")
-  elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  # Anonymous, this call is capped at 60 an hour per address, and neither
+  # launchd nor the SessionStart hook exports a token: on the maintainer's
+  # machine 4 of 12 consecutive checks got a 403, one of them the only check
+  # after 2.1.280 shipped, and the hook stamps its throttle before querying, so
+  # each 403 also cost the next hour. An authenticated `gh` — already this
+  # script's optional dependency for attestation — is the credential most
+  # installs have, so it is the fallback. An explicit token still wins, and an
+  # unauthenticated or missing gh leaves the request anonymous as before.
+  local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
+    token="$(gh auth token 2>/dev/null || true)"
   fi
 
-  if ! curl "${curl_args[@]}" "$API_URL" -o "$json_file"; then
+  # The header travels on stdin (`-H @-`), never in curl's argv: argv is
+  # readable by other local users through `ps` for as long as the request runs,
+  # and the gh fallback would otherwise put a keychain-held credential there
+  # for users who never exported one. printf is a builtin, so it spawns no
+  # process whose argv could carry the token either. Measured: the running
+  # curl's `ps -ww` line read `curl -fsS -H @- ... <url>`, and the request
+  # authenticated (rate_limit reported 5000) under bash 5.3 and /bin/bash 3.2.
+  local curl_rc=0
+  if [[ -n "$token" ]]; then
+    printf 'Authorization: Bearer %s\n' "$token" \
+      | curl "${curl_args[@]}" -H @- "$API_URL" -o "$json_file" || curl_rc=$?
+  else
+    curl "${curl_args[@]}" "$API_URL" -o "$json_file" || curl_rc=$?
+  fi
+  if (( curl_rc != 0 )); then
     rm -f "$json_file"
     fail "Failed to query GitHub releases API for ${REPO}"
   fi
