@@ -22,6 +22,12 @@ check() { # check <description> <expected> <actual>
   if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (expected [$2], got [$3])"; fi
 }
 
+# HOME is the sandbox for the whole suite. --hook and --unattended-run take
+# every path from HOME and ignore the CALICO_* overrides below, so without this
+# a hook case would write the real ~/.claude/calico and start a real update.
+export HOME="${SANDBOX}/home"
+mkdir -p "$HOME"
+
 export CALICO_STATE_DIR="${SANDBOX}/state"
 export CALICO_VERSIONS_DIR="${SANDBOX}/versions"
 export CALICO_BIN_LINK="${SANDBOX}/bin/calico-claude"
@@ -61,6 +67,9 @@ for arg in "$@"; do
   prev="$arg"
 done
 [ -n "$out" ] || exit 1
+# Which URL was requested, so the unattended-mode cases can tell which
+# repository a detached child actually queried.
+[ -n "$FAKE_URL_LOG" ] && printf '%s\n' "$url" >> "$FAKE_URL_LOG"
 case "$url" in
   *checksums.txt) [ -n "$FAKE_CHECKSUMS" ] && cat "$FAKE_CHECKSUMS" > "$out" || exit 1 ;;
   *api.github.com*) cat "$FAKE_RELEASES" > "$out" ;;
@@ -189,31 +198,34 @@ rm -f "$CALICO_BIN_LINK"
 check "prune tolerates a missing symlink" "2.1.2 2.1.3 2.1.4" "$(prune_with 3)"
 
 # --- 4. hook throttling -------------------------------------------------------
-# --hook must never block and must not spawn --run while inside the window.
+# --hook must never block and must not spawn a run while inside the window.
+# Its state lives under HOME: --hook ignores CALICO_STATE_DIR.
+HOOK_STATE="${HOME}/.claude/calico"
+mkdir -p "$HOOK_STATE"
 # CALICO_REPO points at a nonexistent repo so any spawned --run fails fast
 # without touching the network in a meaningful way.
 export CALICO_REPO="calico-test/does-not-exist"
 export PATH="${STUB_BIN}:${PATH}"
 export FAKE_RELEASES="${SANDBOX}/releases.json"
-rm -f "${CALICO_STATE_DIR}/last-check" "${CALICO_STATE_DIR}/update.log"
-printf '%s\n' "$(date +%s)" > "${CALICO_STATE_DIR}/last-check"
-before="$(cat "${CALICO_STATE_DIR}/last-check")"
+rm -f "${HOOK_STATE}/last-check" "${HOOK_STATE}/update.log"
+printf '%s\n' "$(date +%s)" > "${HOOK_STATE}/last-check"
+before="$(cat "${HOOK_STATE}/last-check")"
 CALICO_THROTTLE_SECONDS=3600 bash "$UPDATE_SH" --hook < /dev/null >/dev/null 2>&1
 rc=$?
 check "hook inside throttle window exits 0" "0" "$rc"
-check "hook inside throttle window leaves last-check untouched" "$before" "$(cat "${CALICO_STATE_DIR}/last-check")"
-if [[ -s "${CALICO_STATE_DIR}/update.log" ]]; then bad "hook inside throttle window spawned a run"; else ok "hook inside throttle window spawned no run"; fi
+check "hook inside throttle window leaves last-check untouched" "$before" "$(cat "${HOOK_STATE}/last-check")"
+if [[ -s "${HOOK_STATE}/update.log" ]]; then bad "hook inside throttle window spawned a run"; else ok "hook inside throttle window spawned no run"; fi
 
-printf '%s\n' "$(( $(date +%s) - 7200 ))" > "${CALICO_STATE_DIR}/last-check"
+printf '%s\n' "$(( $(date +%s) - 7200 ))" > "${HOOK_STATE}/last-check"
 CALICO_THROTTLE_SECONDS=3600 bash "$UPDATE_SH" --hook < /dev/null >/dev/null 2>&1
 rc=$?
 check "hook past throttle window exits 0" "0" "$rc"
-now_stamp="$(cat "${CALICO_STATE_DIR}/last-check")"
+now_stamp="$(cat "${HOOK_STATE}/last-check")"
 if (( $(date +%s) - now_stamp < 60 )); then ok "hook past throttle window refreshes last-check"; else bad "hook past throttle window refreshes last-check"; fi
 sleep 3
-if [[ -s "${CALICO_STATE_DIR}/update.log" ]]; then ok "hook past throttle window spawned a detached run"; else bad "hook past throttle window spawned a detached run"; fi
+if [[ -s "${HOOK_STATE}/update.log" ]]; then ok "hook past throttle window spawned a detached run"; else bad "hook past throttle window spawned a detached run"; fi
 
-printf 'garbage\n' > "${CALICO_STATE_DIR}/last-check"
+printf 'garbage\n' > "${HOOK_STATE}/last-check"
 CALICO_THROTTLE_SECONDS=3600 bash "$UPDATE_SH" --hook < /dev/null >/dev/null 2>&1
 check "hook tolerates a corrupt last-check" "0" "$?"
 
@@ -671,6 +683,129 @@ ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
 printf 'v9.9.9-linux-x64\n' > "$E2E/state/installed-tag"
 out="$(e2e_run --check)"
 if [[ "$out" == *"reinstall needed"* ]]; then ok "--check reports an unpatched binary as needing reinstall"; else bad "--check reports an unpatched binary as needing reinstall (got: ${out})"; fi
+
+
+# --- 8g. hardening: record, prerelease, newer-than-latest, attestation --------
+# Each of these must fail against the update.sh that preceded this change; the
+# PR records that control run.
+e2e_releases() { # <json>
+  printf '%s\n' "$1" > "$E2E/releases.json"
+}
+REL_992='[{"tag_name":"v9.9.9-linux-x64-2","assets":[
+  {"name":"claude.native.patched","browser_download_url":"https://example.invalid/asset"},
+  {"name":"checksums.txt","browser_download_url":"https://example.invalid/checksums.txt"}]}]'
+
+# A record describing another version must not supply the installed rank.
+e2e_reset "${SANDBOX}/asset-good"
+e2e_releases "$REL_992"
+cp "${SANDBOX}/asset-good" "$E2E/versions/9.9.9"; chmod +x "$E2E/versions/9.9.9"
+ln -sf "$E2E/versions/9.9.9" "$E2E/bin/calico-claude"
+printf 'v9.9.8-linux-x64-2\n' > "$E2E/state/installed-tag"
+out="$(e2e_run --run)"
+check "a record for another version does not hide a rebuild of the installed one" \
+  "v9.9.9-linux-x64-2" "$(cat "$E2E/state/installed-tag")"
+
+# A prerelease is never the latest release.
+e2e_reset "${SANDBOX}/asset-good"
+e2e_releases '[{"tag_name":"v9.9.9-linux-x64","assets":[
+  {"name":"claude.native.patched","browser_download_url":"https://example.invalid/asset"}]},
+ {"tag_name":"v9.9.10-linux-x64","prerelease":true,"assets":[
+  {"name":"claude.native.patched","browser_download_url":"https://example.invalid/asset"}]}]'
+out="$(e2e_run --check)"
+check "a prerelease is skipped" "Latest release: 9.9.9 (tag v9.9.9-linux-x64)" "$(printf '%s\n' "$out" | grep '^Latest release:')"
+
+# Installed above every release: say so instead of a silent "up to date".
+e2e_reset "${SANDBOX}/asset-good"
+printf '#!/bin/sh\necho "9.9.10 (Claude Code)"\necho "(patched)"\n' > "$E2E/versions/9.9.10"; chmod +x "$E2E/versions/9.9.10"
+ln -sf "$E2E/versions/9.9.10" "$E2E/bin/calico-claude"
+out="$(e2e_run --run)"
+if [[ "$out" == *"WARNING: installed 9.9.10 is newer than the latest release 9.9.9"* ]]; then
+  ok "an installed version above every release is reported"
+else bad "an installed version above every release is reported (got: ${out})"; fi
+
+# Attestation pins the signing workflow and the ref.
+GH_ATTEST_BIN="${SANDBOX}/stub-bin-gh-attest"
+mkdir -p "$GH_ATTEST_BIN"
+cat > "${GH_ATTEST_BIN}/gh" <<'STUB'
+#!/bin/sh
+# Authenticated gh whose `attestation verify` records its arguments and then
+# behaves as FAKE_GH_MODE says: pass, or an old gh rejecting an unknown flag.
+if [ "$1" = "auth" ]; then exit 0; fi
+if [ "$1" = "attestation" ]; then
+  printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+  if [ "$FAKE_GH_MODE" = "old" ]; then echo "unknown flag: --signer-workflow" >&2; exit 1; fi
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "${GH_ATTEST_BIN}/gh"
+e2e_run_gh() { # <gh-mode> <mode>
+  : > "$E2E/gh.log"
+  env PATH="${GH_ATTEST_BIN}:${STUB_BIN}:${PATH}" FAKE_GH_LOG="$E2E/gh.log" FAKE_GH_MODE="$1" \
+      FAKE_RELEASES="$E2E/releases.json" FAKE_ASSET="$E2E/asset" FAKE_CHECKSUMS="$E2E/checksums.txt" \
+      CALICO_PLATFORM=linux-x64 CALICO_REPO="calico-test/stubbed" \
+      CALICO_VERSIONS_DIR="$E2E/versions" CALICO_BIN_LINK="$E2E/bin/calico-claude" \
+      CALICO_STATE_DIR="$E2E/state" E2E_COUNTER="$E2E/calls" \
+      bash "$UPDATE_SH" "$2" 2>&1
+}
+e2e_reset "${SANDBOX}/asset-good"
+out="$(e2e_run_gh pass --run)"
+gh_args="$(cat "$E2E/gh.log")"
+if [[ "$gh_args" == *"--signer-workflow calico-test/stubbed/.github/workflows/patch-claude.yml"* && "$gh_args" == *"--source-ref refs/heads/main"* ]]; then
+  ok "attestation pins the release workflow and main"
+else bad "attestation pins the release workflow and main (gh got: ${gh_args})"; fi
+
+e2e_reset "${SANDBOX}/asset-good"
+out="$(e2e_run_gh old --run)"
+rc=$?
+check "a gh that cannot pin fails the run" "1" "$rc"
+if [[ "$out" == *"Installed gh cannot pin the signing workflow and ref"* && ! -e "$E2E/versions/9.9.9" ]]; then
+  ok "a gh that cannot pin is named as the reason and nothing is installed"
+else bad "a gh that cannot pin is named as the reason and nothing is installed (got: ${out})"; fi
+
+# --- 8h. unattended modes take the repo from the config file only -------------
+# The hook and the launchd agent inherit an environment someone else chose, so
+# CALICO_REPO there must not decide where updates come from. HOME is the suite's
+# sandbox; the detached child's requests are read back from the curl stub.
+UA_STATE="${HOME}/.claude/calico"
+ua_reset() { rm -rf "${HOME}/.claude" "${HOME}/.local"; mkdir -p "$UA_STATE"; : > "${SANDBOX}/urls.log"; }
+ua_wait_child() { # the detached child logs its last line, then exits
+  local i
+  for i in $(seq 1 100); do
+    if grep -qE "ERROR|Exiting|complete\." "${UA_STATE}/update.log" 2>/dev/null; then return 0; fi
+    sleep 0.2
+  done
+  return 1
+}
+ua_hook() {
+  printf '0\n' > "${UA_STATE}/last-check"
+  env PATH="${STUB_BIN}:${PATH}" FAKE_RELEASES="${SANDBOX}/releases.json" FAKE_URL_LOG="${SANDBOX}/urls.log" \
+      CALICO_REPO="evil/repo" bash "$UPDATE_SH" --hook < /dev/null >/dev/null 2>&1
+  ua_wait_child
+}
+
+ua_reset
+ua_hook
+urls="$(cat "${SANDBOX}/urls.log")"
+if [[ "$urls" == *"/repos/Nanako0129/calico-claude/"* && "$urls" != *"evil/repo"* ]]; then
+  ok "--hook's child ignores CALICO_REPO and uses the default repo"
+else bad "--hook's child ignores CALICO_REPO and uses the default repo (urls: ${urls:-none})"; fi
+
+ua_reset
+printf 'repo=fork/ok\n' > "${UA_STATE}/config"
+ua_hook
+urls="$(cat "${SANDBOX}/urls.log")"
+if [[ "$urls" == *"/repos/fork/ok/"* && "$urls" != *"evil/repo"* ]]; then
+  ok "--hook's child takes the repo from the config file"
+else bad "--hook's child takes the repo from the config file (urls: ${urls:-none})"; fi
+
+ua_reset
+env PATH="${STUB_BIN}:${PATH}" FAKE_RELEASES="${SANDBOX}/releases.json" FAKE_URL_LOG="${SANDBOX}/urls.log" \
+    CALICO_REPO="evil/repo" bash "$UPDATE_SH" --unattended-run < /dev/null >/dev/null 2>&1
+urls="$(cat "${SANDBOX}/urls.log")"
+if [[ "$urls" == *"/repos/Nanako0129/calico-claude/"* && "$urls" != *"evil/repo"* ]]; then
+  ok "--unattended-run (the launchd agent's mode) ignores CALICO_REPO"
+else bad "--unattended-run (the launchd agent's mode) ignores CALICO_REPO (urls: ${urls:-none})"; fi
 
 # --- 9. usage -----------------------------------------------------------------
 bash "$UPDATE_SH" >/dev/null 2>&1

@@ -10,8 +10,13 @@
 # Modes:
 #   --hook   Throttled entry point for the SessionStart hook. Never blocks:
 #            if the last check was < THROTTLE_SECONDS ago it exits 0 immediately;
-#            otherwise it records the timestamp, spawns a detached `--run` and
-#            exits 0. stdin (the hook JSON payload) is ignored.
+#            otherwise it records the timestamp, spawns a detached
+#            `--unattended-run` and exits 0. stdin (the hook JSON payload) is
+#            ignored.
+#   --unattended-run  What --hook spawns and what the launchd agent runs: --run,
+#            but with the repo read from ~/.claude/calico/config and every path
+#            derived from HOME; CALICO_REPO and the CALICO_* path overrides are
+#            ignored.
 #   --run    Perform an update if a newer release exists. Verifies checksum and
 #            build attestation (fail-hard) BEFORE installing; rolls back the
 #            symlink if the post-install version check fails.
@@ -24,7 +29,9 @@
 # macOS, `sha256sum` on Linux). `gh` is optional and only used to verify build
 # provenance attestations.
 #
-# Environment overrides (all optional):
+# Environment overrides (all optional). --hook and --unattended-run ignore
+# CALICO_REPO, CALICO_BIN_LINK, CALICO_VERSIONS_DIR and CALICO_STATE_DIR; they
+# read the repo from ~/.claude/calico/config (one line, `repo=<owner>/<name>`).
 #   CALICO_REPO           GitHub repo publishing the patched releases.
 #   CALICO_PLATFORM       Force a platform suffix (linux-x64, linux-arm64,
 #                         macos-arm64, win32-x64, win32-arm64).
@@ -52,6 +59,40 @@ THROTTLE_SECONDS="${CALICO_THROTTLE_SECONDS:-3600}"
 KEEP_VERSIONS="${CALICO_KEEP_VERSIONS:-3}"
 LOG_MAX_LINES=2000
 API_URL="https://api.github.com/repos/${REPO}/releases?per_page=100"
+
+# The unattended entry points -- --hook, and --unattended-run, which the hook
+# spawns and the launchd agent runs -- take the repo and every path from HOME
+# and one config file only, never from CALICO_* in the environment. Both inherit
+# whatever environment Claude Code or launchd was started with, and a project's
+# settings can put variables into a Claude Code session: honouring CALICO_REPO
+# there would let one workspace point every later update at another repository
+# (its own CI can produce matching checksums and attestations) and replace
+# calico-claude for every project. The config file is written by the installer;
+# until then a fork user writes it by hand (see README). --run, --force and
+# --check are interactive and keep honouring the overrides, which the tests and
+# a user at a terminal rely on. GH_HOST and GH_REPO are dropped so gh cannot be
+# pointed at another host or repository for the attestation lookup.
+use_unattended_settings() {
+  STATE_DIR="${HOME}/.claude/calico"
+  VERSIONS_DIR="${HOME}/.local/share/calico-claude/versions"
+  BIN_LINK="${HOME}/.local/bin/calico-claude"
+  LOCK_DIR="${STATE_DIR}/.lock"
+  LAST_CHECK_FILE="${STATE_DIR}/last-check"
+  INSTALLED_TAG_FILE="${STATE_DIR}/installed-tag"
+  LOG_FILE="${STATE_DIR}/update.log"
+  REPO="Nanako0129/calico-claude"
+  local configured
+  # `|| true`: with no config file sed fails, and under pipefail and set -e that
+  # ended the whole script -- measured, every --hook exited 1 before doing
+  # anything on a machine without the file.
+  configured="$( { sed -n 's/^repo=\([A-Za-z0-9._-][A-Za-z0-9._-]*\/[A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' \
+    "${STATE_DIR}/config" 2>/dev/null || true; } | head -n 1)"
+  if [[ -n "$configured" ]]; then
+    REPO="$configured"
+  fi
+  API_URL="https://api.github.com/repos/${REPO}/releases?per_page=100"
+  unset GH_HOST GH_REPO
+}
 
 # Populated by cleanup trap.
 TMP_DIR=""
@@ -167,14 +208,27 @@ tag_rebuild_rank() {
 # Rank of the tag this script last installed. Absent (first run, or an install
 # predating this file) means the base build, so a base-tag release still reads
 # as "nothing newer" and nothing is reinstalled needlessly.
+#
+# The record is trusted only when its version is the installed version. An
+# install that bypassed this script leaves the record describing an older
+# build: measured 2026-09-23, a record of v2.1.278-macos-arm64-2 beside an
+# installed 2.1.280 made v2.1.280-macos-arm64-2 read as "not newer", so that
+# rebuild was never installed. A stale record now reads as rank 0, below every
+# published tag, so the latest rebuild of the installed version is reinstalled
+# once and the record is rewritten.
 installed_rebuild_rank() {
-  local recorded
+  local recorded recorded_version
   recorded="$(cat "$INSTALLED_TAG_FILE" 2>/dev/null || true)"
-  if [[ -n "$recorded" ]]; then
-    tag_rebuild_rank "$recorded"
-  else
+  if [[ -z "$recorded" ]]; then
     printf '1\n'
+    return
   fi
+  recorded_version="$(printf '%s' "$recorded" | sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)-.*/\1/p')"
+  if [[ -n "${INSTALLED_VERSION:-}" && "$recorded_version" != "$INSTALLED_VERSION" ]]; then
+    printf '0\n'
+    return
+  fi
+  tag_rebuild_rank "$recorded"
 }
 
 # Verify "<sha256>  <file>" lines in $1 against files in the current directory.
@@ -335,7 +389,10 @@ best = None
 for rel in data:
     if not isinstance(rel, dict):
         continue
-    if rel.get("draft"):
+    # Drafts and prereleases are never installed unattended. A prerelease
+    # carrying a mistyped high version would otherwise become the target of
+    # every machine and then outrank each correct release after it.
+    if rel.get("draft") or rel.get("prerelease"):
         continue
     tag = rel.get("tag_name", "") or ""
     m = pat.match(tag)
@@ -421,8 +478,21 @@ verify_checksum() {
 verify_attestation() {
   local file="$1"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if gh attestation verify "$file" --repo "$REPO" >/dev/null 2>&1; then
+    # `--repo` alone accepts an attestation from any workflow and any ref in the
+    # repository -- a dispatch from a branch, or a workflow added on one. The
+    # release workflow and main are pinned. Measured 2026-09-23 with gh 2.97.0:
+    # the released v2.1.280-macos-arm64-2 asset verifies with both constraints,
+    # and --source-ref refs/heads/not-main fails with "expected
+    # SourceRepositoryRef to be refs/heads/not-main, got refs/heads/main". A gh
+    # too old for these flags fails too, and is named as the reason rather than
+    # retried without them.
+    local output
+    if output="$(gh attestation verify "$file" --repo "$REPO" \
+      --signer-workflow "${REPO}/.github/workflows/patch-claude.yml" \
+      --source-ref refs/heads/main 2>&1)"; then
       log "Attestation verified via gh for ${ASSET}"
+    elif [[ "$output" == *"unknown flag"* ]]; then
+      fail "Installed gh cannot pin the signing workflow and ref (--signer-workflow/--source-ref); update gh. Refusing to install ${ASSET}"
     else
       fail "Attestation verification FAILED for ${ASSET}; refusing to install"
     fi
@@ -559,6 +629,13 @@ perform_update() {
       # (e.g. the release was rebuilt at the same version). Checksum,
       # attestation and post-verify below still run unconditionally.
       log "Installed version ${INSTALLED_VERSION} is up to date (latest ${LATEST_VERSION}), but --force given; reinstalling."
+    elif [[ "$rel" == "older" ]]; then
+      # The installed version is above every published release, so nothing
+      # will ever be offered again until upstream passes it. That is how a
+      # mistaken high-numbered release would silently stall updates.
+      log "WARNING: installed ${INSTALLED_VERSION} is newer than the latest release ${LATEST_VERSION}; no update will be offered until a newer release is published."
+      prune_old_versions
+      exit 0
     else
       log "Installed version ${INSTALLED_VERSION} is up to date (latest ${LATEST_VERSION}); nothing to do. Exiting."
       prune_old_versions
@@ -709,7 +786,7 @@ do_hook() {
   printf '%s\n' "$now" > "$LAST_CHECK_FILE" 2>/dev/null || \
     log "WARNING: could not write ${LAST_CHECK_FILE}; throttling is degraded."
   rotate_log
-  nohup bash "$0" --run < /dev/null >> "$LOG_FILE" 2>&1 &
+  nohup bash "$0" --unattended-run < /dev/null >> "$LOG_FILE" 2>&1 &
   disown
   exit 0
 }
@@ -717,7 +794,8 @@ do_hook() {
 main() {
   local mode="${1:-}"
   case "$mode" in
-    --hook)  do_hook ;;
+    --hook)  use_unattended_settings; do_hook ;;
+    --unattended-run) use_unattended_settings; perform_update ;;
     --run)   perform_update ;;
     --force) FORCE=1; perform_update ;;
     --check) do_check ;;
@@ -725,7 +803,8 @@ main() {
       cat >&2 <<EOF
 Usage: $0 [--hook|--run|--force|--check]
 
-  --hook   Throttled SessionStart entry point (spawns detached --run, never blocks).
+  --hook   Throttled SessionStart entry point (spawns detached --unattended-run, never blocks).
+  --unattended-run  --run for the hook and the launchd agent: repo from the config file only.
   --run    Update if a newer verified release exists.
   --force  Reinstall even when already up to date (skips only the version gate).
   --check  Report installed vs latest release without changing anything.
