@@ -68,6 +68,13 @@ not defined.
 
 ## Install
 
+On macOS and Linux, [`install-patched-claude.sh`](../../install-patched-claude.sh) at the repository
+root does all of this: it installs the script, writes `~/.claude/calico/config`, runs `--force` once,
+adds the SessionStart hook, and on macOS loads the launchd timer. The hook it writes is
+`/bin/bash "<your home>/.claude/calico/update.sh" --hook`; re-running it replaces an entry from the
+manual steps below instead of adding a second one. The steps below are the manual equivalent, and
+what this directory documents is the updater itself.
+
 **1. Put the script somewhere stable.**
 
 ```bash
@@ -286,6 +293,19 @@ its first request for anyone without `GH_TOKEN` set.
 
 The suite runs entirely in a sandbox: no network, no writes to real install paths.
 
+The root installer has its own offline suite, run under both shells:
+
+```bash
+/bin/bash examples/local-auto-update/test-install.sh
+bash examples/local-auto-update/test-install.sh
+```
+
+It runs the real installer in a sandbox `HOME` with `curl`, `gh`, `launchctl`, `id` and `uname`
+stubbed, and covers the root and Git Bash refusals, the SHA-pinned fetch, the config, the
+settings.json merge (missing, empty, unrelated hooks, a stale Calico entry, a symlinked file,
+non-ASCII, a BOM, strict parsing, a change between read and rename, and the `0600` backup), the
+launchd bootout and bootstrap handling, Linux, and uninstall.
+
 ## Windows
 
 `update.ps1` is the Windows counterpart. It runs under PowerShell 7 and Windows
@@ -364,6 +384,15 @@ uses a `gh.cmd` stub on `PATH`, and points `USERPROFILE` at a sandbox under
 - keeping the token out of the hook child's command line and out of the log
 
 ## Uninstall
+
+If the root installer set it up, use its `--uninstall` mode; it removes the hook entry, the timer,
+and everything below, and nothing else:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.sh | bash -s -- --uninstall
+```
+
+By hand:
 
 ```bash
 # Remove the hook entry from ~/.claude/settings.json, then:
