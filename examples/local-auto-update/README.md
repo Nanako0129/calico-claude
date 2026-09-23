@@ -254,7 +254,7 @@ grep -E 'Attestation verified|gh unavailable' ~/Library/Logs/calico-auto-update.
 bash examples/local-auto-update/test-update.sh
 ```
 
-79 assertions, offline: platform detection, the checksum gate (tampered, absent,
+Offline checks cover platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
 throttling, lock behaviour (a young lock blocks; an aged one is ignored but

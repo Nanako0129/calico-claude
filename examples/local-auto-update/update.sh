@@ -801,7 +801,7 @@ main() {
     --check) do_check ;;
     *)
       cat >&2 <<EOF
-Usage: $0 [--hook|--run|--force|--check]
+Usage: $0 [--hook|--run|--unattended-run|--force|--check]
 
   --hook   Throttled SessionStart entry point (spawns detached --unattended-run, never blocks).
   --unattended-run  --run for the hook and the launchd agent: repo from the config file only.
