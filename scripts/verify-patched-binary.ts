@@ -758,7 +758,11 @@ const CHECKS: Check[] = [
         `(${identifier})\\(${escapeRegExp(dispatchRecordLocal)}${dispatchArguments}\\)`,
         "g"
       );
-      const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
+      // 2.1.281's `En(fe,r)` env re-apply calls also take the record first;
+      // only calls to the awaited dispatch callee count, matching the patcher.
+      const directDispatches = [...workerSegment.matchAll(directDispatchPattern)].filter(
+        (match) => match[1] === awaitedDispatches[0]?.[2]
+      );
       if (
         awaitedDispatches.length !== 1 ||
         directDispatches.length !== 1 ||
@@ -1304,9 +1308,17 @@ const CHECKS: Check[] = [
         `for\\(let (${identifier}) of (${identifier})\\)if\\(${terminalCommit},(?:[^()]|\\([^()]*\\))*\\)(?:[^;{}]|\\{[^{}]*\\})*;`,
         "g"
       );
+      // 2.1.281's block form: usage and stop_reason lead the `if` head, the
+      // commit follows them, and the stop_details write became the `if` body.
+      // Groups line up with the two forms above (5 is the raw event).
+      const terminalBlockPattern = new RegExp(
+        `for\\(let (${identifier}) of (${identifier})\\)\\{if\\(\\1\\.message\\.usage=(${identifier}),\\1\\.message\\.stop_reason=(${identifier}),\\4!=null&&!__calicoUsageIsExactAllZero\\((${identifier})\\.usage\\)&&__calicoUsageHasAccountingSignal\\(\\3\\)&&\\(\\1\\.__calicoUsageState\\.committed=!0,\\1\\.__calicoUsageState\\.usage=\\3\\),(?:[^()]|\\([^()]*\\))*\\)\\1\\.message\\.stop_details=\\5\\.delta\\.stop_details\\?\\?null;(?:[^{}]|\\{[^{}]*\\})*\\}`,
+        "g"
+      );
       const terminalMatches = [
         ...content.matchAll(terminalStatementPattern),
         ...content.matchAll(terminalIfPattern),
+        ...content.matchAll(terminalBlockPattern),
       ];
       if (terminalMatches.length !== 1) {
         return `expected 1 semantic terminal commit, found ${terminalMatches.length}`;
