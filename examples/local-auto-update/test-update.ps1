@@ -375,6 +375,13 @@ class P { static int Main(string[] a) {
   $rc = Invoke-Up 'run'
   Check 'a matching record keeps its rank' ($rc -eq 0 -and (Get-Sha $L) -eq $before -and $CalicoStub.Downloads.Count -eq 0) "rc=$rc"
 
+  Reset-Case 'recorded launcher not patched'
+  Set-Installed '2.1.280 (Claude Code)\n' $Tag280
+  Add-Release $Tag280 $Art280b
+  $rc = Invoke-Up 'run'
+  Check 'reinstalls the patched build' ($rc -eq 0 -and (Get-Sha $L) -eq (Get-Sha $Art280b) -and (Get-RecordTag) -eq $Tag280) "rc=$rc"
+  Check 'says it is not patched' ((Read-Log).Contains('does not report a patched version'))
+
   Reset-Case 'launcher without record'
   Set-Installed $Out279 '' -NoRecord
   $before = Get-Sha $L
@@ -476,14 +483,23 @@ class P { static int Main(string[] a) {
   $deadline = (Get-Date).AddSeconds(30)
   while (-not (Test-Path -LiteralPath $ready) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
   Check 'holder took the mutex' (Test-Path -LiteralPath $ready)
+  # The holder's own staging file and aside: a run that sweeps before it owns
+  # the mutex would delete files another update is still using.
+  New-Item -ItemType Directory -Force -Path $Bin | Out-Null
+  $theirStaging = Join-Path $Bin 'calico-claude.exe.calico-new.holder.exe'
+  $theirAside = Join-Path $Bin 'calico-claude.exe.calico-old.1790000000000'
+  [IO.File]::WriteAllText($theirStaging, 'in-flight staging')
+  [IO.File]::WriteAllText($theirAside, 'in-flight aside')
   Add-Release $Tag280 $Art280
   $rc = Invoke-Up 'run'
   Check 'exit 0' ($rc -eq 0) "rc=$rc"
   Check 'blocked before any work' ($CalicoStub.Api.Count -eq 0 -and -not (Test-Path -LiteralPath $L))
   Check 'says another update runs' ((Read-Log).Contains('Another update is already in progress'))
+  Check "left the holder's staging and aside alone" ((Read-Text $theirStaging) -eq 'in-flight staging' -and (Read-Text $theirAside) -eq 'in-flight aside') ((Get-BinNames) -join ',')
   Stop-Holder $holder
   $rc = Invoke-Up 'run'
   Check 'abandoned mutex is taken over' ($rc -eq 0 -and (Test-Path -LiteralPath $L)) "rc=$rc"
+  Check 'stale files swept once the mutex is owned' (((Get-BinNames) -join ',') -eq 'calico-claude.exe') ((Get-BinNames) -join ',')
 
   # --- Housekeeping -------------------------------------------------------------
   Reset-Case 'aside sweep'
