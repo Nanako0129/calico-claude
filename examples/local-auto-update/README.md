@@ -12,6 +12,10 @@ The design is deliberately side-by-side:
 Point your launcher (remora's `runtime.claude_binary`, a shell alias, an editor
 setting) at the Calico name; leave `claude` alone.
 
+On Windows, use `update.ps1` instead; see [Windows](#windows). It follows the
+same rules, but the launcher is a copy rather than a symlink, so several
+mechanisms differ.
+
 ## What it does
 
 ```
@@ -282,6 +286,83 @@ its first request for anyone without `GH_TOKEN` set.
 
 The suite runs entirely in a sandbox: no network, no writes to real install paths.
 
+## Windows
+
+`update.ps1` is the Windows counterpart. It runs under PowerShell 7 and Windows
+PowerShell 5.1, and it is not wired to anything yet: this section covers running
+it by hand. Hook and scheduled-task wiring are not part of this example yet.
+
+| Path | Holds |
+| --- | --- |
+| `%USERPROFILE%\.local\bin\calico-claude.exe` | The launcher: a **copy** of the verified build, not a link |
+| `%USERPROFILE%\.local\share\calico-claude\versions\<X.Y.Z>` | Kept copies (newest `CALICO_KEEP_VERSIONS`, default 3) |
+| `%USERPROFILE%\.claude\calico\` | `update.log`, `last-check`, `installed-tag`, and `config` (`repo=<owner>/<name>`) |
+
+The official `claude.exe` and `%USERPROFILE%\.local\share\claude` are never
+touched, and neither is Anthropic's own `claude.exe.old.*`.
+
+```powershell
+$u = "$env:USERPROFILE\.claude\calico\update.ps1"
+New-Item -ItemType Directory -Force (Split-Path $u) | Out-Null
+Copy-Item examples\local-auto-update\update.ps1 $u
+powershell -NoProfile -ExecutionPolicy Bypass -File $u -Mode check
+powershell -NoProfile -ExecutionPolicy Bypass -File $u -Mode run
+& "$env:USERPROFILE\.local\bin\calico-claude.exe" --version   # expect: <version> (Claude Code) / (patched)
+```
+
+| Mode | Effect |
+| --- | --- |
+| `-Mode hook` | Throttled; inside the window it exits 0. Otherwise it stamps `last-check` and starts a hidden, detached `-Mode unattended-run`, then exits 0. |
+| `-Mode unattended-run` | `run` with the repo from `config` only (absent or malformed means `Nanako0129/calico-claude`) and every path from `USERPROFILE`; `CALICO_REPO`, the `CALICO_*` path overrides, `GH_HOST` and `GH_REPO` are ignored. |
+| `-Mode run` / `force` / `check` | As in `update.sh`. They honour `CALICO_REPO`, `CALICO_BIN_LINK` (the launcher path), `CALICO_VERSIONS_DIR` and `CALICO_STATE_DIR`. |
+| `-PinTag <tag>` | `run`/`force` only: install exactly that published tag, skipping the version gate but no verification. Refused in `hook`, `unattended-run` and `check`. |
+
+What differs from `update.sh`, and why:
+
+| Property | Why |
+| --- | --- |
+| Ownership comes from a **record**, not a link target | A copied launcher carries no sign of who put it there. `installed-tag` holds the tag and the SHA256 of the launcher this script installed. When there is no launcher, the script installs one. If a launcher exists but has no record, or its hash differs from the recorded one, the script **refuses** and leaves the file byte-for-byte unchanged. If the hash matches, the installed version is whatever the launcher's own `--version` prints (it must include `(patched)`). A record naming another version has an unknown rebuild rank, so the latest rebuild is reinstalled. |
+| The swap is **two renames** in one directory | Windows cannot overwrite a running `.exe`, but it can rename one. The build is downloaded and verified as a uniquely named staging file next to the launcher. Then the launcher is renamed to `calico-claude.exe.calico-old.<ms>`, and the staging file is renamed to the launcher. If either rename fails, the old launcher and the record are put back. Open sessions keep running the old build from the aside. |
+| A **named mutex** replaces the lock directory | `Local\calico-claude-update`. A second run exits at once. If a run is killed, Windows marks its mutex abandoned, and the next run takes it over, so no stale lock is possible. Old asides are removed only while the mutex is held, and an aside still in use is left for a later run. |
+| gh success is its **exit code** | Windows PowerShell 5.1 turns any stderr line of a redirected native command into an error. Every native call runs under a local `$ErrorActionPreference = 'Continue'`, and success is decided by the exit code alone. |
+| Checksums are compared **exactly** | Each `checksums.txt` line is split on whitespace, and a leading `*` is stripped from the name. The line is used only if that name equals `claude.native.windows.patched.exe`, with no pattern matching; exactly one such line must exist. |
+
+**Without `gh`, attestation is skipped.** The run logs `WARNING: gh not found`,
+or `gh is not authenticated`, and installs on the checksum alone. As explained
+under [Requirements](#requirements), the checksum is published by whoever
+publishes the release, so a compromised release is installed in that case. This
+is an accepted risk; install and authenticate gh to close it. When gh is
+present, attestation is pinned exactly as in `update.sh`. A gh that reports
+`unknown flag` fails the install with a message saying so.
+
+The API token is taken from `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth
+token`. It goes only into the releases API request header. It is never sent
+with asset downloads, never placed on a child process's command line, and never
+written to the log. The hook's child derives the token again itself.
+
+Verify with the offline suite. It needs Windows, because it builds a stand-in
+`claude.exe` with the `csc.exe` that ships with the .NET Framework.
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File examples\local-auto-update\test-update.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File examples\local-auto-update\test-update.ps1
+```
+
+It stubs the network by shadowing `Invoke-RestMethod` and `Invoke-WebRequest`,
+uses a `gh.cmd` stub on `PATH`, and points `USERPROFILE` at a sandbox under
+`%TEMP%`. It covers:
+
+- the checksum, version and `(patched)` gates, including decoy checksum lines
+- skipping drafts and prereleases
+- the record rules
+- gh exit-code handling and the attestation arguments
+- a launcher held by a running process
+- rollback after a failed rename, and after a partial download
+- a second run blocked by the mutex, and a killed holder's mutex taken over
+- the aside sweep, and version pruning
+- the unattended settings, and `-PinTag` refusals
+- keeping the token out of the hook child's command line and out of the log
+
 ## Uninstall
 
 ```bash
@@ -289,4 +370,11 @@ The suite runs entirely in a sandbox: no network, no writes to real install path
 rm -rf ~/.claude/calico
 rm -f ~/.local/bin/calico-claude
 rm -rf ~/.local/share/calico-claude
+```
+
+On Windows:
+
+```powershell
+Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\calico", "$env:USERPROFILE\.local\share\calico-claude"
+Remove-Item -Force "$env:USERPROFILE\.local\bin\calico-claude.exe*"
 ```
