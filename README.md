@@ -71,7 +71,94 @@ Each of these changes nothing at all unless its trigger is present in the proces
 
 ## Install
 
-### Prerequisite
+### macOS and Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.sh | bash
+```
+
+This installs Calico **side by side** as `calico-claude` and keeps it updated. The official `claude`
+is never written: it stays under Anthropic's own installer and updater, and the two never touch each
+other's files. Run Calico by the new name, or point a launcher at it (remora's
+`runtime.claude_binary`, a shell alias):
+
+```toml
+[runtime]
+claude_binary = "/absolute/path/to/.local/bin/calico-claude"
+```
+
+What the installer creates, all under your home directory:
+
+| Path | What it is |
+|---|---|
+| `~/.local/bin/calico-claude` | The launcher, a symlink to the current build |
+| `~/.local/share/calico-claude/versions/` | Installed builds (the newest three are kept) |
+| `~/.claude/calico/update.sh` | The updater ([`examples/local-auto-update/`](./examples/local-auto-update/)) |
+| `~/.claude/calico/config` | `repo=<owner>/<name>`, the only place the hook and the timer read the repo from |
+| `~/.claude/calico/source-commit` | The commit the installer and updater were fetched from |
+| `~/.claude/settings.json` | One `SessionStart` hook entry, added to what is already there |
+| `~/.claude/settings.json.calico-bak` | The file as it was before the hook was added (mode `0600`) |
+| `~/Library/LaunchAgents/com.calico.auto-update.plist` | macOS only: the hourly timer, loaded as `gui/<uid>/com.calico.auto-update` |
+| `~/Library/Logs/calico-auto-update.log` | macOS only: the timer's log |
+
+The installer prints this list with your paths when it finishes, together with the exact uninstall
+command.
+
+How it runs:
+
+1. It refuses to run as root or under `sudo`, and under Git Bash on Windows.
+2. It resolves `main` to one commit SHA with a single GitHub API call, then downloads the updater
+   (and on macOS the launchd template) from `raw.githubusercontent.com/<repo>/<sha>/`. Every file
+   comes from that one commit, even if `main` moves during the run.
+3. It writes the config and the updater, then runs the updater once with `--force`, which downloads
+   the latest release for your platform and verifies it before installing (see
+   [Keeping it updated](#keeping-it-updated)).
+4. It adds the `SessionStart` hook to `~/.claude/settings.json`, and on macOS loads the launchd timer.
+
+To track a fork, set `PATCH_CLAUDE_REPO` (or `CALICO_REPO`) to `<owner>/<name>` when you run the
+installer. It is written to `~/.claude/calico/config`; the hook and the timer ignore the variable
+itself.
+
+The installer makes one GitHub API call. It takes the first credential available, in this order:
+`GITHUB_TOKEN`, then `GH_TOKEN`, then an authenticated `gh` (`gh auth token`). With none, the request
+is anonymous and shares GitHub's limit of 60 an hour per address, which a VPN or office NAT can
+exhaust for everyone behind it. The token reaches `curl` on stdin rather than on its command line,
+where other local users could read it through `ps`.
+
+Requirements: `bash`, `curl`, `python3`, and `shasum` (macOS) or `sha256sum` (Linux). `gh` is optional
+but recommended; see [Keeping it updated](#keeping-it-updated) for what changes without it.
+
+> **Prefer not to pipe a script from the internet?** Use the manual path below. The binaries are built
+> in GitHub Actions and the patcher is readable and modifiable, so convenience is the only reason to
+> trust this repo's release builds over your own.
+
+#### Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.sh | bash -s -- --uninstall
+```
+
+The installer prints the same command pinned to the commit it installed from. It removes only what
+the installer created: the hook entry (other hooks and settings are left as they were), the launchd
+timer and its plist and log, the launcher, the installed builds, and `~/.claude/calico/`. The
+official `claude` is not touched, and `settings.json.calico-bak` is left in place.
+
+#### Restoring the official build after an earlier in-place install
+
+Earlier versions of this installer wrote the Calico build over `claude` itself. The current one does
+not touch it, but it does check: if `claude --version` prints `(patched)`, it says so. To put the
+official build back, run Anthropic's installer, which downloads the official build and runs its own
+`install`, then check that `claude --version` no longer prints `(patched)`:
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+claude --version
+```
+
+### Windows
+
+Unchanged for now: the PowerShell installer still installs **in place**, over the `claude.exe` that
+Anthropic's updater manages. A side-by-side installer like the macOS/Linux one is planned.
 
 Calico patches the **native** build. If Claude Code came from npm, replace it first:
 
@@ -81,34 +168,17 @@ curl -fsSL https://claude.ai/install.sh | bash
 claude --version
 ```
 
-### Automatic
-
-The installer detects OS and CPU architecture and downloads the matching patched release for that
-version and platform. When an immutable rebuild such as `-2` exists, it selects the highest published
-rebuild suffix rather than overwriting or silently using the older artifact.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.sh | bash
-```
-
 ```powershell
 irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.ps1 | iex
 ```
 
-The installers replace the `claude` binary that Anthropic's updater manages. Calico builds never run
-that updater themselves (`disable-official-updater`), so an installed build stays patched but does
-not upgrade itself either. See [Keeping it updated](#keeping-it-updated) for how to upgrade.
-
-Listing releases uses the GitHub API. The installers take the first credential available, in this
-order: `GITHUB_TOKEN`, then `GH_TOKEN`, then an authenticated `gh` (`gh auth token`). With none, the
-request is anonymous and shares GitHub's limit of 60 an hour per address, which a VPN or office NAT
-can exhaust for everyone behind it. The shell installer hands the token to `curl` on stdin rather than
-on its command line, where other local users could read it through `ps`; the PowerShell installer
-makes the request in-process and starts no subprocess for it.
-
-> **Prefer not to pipe a script from the internet?** Use the manual path below. The binaries are built
-> in GitHub Actions and the patcher is readable and modifiable, so convenience is the only reason to
-> trust this repo's release builds over your own.
+It detects the CPU architecture and downloads the patched release matching the installed Claude Code
+version. When an immutable rebuild such as `-2` exists, it selects the highest published rebuild
+suffix. Calico builds never run Anthropic's updater themselves (`disable-official-updater`), so an
+installed build stays patched but does not upgrade itself either; see
+[Keeping it updated](#keeping-it-updated). Listing releases uses the GitHub API with the same
+credential order as above; the PowerShell installer makes the request in-process and starts no
+subprocess for it.
 
 ### Manual, from releases
 
@@ -120,22 +190,26 @@ makes the request in-process and starts no subprocess for it.
 | Windows x64 | `win32-x64` | `claude.native.windows.patched.exe` |
 | Windows arm64 | `win32-arm64` | `claude.native.windows.patched.exe` |
 
-Download the asset from the release matching your installed Claude version, then:
+On macOS and Linux, install it under its own name so the official `claude` stays under Anthropic's
+updater:
 
 ```bash
 # Linux
-chmod +x ./claude.native.patched
-sudo mv ./claude.native.patched "$(which claude)"
-claude --version
+install -m 0755 ./claude.native.patched ~/.local/bin/calico-claude
+~/.local/bin/calico-claude --version
 ```
 
 ```bash
 # macOS
-chmod +x ./claude.native.macos.patched
-sudo mv ./claude.native.macos.patched "$(which claude)"
-xattr -dr com.apple.quarantine "$(which claude)"
-claude --version
+install -m 0755 ./claude.native.macos.patched ~/.local/bin/calico-claude
+xattr -d com.apple.quarantine ~/.local/bin/calico-claude 2>/dev/null
+~/.local/bin/calico-claude --version
 ```
+
+A binary installed this way does not update itself; the updater in
+[`examples/local-auto-update/`](./examples/local-auto-update/) can take it over.
+
+On Windows, download the asset from the release matching your installed Claude version, then:
 
 ```powershell
 # Windows
@@ -151,51 +225,61 @@ build until restarted; delete the `claude.exe.calico-old.*` file once they have 
 fails, delete whatever it left at `$target` and move the `.calico-old.*` file back to that name. The
 installer does all of this itself, including removing leftovers from earlier runs.
 
-### Side by side with official Claude
-
-Installing under a separate name avoids updater contention and makes rollback explicit:
-
-```bash
-install -m 0755 ./claude.native.patched ~/.local/bin/calico-claude
-~/.local/bin/calico-claude --version
-```
-
-```toml
-[runtime]
-claude_binary = "/absolute/path/to/.local/bin/calico-claude"
-```
-
-Leave `~/.local/bin/claude` under Anthropic's updater. Anthropic's updater does not touch a
-differently named binary, which is exactly why the Calico one never moves on its own.
-
 ---
 
 ## Keeping it updated
 
-The official updater can install a new version and repoint the `claude` symlink at an unpatched
-binary. The renamed Calico binary is immune to that, but it also stops receiving updates.
+### macOS and Linux
 
-Calico builds never run Anthropic's embedded updater: neither in the background nor through
-`claude update`, which prints that it is a Calico build and installs nothing. `claude install` is
-disabled the same way, because it would put the official build at the official location, over a
-Calico build installed there. Plugin and marketplace auto-update are unaffected. So a build installed over `claude` is no longer reverted by its own
-sessions, but it also does not upgrade itself. The installers pick the Calico release matching the
-version `claude --version` reports, so re-running one on its own reinstalls the same version. To move
-to a newer Claude Code, install it first with Anthropic's installer, then re-run the Calico installer.
+The installer wires this up; there is nothing to do by hand. Two triggers run the updater:
+
+| Trigger | Mode | When |
+|---|---|---|
+| `SessionStart` hook in `~/.claude/settings.json` | `--hook` | When a Claude Code session starts, at most once an hour. It starts a detached update and returns at once, so it never delays startup. |
+| launchd timer (macOS only) | `--unattended-run` | Every hour, and once when it is loaded. Without it, a release published while you are not starting sessions waits until you next do. |
+
+Linux gets the hook only.
+
+The hook entry the installer writes is:
+
+```json
+{"type": "command", "command": "/bin/bash \"/Users/you/.claude/calico/update.sh\" --hook", "timeout": 10, "async": true}
+```
+
+Re-running the installer updates that entry in place rather than adding a second one; an entry from
+the earlier manual setup (`bash ~/.claude/calico/update.sh --hook`) is replaced the same way.
+
+Before anything is installed, the updater verifies the release checksum and, when an authenticated
+`gh` is available, the build provenance attestation, pinned to this repo's release workflow on `main`.
+The downloaded build is then run and must report the exact expected version plus `(patched)`; only
+after that does the launcher symlink move. A build that fails leaves the launcher untouched, so there
+is nothing to roll back. An updated build is picked up by the next session, not the running one.
+
+> **Without `gh`, provenance is not checked.** When `gh` is missing or not logged in, the updater logs
+> `WARNING: gh unavailable or not authenticated; skipping attestation verification` and installs on
+> the checksum alone. The checksum is published in the same release as the build, so anyone able to
+> publish a release can publish a matching checksum with it: in that configuration a compromised
+> release is installed. This is an accepted risk, not an oversight. Install `gh` and run
+> `gh auth login` to close it. The launchd timer starts with a clean environment, so for the timer
+> the login must be stored by `gh auth login`; a `GH_TOKEN` exported in your shell does not reach it.
+
+The updater's own reference, including its logs and every mode, is
+[`examples/local-auto-update/README.md`](./examples/local-auto-update/README.md).
+
+### Windows
+
+Unchanged for now. Calico builds never run Anthropic's embedded updater: neither in the background
+nor through `claude update`, which prints that it is a Calico build and installs nothing.
+`claude install` is disabled the same way, because it would put the official build at the official
+location, over a Calico build installed there. Plugin and marketplace auto-update are unaffected. So
+a build installed over `claude.exe` is no longer reverted by its own sessions, but it also does not
+upgrade itself. The PowerShell installer picks the Calico release matching the version
+`claude --version` reports, so re-running it on its own reinstalls the same version. To move to a
+newer Claude Code, install it first with Anthropic's installer, then re-run the Calico installer.
 Sessions that were already running before the install still run the previous build, and if that
-build is an official one its updater can still replace yours, so restart them after installing. Or
-switch to the side-by-side install and the updater below.
-
-[`examples/local-auto-update/`](./examples/local-auto-update/) closes that gap: a SessionStart hook
-that checks at most hourly and never blocks startup, plus an optional launchd timer for macOS —
-without one, a release published while you are not starting sessions waits until you next do.
-Before anything is installed it verifies the
-release checksum, and — when an authenticated `gh` is available — the build provenance attestation;
-without `gh` it logs a warning and proceeds on the checksum alone, so provenance is not a guarantee
-in that configuration. The downloaded build is then run and must report the exact expected version
-plus `(patched)`; only after that does the launcher symlink move. A build that fails leaves the
-launcher untouched, so there is nothing to roll back. It also reinstalls the patched build if the
-official updater ever replaces it.
+build is an official one its updater can still replace yours, so restart them after installing.
+`update.ps1` in [`examples/local-auto-update/`](./examples/local-auto-update/#windows) can maintain a
+side-by-side `calico-claude.exe` by hand.
 
 ---
 
@@ -502,11 +586,10 @@ compatible active-turn bridges.
 
 ### Will Claude Code updates remove the patches?
 
-Not from Calico's own sessions: Calico builds never run Anthropic's updater. An official Claude
-Code session still can. If Calico is installed over `claude` itself, a session of the official build
-that was already open, or any other official build on the machine, can install a new version over it.
-The side-by-side install is not affected: [side-by-side install](#side-by-side-with-official-claude)
-plus [`examples/local-auto-update/`](./examples/local-auto-update/).
+No. On macOS and Linux Calico is installed as `calico-claude`, a name Anthropic's updater does not
+manage, and the Calico updater never writes `claude`. On Windows the installer still writes over
+`claude.exe`: Calico builds never run Anthropic's updater, but a session of an official build that
+was already open, or any other official build on the machine, can install a new version over it.
 
 ### Why can the startup banner say Calico while a newer adapter is missing?
 
