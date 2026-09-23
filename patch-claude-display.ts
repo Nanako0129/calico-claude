@@ -2908,8 +2908,10 @@ function patchCustomContextWindows(content) {
   // platform builds of the same version (arm64: `let n=Math.min(...),r=...`
   // → `return o-n`; elsewhere `let r=Math.min(...),n=...` → `return o-r`), so
   // capture the window and reserve locals instead of pinning `o`/`r`.
+  // 2.1.281 passes a `{model,contextWindow,canonical}` record instead of the
+  // bare model, so the reserve reads `Math.min(f(e.model),…)`; accept both.
   const effectiveWindowPattern =
-    /(function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{let ([A-Za-z_$][\w$]*)=Math\.min\([A-Za-z_$][\w$]*\(\2\),[A-Za-z_$][\w$]*\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\)\?\3:void 0,\{window:([A-Za-z_$][\w$]*)\}=[A-Za-z_$][\w$]*\(\2,\5\);return )(\6-\4)(\})/g;
+    /(function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{let ([A-Za-z_$][\w$]*)=Math\.min\([A-Za-z_$][\w$]*\(\2(?:\.model)?\),[A-Za-z_$][\w$]*\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\)\?\3:void 0,\{window:([A-Za-z_$][\w$]*)\}=[A-Za-z_$][\w$]*\(\2,\5\);return )(\6-\4)(\})/g;
   output = output.replace(
     effectiveWindowPattern,
     (full, prefix, modelParam, headersParam, reserveLocal, ctxLocal, windowLocal, originalReturn, suffix) => {
@@ -3448,6 +3450,20 @@ function patchStatuslineCommittedUsage(content) {
     `for\\(let (${identifierPattern}) of (${identifierPattern})\\)if\\(\\1\\.message\\.usage=(${identifierPattern}),\\1\\.message\\.stop_reason=(${identifierPattern}),\\1\\.message\\.stop_details=(${identifierPattern})\\.delta\\.stop_details\\?\\?null,((?:[^()]|\\([^()]*\\))*)\\)((?:[^;{}]|\\{[^{}]*\\})*);`,
     "g"
   );
+  // 2.1.281 gave the loop a block and made the stop_details write conditional:
+  //
+  //   for(let Ll of Su){if(Ll.message.usage=Da,Ll.message.stop_reason=ec,
+  //     gl!==null||ec===null)Ll.message.stop_details=Ys.delta.stop_details??null;
+  //     if(ed!==void 0)Ll.message.resumable=ed}
+  //
+  // usage and stop_reason still lead the `if` head, so the commit goes in the
+  // same place as for the `if` form: one more comma operand ahead of upstream's
+  // condition, with the condition, the stop_details write and the rest of the
+  // block re-emitted verbatim.
+  const terminalBlockPattern = new RegExp(
+    `for\\(let (${identifierPattern}) of (${identifierPattern})\\)\\{if\\(\\1\\.message\\.usage=(${identifierPattern}),\\1\\.message\\.stop_reason=(${identifierPattern}),((?:[^()]|\\([^()]*\\))*)\\)\\1\\.message\\.stop_details=(${identifierPattern})\\.delta\\.stop_details\\?\\?null;((?:[^{}]|\\{[^{}]*\\})*)\\}`,
+    "g"
+  );
   const cloneSyncPattern = new RegExp(
     `for\\(let\\{src:(${identifierPattern}),dst:(${identifierPattern})\\}of (${identifierPattern})\\)\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details;`,
     "g"
@@ -3509,14 +3525,26 @@ function patchStatuslineCommittedUsage(content) {
     ...[...content.matchAll(terminalStatementPattern)].map((match) => ({
       match,
       pattern: terminalStatementPattern,
+      rawEvent: match[5],
       condition: null,
       body: null,
+      block: false,
     })),
     ...[...content.matchAll(terminalIfPattern)].map((match) => ({
       match,
       pattern: terminalIfPattern,
+      rawEvent: match[5],
       condition: match[6],
       body: match[7],
+      block: false,
+    })),
+    ...[...content.matchAll(terminalBlockPattern)].map((match) => ({
+      match,
+      pattern: terminalBlockPattern,
+      rawEvent: match[6],
+      condition: match[5],
+      body: match[7],
+      block: true,
     })),
   ];
   const terminalForm = terminalMatches[0];
@@ -3527,7 +3555,7 @@ function patchStatuslineCommittedUsage(content) {
   const terminalArray = terminalMatch?.[2];
   const terminalUsage = terminalMatch?.[3];
   const terminalStop = terminalMatch?.[4];
-  const terminalRawEvent = terminalMatch?.[5];
+  const terminalRawEvent = terminalForm?.rawEvent;
   // 2.1.261 folded the aggregation assignment into the head of an `if`, as the
   // first operand of a comma expression:
   //
@@ -3756,8 +3784,9 @@ function patchStatuslineCommittedUsage(content) {
   // The `if` form's condition and body are upstream's, re-emitted verbatim; the
   // commit goes in as one more comma operand ahead of the condition so the test
   // still yields what upstream wrote.
-  const terminalReplacement =
-    terminalForm.condition === null
+  const terminalReplacement = terminalForm.block
+    ? `for(let ${terminalItem} of ${terminalArray}){if(${terminalItem}.message.usage=${terminalUsage},${terminalItem}.message.stop_reason=${terminalStop},${terminalCommit},${terminalForm.condition})${terminalItem}.message.stop_details=${terminalRawEvent}.delta.stop_details??null;${terminalForm.body}}`
+    : terminalForm.condition === null
       ? `for(let ${terminalItem} of ${terminalArray})${terminalAssignments},${terminalCommit};`
       : `for(let ${terminalItem} of ${terminalArray})if(${terminalAssignments},${terminalCommit},${terminalForm.condition})${terminalForm.body};`;
   const cloneReplacements = cloneMatches.map(
@@ -4425,7 +4454,12 @@ function patchGatewayFastMode(content) {
     "(" + identifier + ")\\(" + escapedDispatchRecordLocal + dispatchArguments + "\\)",
     "g"
   );
-  const directDispatches = [...workerSegment.matchAll(directDispatchPattern)];
+  // 2.1.281 added `En(fe,r)` calls (re-applying env after `reattachEnvDropped`)
+  // that also take the record as their first argument. Only calls to the
+  // awaited dispatch callee identify the dispatch, so count those.
+  const directDispatches = [...workerSegment.matchAll(directDispatchPattern)].filter(
+    (match) => match[1] === awaitedDispatches[0]?.[2]
+  );
   if (
     awaitedDispatches.length !== 1 ||
     directDispatches.length !== 1 ||

@@ -405,6 +405,22 @@ test("custom context window matches swapped arm64 effective-window locals", () =
   );
 });
 
+// 2.1.281 passes a `{model,contextWindow,canonical}` record, so the reserve
+// reads `Math.min(f(e.model),…)`. Missing it left the gate unpatched while the
+// module still reported 3 patched, and only the binary verifier noticed.
+test("custom context window matches the 2.1.281 record-taking effective window", () => {
+  const source = customContextFixture.replace(
+    "let r=Math.min(resolve(e),t)",
+    "let r=Math.min(resolve(e.model),t)"
+  );
+  assert.notEqual(source, customContextFixture);
+  const result = patchCustomContextWindows(source);
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  assert.match(result.content, /CALICO_MODEL_CONTEXT_WINDOWS\?o:o-r/);
+  assert.equal(evaluatePatchModule("custom-context-window", result.content), null);
+});
+
 test("matches renamed wrapper, terminal, selector, and clone locals", () => {
   const renamed = renamedCommittedUsageFixture();
   const { context, result } = loadCommittedFixture(renamed);
@@ -956,6 +972,44 @@ test("statusline committed usage patch rejects a terminal condition tail without
 
   assert.equal(result.patched, 0);
   assert.equal(result.content, variant);
+});
+
+// 2.1.281 gave the loop a block and made the stop_details write the `if` body:
+//
+//   for(let Ll of Su){if(Ll.message.usage=Da,Ll.message.stop_reason=ec,
+//     gl!==null||ec===null)Ll.message.stop_details=Ys.delta.stop_details??null;
+//     if(ed!==void 0)Ll.message.resumable=ed}
+//
+// `ge` is a real local of the fixture (null), so the variant also runs.
+const TERMINAL_BLOCK =
+  "for(let Ou of _r){if(Ou.message.usage=pn,Ou.message.stop_reason=Se,ge!==null||Se===null)Ou.message.stop_details=ar.delta.stop_details??null;if(ge!==null)Ou.message.resumable=ge}";
+
+test("statusline committed usage patch accepts the 2.1.281 block-form terminal loop", () => {
+  const variant = committedUsageFixture.replace(TERMINAL_STATEMENT, TERMINAL_BLOCK);
+  assert.notEqual(variant, committedUsageFixture);
+  const result = patchStatuslineCommittedUsage(variant);
+
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+  // Upstream's condition, stop_details body and trailing statement survive,
+  // with the commit ahead of the condition.
+  assert.ok(
+    result.content.includes(
+      "Ou.__calicoUsageState.usage=pn),ge!==null||Se===null)Ou.message.stop_details=ar.delta.stop_details??null;if(ge!==null)Ou.message.resumable=ge}"
+    )
+  );
+});
+
+test("the 2.1.281 block-form loop still commits terminal usage at runtime", () => {
+  const variant = committedUsageFixture.replace(TERMINAL_STATEMENT, TERMINAL_BLOCK);
+  const { context } = loadCommittedFixture(variant);
+  const completed = context.query(usage(333, 44), "end_turn");
+  const provisional = context.query(usage(0, 0), null);
+
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
+  assert.equal(provisional[0].__calicoUsageState.committed, false);
 });
 
 // 2.1.273 moved the reducer's usage-object construction into a shared

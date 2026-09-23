@@ -733,6 +733,33 @@ test("tolerates a dispatch record local containing a regex metacharacter", async
   }
 });
 
+// 2.1.281 re-applies env after a dropped reattach with calls that also take the
+// dispatch record first (`if(X.reattachEnvDropped!==void 0)En(fe,r)`). They are
+// not the dispatch; a second call to the awaited callee still is, and stays
+// rejected by the duplicate-dispatch fixture above.
+test("accepts 2.1.281 env re-apply calls that take the dispatch record", async (t) => {
+  const source = fixture.replace(
+    "]);return Q}",
+    "]);if(Q.reattachEnvDropped!==void 0)ren(U,n);if(Q.ok===!1)ren(U,n);return Q}"
+  );
+  assert.notEqual(source, fixture);
+
+  const result = patchGatewayFastMode(source);
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+  assert.equal(evaluatePatchModule("gateway-fast-mode", result.content), null);
+
+  const { context } = runtime(t, {
+    source,
+    env: { REMORA_ACTIVE: "1", CLAUDE_CODE_EXTRA_BODY: "{}" },
+  });
+  const dispatch = await context.BF_(null, { BASE: "1" }, context.process.env);
+  assert.equal(
+    dispatch.env.CALICO_GATEWAY_FAST_STATE_FILE,
+    context.process.env.CALICO_GATEWAY_FAST_STATE_FILE
+  );
+});
+
 // And the dispatch still carries the state-file locator to the worker, which is
 // the whole point of patching that site — a module that reports 6 patched but
 // hands the worker nothing would satisfy every count above.
