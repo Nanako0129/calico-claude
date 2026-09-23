@@ -8,12 +8,14 @@
     <string>/bin/bash</string>
     <!-- launchd does not expand ~ or $HOME here. Substitute your own path. -->
     <string>__HOME__/.claude/calico/update.sh</string>
-    <!-- Run mode, not hook mode. Hook mode stamps the throttle file, spawns a
-         detached child through nohup, and exits 0 at once; launchd would then
-         record success for work it never waited for and cannot report on. Run
-         mode does the work in the foreground, so the exit status and the log
-         describe the actual update. -->
-    <string>--run</string>
+    <!-- Unattended run mode, not hook mode. Hook mode stamps the throttle file,
+         spawns a detached child through nohup, and exits 0 at once; launchd
+         would then record success for work it never waited for and cannot
+         report on. This mode does the work in the foreground, so the exit
+         status and the log describe the actual update. It is --run with the
+         repo read from ~/.claude/calico/config and every path derived from
+         HOME; no CALICO_* override from the environment applies. -->
+    <string>--unattended-run</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -26,14 +28,10 @@
          /opt/homebrew/bin on Apple Silicon, /usr/local/bin on Intel — so this
          entry needs no editing per machine. -->
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    <!-- launchd starts the agent with a clean environment, so every CALICO_*
-         override you set in your shell is absent here and update.sh falls back
-         to its defaults. The repo is the one that matters: left implicit, a
-         timer installed by someone tracking a fork would quietly check and
-         install from the upstream repo instead. It is written out rather than
-         left to a default so the target is visible in the installed file.
-         Add any other CALICO_* override you rely on alongside it. -->
-    <key>CALICO_REPO</key><string>Nanako0129/calico-claude</string>
+    <!-- No CALICO_REPO here. The unattended mode ignores it, so the repo is
+         set in one place that the SessionStart hook and this timer both read:
+         ~/.claude/calico/config, one line `repo=<owner>/<name>`. Without the
+         file the upstream repo is used. -->
   </dict>
   <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>

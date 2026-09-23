@@ -17,7 +17,7 @@ setting) at the Calico name; leave `claude` alone.
 ```
 SessionStart hook ──► update.sh --hook ──► throttled? ──► exit 0
                                             │
-                                            └─ spawn detached `--run`, exit 0
+                                            └─ spawn detached `--unattended-run`, exit 0
                                                      │
    GitHub releases API ── highest v<X.Y.Z>-<platform>[-<rebuild>] with our asset
                                                      │
@@ -104,7 +104,7 @@ checksum and attestation lines on your terminal instead of in a log file.
 }
 ```
 
-`--hook` reads its throttle file, spawns a detached `--run` at most once an hour,
+`--hook` reads its throttle file, spawns a detached `--unattended-run` at most once an hour,
 and returns immediately; it never blocks session startup and ignores the hook's
 stdin payload. `async: true` plus the short timeout are belt and braces.
 
@@ -135,9 +135,14 @@ home path and all mean something to one of the two layers involved. `sed` reads
 `/Users/a__HOME__b` into valid XML that `plutil` and launchd both accept — a job
 pointed at a path that does not exist, with nothing to indicate why.
 
-If you track a fork, edit `CALICO_REPO` in the plist before loading it — and add
-any other `CALICO_*` override you rely on next to it. launchd starts the agent
-with a clean environment, so what you export in your shell does not reach it.
+If you track a fork, say so in `~/.claude/calico/config`, not in the plist or your
+shell: one line, `repo=<owner>/<name>`. The hook and the timer both run in the
+unattended mode, which reads the repo from that file and ignores `CALICO_REPO`
+and the `CALICO_*` path overrides (see [Configuration](#configuration)).
+
+```bash
+printf 'repo=%s\n' your-name/calico-claude > ~/.claude/calico/config
+```
 
 `RunAtLoad` makes it run immediately, so you can read the result rather than
 assume it:
@@ -147,13 +152,13 @@ launchctl list | grep com.calico.auto-update   # second column is the last exit 
 tail ~/Library/Logs/calico-auto-update.log
 ```
 
-Four choices in that file are deliberate, and the comments say why: it calls
-`--run` rather than `--hook`, it sets `PATH`, it writes `CALICO_REPO` out
-explicitly, and it logs somewhere other than `update.log`. The middle two both
-exist because launchd hands the agent a clean environment, and both fail
-quietly: without `PATH`, `gh` is missing and every run installs on the checksum
-alone with attestation skipped; without `CALICO_REPO`, a fork's timer checks the
-upstream repo. Neither shows up as a failed job.
+Three choices in that file are deliberate, and the comments say why: it calls
+`--unattended-run` rather than `--hook`, it sets `PATH`, and it logs somewhere
+other than `update.log`. `PATH` exists because launchd hands the agent a clean
+environment, and its absence fails quietly: without it `gh` is missing and every
+run installs on the checksum alone with attestation skipped, and the job still
+exits 0. The repo is not in the plist: the unattended mode ignores `CALICO_REPO`
+and reads `~/.claude/calico/config`, the same file the hook reads.
 
 The timer does not touch the `last-check` stamp, so the SessionStart hook keeps
 its own schedule. Both can check within the same hour; the cost is one extra
@@ -166,7 +171,8 @@ deleting the plist.
 
 | Mode | Effect |
 | --- | --- |
-| `--hook` | Throttled entry point. Exits 0 immediately inside the window; otherwise stamps `last-check`, rotates the log, spawns a detached `--run`, exits 0. |
+| `--hook` | Throttled entry point. Exits 0 immediately inside the window; otherwise stamps `last-check`, rotates the log, spawns a detached `--unattended-run`, exits 0. |
+| `--unattended-run` | `--run` for the hook's child and the launchd agent. The repo comes from `~/.claude/calico/config` and every path from `HOME`; `CALICO_REPO` and the `CALICO_*` path overrides are ignored. |
 | `--run` | Update if a newer verified release exists. |
 | `--force` | Reinstall even when already up to date — skips *only* the version gate. Checksum, attestation and post-verify still run. Use after a rebuilt release at the same version. |
 | `--check` | Report installed vs latest. Changes nothing, downloads nothing. |
@@ -174,11 +180,18 @@ deleting the plist.
 ## Configuration
 
 Every path and policy knob is an environment variable with a sane default, so the
-script itself needs no editing:
+script itself needs no editing. The two unattended modes, `--hook` and
+`--unattended-run`, ignore `CALICO_REPO`, `CALICO_BIN_LINK`, `CALICO_VERSIONS_DIR`
+and `CALICO_STATE_DIR`: they inherit an environment someone else chose (a Claude
+Code session, which a project's settings can add variables to, or launchd), and
+a repo taken from there could point every later update at another repository.
+They read the repo from `~/.claude/calico/config` instead (`repo=<owner>/<name>`;
+without it, `Nanako0129/calico-claude`) and derive every path from `HOME`.
+`GH_HOST` and `GH_REPO` are dropped in those modes as well.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CALICO_REPO` | `Nanako0129/calico-claude` | Release repo to track. |
+| `CALICO_REPO` | `Nanako0129/calico-claude` | Release repo to track. Interactive modes only; the unattended modes read `~/.claude/calico/config`. |
 | `CALICO_PLATFORM` | auto-detected | Force a platform suffix (`linux-x64`, `linux-arm64`, `macos-arm64`, `win32-x64`, `win32-arm64`). |
 | `CALICO_BIN_LINK` | `~/.local/bin/calico-claude` | The managed symlink. |
 | `CALICO_VERSIONS_DIR` | `~/.local/share/calico-claude/versions` | Where builds are kept. |
@@ -198,7 +211,20 @@ left alone for a few months will quietly consume several gigabytes.
 authenticated `gh`, build provenance attestation cannot be checked and the
 script logs a warning and proceeds on the checksum alone. The checksum proves
 the file matches the release asset; the attestation proves the release asset
-came out of this repo's CI.
+came out of this repo's CI. That difference matters: `checksums.txt` is
+published in the same release as the asset, so anyone able to publish a release
+can publish a matching checksum with it. Without `gh`, a compromised release is
+installed. This is an accepted trade-off, not an oversight.
+
+The attestation is pinned to the release workflow on `main`: `gh attestation
+verify` runs with `--signer-workflow <repo>/.github/workflows/patch-claude.yml`
+and `--source-ref refs/heads/main`, so an attestation produced by another
+workflow, or from a branch, is rejected. A `gh` too old for those flags fails
+the install and says so rather than verifying without them; gh 2.97.0 has both.
+
+Drafts and prereleases are never installed. If the installed version is newer
+than every published release, the log says so instead of reporting "up to
+date".
 
 It is also what keeps the releases query off GitHub's anonymous limit, 60 an
 hour per address. Neither launchd nor the SessionStart hook exports a token, so
@@ -228,7 +254,7 @@ grep -E 'Attestation verified|gh unavailable' ~/Library/Logs/calico-auto-update.
 bash examples/local-auto-update/test-update.sh
 ```
 
-79 assertions, offline: platform detection, the checksum gate (tampered, absent,
+Offline checks cover platform detection, the checksum gate (tampered, absent,
 empty, and a decoy that only matches through an unescaped dot), pruning
 (including the rollback shape where the symlink points at an older build), hook
 throttling, lock behaviour (a young lock blocks; an aged one is ignored but
