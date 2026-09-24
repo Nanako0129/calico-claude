@@ -157,28 +157,81 @@ claude --version
 
 ### Windows
 
-Unchanged for now: the PowerShell installer still installs **in place**, over the `claude.exe` that
-Anthropic's updater manages. A side-by-side installer like the macOS/Linux one is planned.
-
-Calico patches the **native** build. If Claude Code came from npm, replace it first:
-
-```bash
-npm uninstall -g @anthropic-ai/claude-code
-curl -fsSL https://claude.ai/install.sh | bash
-claude --version
-```
+From a normal PowerShell window (not "Run as administrator"):
 
 ```powershell
 irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.ps1 | iex
 ```
 
-It detects the CPU architecture and downloads the patched release matching the installed Claude Code
-version. When an immutable rebuild such as `-2` exists, it selects the highest published rebuild
-suffix. Calico builds never run Anthropic's updater themselves (`disable-official-updater`), so an
-installed build stays patched but does not upgrade itself either; see
-[Keeping it updated](#keeping-it-updated). Listing releases uses the GitHub API with the same
-credential order as above; the PowerShell installer makes the request in-process and starts no
-subprocess for it.
+This installs Calico **side by side** as `calico-claude.exe` and keeps it updated, as on macOS and
+Linux. The official `claude.exe` is never written. Run Calico by the new name, or point a launcher at
+`%USERPROFILE%\.local\bin\calico-claude.exe`.
+
+What the installer creates, all under your profile and running as you:
+
+| Path or item | What it is |
+|---|---|
+| `%USERPROFILE%\.local\bin\calico-claude.exe` | The launcher, a copy of the current build (Windows cannot overwrite a running `.exe`, so updates swap it by renaming) |
+| `%USERPROFILE%\.local\share\calico-claude\versions\` | Installed builds (the newest three are kept) |
+| `%USERPROFILE%\.claude\calico\update.ps1` | The updater ([`examples/local-auto-update/`](./examples/local-auto-update/#windows)) |
+| `%USERPROFILE%\.claude\calico\config` | `repo=<owner>/<name>`, the only place the hook and the task read the repo from |
+| `%USERPROFILE%\.claude\calico\source-commit` | The commit the updater was fetched from |
+| `%USERPROFILE%\.claude\settings.json` | One `SessionStart` hook entry, added to what is already there |
+| `%USERPROFILE%\.claude\settings.json.calico-bak` | The file as it was before the hook was added, readable by you only |
+| Task Scheduler `\calico\auto-update-<your SID>` | The hourly timer: runs as you, only while you are signed in, not elevated, no stored password, and without a window (see [Keeping it updated](#keeping-it-updated)) |
+
+The installer prints this list with your paths when it finishes, together with the exact uninstall
+command.
+
+How it runs:
+
+1. It refuses to run from an elevated ("Run as administrator") PowerShell. Everything it installs
+   belongs to your profile and runs as you.
+2. It resolves `main` to one commit SHA with a single GitHub API call, made in-process with the same
+   credential order as above (`GITHUB_TOKEN`, `GH_TOKEN`, then `gh auth token`), and downloads the
+   updater from `raw.githubusercontent.com/<repo>/<sha>/`.
+3. It writes the config and the updater, then runs the updater once with `-Mode force` under Windows
+   PowerShell, which downloads the latest release for your CPU and verifies it before installing (see
+   [Keeping it updated](#keeping-it-updated)).
+4. It adds the `SessionStart` hook to `settings.json` and registers the scheduled task.
+
+To track a fork, set `PATCH_CLAUDE_REPO` (or `CALICO_REPO`) to `<owner>/<name>` before running it.
+The installer works under Windows PowerShell 5.1 and PowerShell 7.
+
+`settings.json` is read and written by a small strict JSON parser in the installer rather than
+`ConvertFrom-Json`, which accepts comments, duplicate keys and `NaN` depending on the PowerShell
+version, and on 5.1 turns some strings into dates. A file that is not strict JSON, or nests deeper than
+100 levels, is left untouched and the installer stops, printing the entry to add by hand. Key order,
+non-ASCII text and number spellings are kept, and a re-run that changes nothing does not rewrite the
+file.
+
+#### Uninstall on Windows
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.ps1))) -Uninstall
+```
+
+The installer prints the same command pinned to the commit it installed from. It removes only what
+the installer created: the hook entry (other hooks and settings are left as they were), the scheduled
+task and its `\calico\` folder when nothing else is in it, the launcher, the installed builds, and
+`%USERPROFILE%\.claude\calico\`. A launcher whose hash does not match the updater's install record is
+left in place. The official `claude.exe` is not touched, and `settings.json.calico-bak` is kept. If a
+`calico-claude` session is still running, the launcher cannot be deleted: close it and run the
+command again.
+
+#### Restoring the official build on Windows
+
+Earlier versions of this installer wrote the Calico build over `claude.exe` itself. The current one
+does not touch it, but if `claude --version` prints `(patched)`, it says so. To put the official build
+back, run Anthropic's installer, then check that `claude --version` no longer prints `(patched)`:
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+claude --version
+```
+
+Files named `claude.exe.calico-old.*` next to `claude.exe` were left by that older installer; delete
+them once no session is running them.
 
 ### Manual, from releases
 
@@ -209,21 +262,17 @@ xattr -d com.apple.quarantine ~/.local/bin/calico-claude 2>/dev/null
 A binary installed this way does not update itself; the updater in
 [`examples/local-auto-update/`](./examples/local-auto-update/) can take it over.
 
-On Windows, download the asset from the release matching your installed Claude version, then:
+On Windows, install it under its own name the same way:
 
 ```powershell
 # Windows
-$target = (Get-Command claude).Source
-Move-Item $target "$target.calico-old.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
-Copy-Item .\claude.native.windows.patched.exe $target
-claude --version
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.local\bin" | Out-Null
+Copy-Item .\claude.native.windows.patched.exe "$env:USERPROFILE\.local\bin\calico-claude.exe"
+& "$env:USERPROFILE\.local\bin\calico-claude.exe" --version
 ```
 
-Windows will not overwrite `claude.exe` while any Claude Code session is running it, but it will
-rename it, which is why the old file is moved aside first. Sessions already open keep running the old
-build until restarted; delete the `claude.exe.calico-old.*` file once they have exited. If the copy
-fails, delete whatever it left at `$target` and move the `.calico-old.*` file back to that name. The
-installer does all of this itself, including removing leftovers from earlier runs.
+`update.ps1` does not take over a launcher it did not install, because it has no record of it; move the
+file aside first if you want the updater to manage it.
 
 ---
 
@@ -268,18 +317,44 @@ The updater's own reference, including its logs and every mode, is
 
 ### Windows
 
-Unchanged for now. Calico builds never run Anthropic's embedded updater: neither in the background
-nor through `claude update`, which prints that it is a Calico build and installs nothing.
-`claude install` is disabled the same way, because it would put the official build at the official
-location, over a Calico build installed there. Plugin and marketplace auto-update are unaffected. So
-a build installed over `claude.exe` is no longer reverted by its own sessions, but it also does not
-upgrade itself. The PowerShell installer picks the Calico release matching the version
-`claude --version` reports, so re-running it on its own reinstalls the same version. To move to a
-newer Claude Code, install it first with Anthropic's installer, then re-run the Calico installer.
-Sessions that were already running before the install still run the previous build, and if that
-build is an official one its updater can still replace yours, so restart them after installing.
-`update.ps1` in [`examples/local-auto-update/`](./examples/local-auto-update/#windows) can maintain a
-side-by-side `calico-claude.exe` by hand.
+The installer wires this up the same way:
+
+| Trigger | Mode | When |
+|---|---|---|
+| `SessionStart` hook in `%USERPROFILE%\.claude\settings.json` | `-Mode hook` | When a Claude Code session starts, at most once an hour. It starts a hidden, detached update and returns at once. |
+| Task Scheduler `\calico\auto-update-<your SID>` | `-Mode unattended-run` | Every hour, first an hour after the install, while you are signed in. It runs `%SystemRoot%\System32\conhost.exe --headless` around Windows PowerShell, so no window appears. |
+
+The hook entry the installer writes is:
+
+```json
+{"type": "command", "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:/Users/you/.claude/calico/update.ps1\" -Mode hook", "timeout": 10, "async": true}
+```
+
+A task that starts `powershell.exe` directly opens a console window on your desktop for the whole
+run, in Windows Terminal when that is the default terminal, and `-WindowStyle Hidden` does not stop
+it; `conhost.exe --headless` does (measured on Windows 11 build 26200). The installer uses
+`--headless` on build 17763 (Windows 10 1809) and later; on an older build it registers plain
+`powershell.exe` and says that the hourly run will show a window. One consequence: through
+`conhost --headless` the task's Last Run Result is `0` even when the update fails (measured: a child
+exiting `3` showed `3` when started directly and `0` through conhost), so check
+`%USERPROFILE%\.claude\calico\update.log` rather than Task Scheduler to see how a run went.
+
+Claude Code runs hook commands on Windows under Git Bash. The path is written with forward slashes,
+which `powershell.exe -File` accepts, so the entry carries the same `.claude/calico/update.` marker the
+installers use to find their own entry: re-running the installer updates it in place rather than
+adding a second one.
+
+The updater checks the same things as on macOS and Linux, and swaps the launcher by two renames,
+because Windows cannot overwrite a running `.exe`: sessions that are already open keep the build they
+started with, and the next session gets the new one. Calico builds never run Anthropic's embedded
+updater, and the Calico updater never writes `claude.exe`, so the official build and Calico no longer
+replace each other.
+
+> **Without `gh`, provenance is not checked on Windows either.** The updater logs
+> `WARNING: gh not found; skipping build attestation verification and trusting checksums.txt alone`
+> and installs on the checksum alone, with the same consequence as above. This is the same accepted
+> risk. Install `gh` and run `gh auth login` to close it. The scheduled task starts from your user
+> environment rather than from a shell, so a `GH_TOKEN` set in one PowerShell window does not reach it.
 
 ---
 
@@ -586,10 +661,8 @@ compatible active-turn bridges.
 
 ### Will Claude Code updates remove the patches?
 
-No. On macOS and Linux Calico is installed as `calico-claude`, a name Anthropic's updater does not
-manage, and the Calico updater never writes `claude`. On Windows the installer still writes over
-`claude.exe`: Calico builds never run Anthropic's updater, but a session of an official build that
-was already open, or any other official build on the machine, can install a new version over it.
+No. Calico is installed as `calico-claude` (`calico-claude.exe` on Windows), a name Anthropic's
+updater does not manage, and the Calico updater never writes `claude`.
 
 ### Why can the startup banner say Calico while a newer adapter is missing?
 
