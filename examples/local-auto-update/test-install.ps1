@@ -504,8 +504,19 @@ exit 0
   Check 'task: registered under the test folder with the SID name' ($null -ne $task)
   if ($task) {
     $a = @($task.Actions)[0]
-    Same 'task: runs Windows PowerShell by its %SystemRoot% path' '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe' $a.Execute
-    Same 'task: runs update.ps1 -Mode unattended-run' ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode unattended-run' -f (Join-Path $State 'update.ps1')) $a.Arguments
+    # Through conhost --headless where Windows has it (build 17763 and later),
+    # so the hourly run opens no window; the plain action below that.
+    $taskPs = '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe'
+    $taskArgs = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode unattended-run' -f (Join-Path $State 'update.ps1')
+    if ([Environment]::OSVersion.Version.Build -ge 17763) {
+      Same 'task: runs conhost by its %SystemRoot% path' '%SystemRoot%\System32\conhost.exe' $a.Execute
+      Same 'task: conhost --headless runs Windows PowerShell with update.ps1 -Mode unattended-run' ("--headless `"$taskPs`" $taskArgs") $a.Arguments
+      Check 'task: no console-window note on this build' (-not $Out.Contains('shows a console window'))
+    } else {
+      Same 'task: runs Windows PowerShell by its %SystemRoot% path' $taskPs $a.Execute
+      Same 'task: runs update.ps1 -Mode unattended-run' $taskArgs $a.Arguments
+      Has 'task: says the task shows a window on this build' 'shows a console window'
+    }
     Same 'task: one action' 1 @($task.Actions).Count
     Same 'task: as the current user' $env:USERNAME ($task.Principal.UserId -replace '^.*\\', '')
     Same 'task: Interactive logon, no stored password' 'Interactive' "$($task.Principal.LogonType)"
@@ -637,8 +648,13 @@ exit 0
   else {
     New-Item -ItemType Directory -Force -Path (Join-Path $H 'dotfiles') | Out-Null
     # mklink keeps a relative target as written; 5.1's New-Item resolves it.
-    & cmd.exe /c mklink $SettingsPath '..\dotfiles\settings.json' *> $null
-    $made = ($LASTEXITCODE -eq 0)
+    # Its refusal goes to stderr, which 5.1 under 'Stop' turns into a
+    # terminating error, so it runs under 'Continue' and the exit code decides.
+    $made = & {
+      $ErrorActionPreference = 'Continue'
+      & cmd.exe /c mklink $SettingsPath '..\dotfiles\settings.json' *> $null
+      $LASTEXITCODE -eq 0
+    }
   }
   if (-not $made) {
     $script:Skip++

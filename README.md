@@ -178,7 +178,7 @@ What the installer creates, all under your profile and running as you:
 | `%USERPROFILE%\.claude\calico\source-commit` | The commit the updater was fetched from |
 | `%USERPROFILE%\.claude\settings.json` | One `SessionStart` hook entry, added to what is already there |
 | `%USERPROFILE%\.claude\settings.json.calico-bak` | The file as it was before the hook was added, readable by you only |
-| Task Scheduler `\calico\auto-update-<your SID>` | The hourly timer: runs as you, only while you are signed in, not elevated, no stored password |
+| Task Scheduler `\calico\auto-update-<your SID>` | The hourly timer: runs as you, only while you are signed in, not elevated, no stored password, and without a window (see [Keeping it updated](#keeping-it-updated)) |
 
 The installer prints this list with your paths when it finishes, together with the exact uninstall
 command.
@@ -322,13 +322,22 @@ The installer wires this up the same way:
 | Trigger | Mode | When |
 |---|---|---|
 | `SessionStart` hook in `%USERPROFILE%\.claude\settings.json` | `-Mode hook` | When a Claude Code session starts, at most once an hour. It starts a hidden, detached update and returns at once. |
-| Task Scheduler `\calico\auto-update-<your SID>` | `-Mode unattended-run` | Every hour, first an hour after the install, while you are signed in. |
+| Task Scheduler `\calico\auto-update-<your SID>` | `-Mode unattended-run` | Every hour, first an hour after the install, while you are signed in. It runs `%SystemRoot%\System32\conhost.exe --headless` around Windows PowerShell, so no window appears. |
 
 The hook entry the installer writes is:
 
 ```json
 {"type": "command", "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:/Users/you/.claude/calico/update.ps1\" -Mode hook", "timeout": 10, "async": true}
 ```
+
+A task that starts `powershell.exe` directly opens a console window on your desktop for the whole
+run, in Windows Terminal when that is the default terminal, and `-WindowStyle Hidden` does not stop
+it; `conhost.exe --headless` does (measured on Windows 11 build 26200). The installer uses
+`--headless` on build 17763 (Windows 10 1809) and later; on an older build it registers plain
+`powershell.exe` and says that the hourly run will show a window. One consequence: through
+`conhost --headless` the task's Last Run Result is `0` even when the update fails (measured: a child
+exiting `3` showed `3` when started directly and `0` through conhost), so check
+`%USERPROFILE%\.claude\calico\update.log` rather than Task Scheduler to see how a run went.
 
 Claude Code runs hook commands on Windows under Git Bash. The path is written with forward slashes,
 which `powershell.exe -File` accepts, so the entry carries the same `.claude/calico/update.` marker the

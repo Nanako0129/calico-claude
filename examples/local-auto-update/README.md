@@ -318,7 +318,8 @@ adds the SessionStart hook
 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<your profile>/.claude/calico/update.ps1" -Mode hook`,
 and registers an hourly scheduled task `\calico\auto-update-<your SID>` that runs
 `-Mode unattended-run` as you (Interactive logon, limited token, no stored
-password). The commands below are the manual equivalent.
+password), through `conhost.exe --headless` so it opens no window (on build
+17763 and later). The commands below are the manual equivalent.
 
 | Path | Holds |
 | --- | --- |

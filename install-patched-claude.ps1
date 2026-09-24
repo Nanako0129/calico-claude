@@ -56,7 +56,7 @@ param([switch]$Uninstall)
   $TaskPath = if ($env:CALICO_TEST_TASK_PATH) { $env:CALICO_TEST_TASK_PATH } else { '\calico\' }
   $Marker = '.claude/calico/update.'
   $WinPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  $TaskExe = '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe'
+  $TaskPowerShell = '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe'
   $Utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
   $NumberPattern = [regex]'\G-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?'
   $JsonMaxDepth = 100
@@ -570,9 +570,28 @@ param([switch]$Uninstall)
   # password is stored, and it runs only while the user is signed in), with the
   # limited token even for an administrator. The first run is an hour out: the
   # updater has just run. -Force replaces an earlier registration in place.
+  #
+  # An Interactive task that starts powershell.exe gets a console window on the
+  # user's desktop. Measured on Windows 11 build 26200 with the default terminal
+  # left to Windows (Windows Terminal), diffing visible top-level windows 3 s
+  # into the run: plain powershell.exe opened a Windows Terminal window for the
+  # whole run; -WindowStyle Hidden still did (Windows Terminal ignores it);
+  # `conhost.exe --headless powershell.exe ...` opened none. --headless needs a
+  # conhost that has it, which is taken to be build 17763 (Windows 10 1809)
+  # and later; older builds get the plain action and a note. The cost, measured
+  # on the same machine: conhost --headless exits 0 whatever its child returns
+  # (a child exiting 3 left Last Run Result 3 as plain powershell.exe, 0 through
+  # conhost), so a failed update shows in update.log, not in the task's result.
   function Register-UpdateTask {
     $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $action = New-ScheduledTaskAction -Execute $TaskExe -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode unattended-run' -f $Updater)
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode unattended-run' -f $Updater
+    $build = [Environment]::OSVersion.Version.Build
+    if ($build -ge 17763) {
+      $action = New-ScheduledTaskAction -Execute '%SystemRoot%\System32\conhost.exe' -Argument ('--headless "{0}" {1}' -f $TaskPowerShell, $arguments)
+    } else {
+      $action = New-ScheduledTaskAction -Execute $TaskPowerShell -Argument $arguments
+      Say "Note: on Windows build $build the hourly update task shows a console window while it runs (conhost --headless needs build 17763 or later)."
+    }
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(1) -RepetitionInterval (New-TimeSpan -Hours 1)
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
     # Without these the task does not start on battery power, and a hung run
