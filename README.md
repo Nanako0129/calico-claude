@@ -41,6 +41,7 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 | `disable-spinner-tips` | Disables spinner tips regardless of settings |
 | `compact-tokens-saved` | Reports how many tokens `/compact` actually saved, as the Claude mobile app does |
 | `disable-bash-first` | Defaults upstream's Bash-first tool steer off; `CLAUDE_CODE_THRIFTY_SONIC=1` opts back in |
+| `thinking-summaries-default` | Defaults `showThinkingSummaries` on, so thinking is requested unredacted and shows up; `"showThinkingSummaries": false` opts out |
 | `background-agent-usage` | Accounts terminal stream usage in the background agent progress row |
 | `statusline-committed-usage` | Exposes only committed terminal assistant usage to status-line payloads |
 | `statusline-rate-limit-windows` | Forwards the Fable 5 and usage-credit rate-limit windows to status-line payloads |
@@ -419,11 +420,14 @@ remora users can run `remora doctor --online` instead.
 
 ### Live thinking in the UI
 
-Streaming thinking also needs one Claude setting, in `~/.claude/settings.json`,
+Without `showThinkingSummaries` set, stock Claude Code asks the API to redact
+thinking, so thinking blocks arrive with no text and nothing shows, streamed or
+expanded. Calico defaults that setting on (`thinking-summaries-default`), so no
+setting is needed. To opt out, set it explicitly in `~/.claude/settings.json`,
 `.claude/settings.json`, or `.claude/settings.local.json`:
 
 ```json
-"showThinkingSummaries": true
+"showThinkingSummaries": false
 ```
 
 ---
