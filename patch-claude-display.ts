@@ -2365,6 +2365,43 @@ function patchDisableBashFirst(content) {
   return { content: output, candidates, patched };
 }
 
+function patchThinkingSummariesDefault(content) {
+  // Without `showThinkingSummaries` in any settings file, Claude Code asks the
+  // API to redact thinking: the request carries the `redact-thinking-2026-02-12`
+  // beta and `thinking:{type:"adaptive"}` with no `display`, so every thinking
+  // block arrives as a signature with no text. Nothing is left to show, streamed
+  // or expanded with ctrl+o, and the thinking modules have nothing to render.
+  // Measured on Windows 2.1.281 against a mock that logs the request body: unset
+  // sends the redact beta and no display; `true` sends
+  // `display:"summarized"` and no redact beta.
+  //
+  // Every reader of the setting that decides this goes through one accessor:
+  //
+  //   function eon(){return Ye().showThinkingSummaries??!1}
+  //
+  // It gates the redact beta (`!eon()`), picks `display:"summarized"` for the
+  // interactive request, and chooses the connector-text mode. Defaulting its
+  // absent case to true is the whole change: an explicit `false` still wins,
+  // because `??` only replaces undefined and null.
+  //
+  // The other reader, the bridge's `if(n===void 0)return;` in the
+  // thinking-display override, is left alone on purpose. It only decides whether
+  // a local setting outranks a remote request, and "no local choice" is the
+  // accurate answer when the user set nothing.
+  const accessorPattern =
+    /(function [A-Za-z_$][\w$]*\(\)\{return [A-Za-z_$][\w$]*\(\)\.showThinkingSummaries\?\?)!1\}/g;
+
+  let candidates = 0;
+  let patched = 0;
+  const output = content.replace(accessorPattern, (full, head) => {
+    candidates += 1;
+    patched += 1;
+    return `${head}!0}`;
+  });
+
+  return { content: output, candidates, patched };
+}
+
 function patchInstallerMigrationMessage(content, ctx = {}) {
   const needle = "switched from npm to native installer";
   let output = content;
@@ -5098,6 +5135,11 @@ const PATCH_MODULES = [
     apply: patchDisableBashFirst,
   },
   {
+    id: "thinking-summaries-default",
+    description: "Default showThinkingSummaries on so thinking is requested unredacted",
+    apply: patchThinkingSummariesDefault,
+  },
+  {
     id: "tool-call-verbose",
     description: "Force verbose collapsed read/search rendering",
     apply: patchCollapsedReadSearch,
@@ -5393,6 +5435,7 @@ module.exports = {
   patchCustomContextWindows,
   patchCompactTokensSaved,
   patchDisableBashFirst,
+  patchThinkingSummariesDefault,
   // Exported for tests: the positional stream-reducer branch is only reachable
   // on older bundle shapes, so nothing else exercises it.
   patchThinkingStreaming,

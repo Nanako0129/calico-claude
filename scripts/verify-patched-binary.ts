@@ -1803,6 +1803,24 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "thinking-summaries-default",
+    kind: "custom",
+    describe: "showThinkingSummaries defaults on, with an explicit false still honoured",
+    run: (content: string): string | null => {
+      const defaulted =
+        /function [A-Za-z_$][\w$]*\(\)\{return [A-Za-z_$][\w$]*\(\)\.showThinkingSummaries\?\?!0\}/g;
+      const count = [...content.matchAll(defaulted)].length;
+      if (count !== 1) {
+        return `expected 1 accessor defaulting showThinkingSummaries on, found ${count}`;
+      }
+      // A surviving original accessor would keep requesting redacted thinking
+      // for every caller that reaches it.
+      return /\.showThinkingSummaries\?\?!1\}/.test(content)
+        ? "an accessor still defaults showThinkingSummaries off"
+        : null;
+    },
+  },
+  {
     id: "tool-call-verbose",
     kind: "presence",
     marker: /case"collapsed_read_search":(?:return|\{)[\s\S]{0,600}?verbose:!0/,
