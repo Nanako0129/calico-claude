@@ -309,8 +309,16 @@ launchd bootout and bootstrap handling, Linux, and uninstall.
 ## Windows
 
 `update.ps1` is the Windows counterpart. It runs under PowerShell 7 and Windows
-PowerShell 5.1, and it is not wired to anything yet: this section covers running
-it by hand. Hook and scheduled-task wiring are not part of this example yet.
+PowerShell 5.1.
+
+[`install-patched-claude.ps1`](../../install-patched-claude.ps1) at the repository
+root does the wiring: it installs the script to
+`%USERPROFILE%\.claude\calico\update.ps1`, writes `config`, runs `-Mode force` once,
+adds the SessionStart hook
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<your profile>/.claude/calico/update.ps1" -Mode hook`,
+and registers an hourly scheduled task `\calico\auto-update-<your SID>` that runs
+`-Mode unattended-run` as you (Interactive logon, limited token, no stored
+password). The commands below are the manual equivalent.
 
 | Path | Holds |
 | --- | --- |
@@ -383,6 +391,27 @@ uses a `gh.cmd` stub on `PATH`, and points `USERPROFILE` at a sandbox under
 - the unattended settings, and `-PinTag` refusals
 - keeping the token out of the hook child's command line and out of the log
 
+The root Windows installer has its own offline suite. Run it from a normal, not
+elevated, session under both shells (run elevated, it checks only that the
+installer refuses an administrator token):
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File examples\local-auto-update\test-install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File examples\local-auto-update\test-install.ps1
+```
+
+It runs the real installer as `& ([scriptblock]::Create(...))` in a sandbox
+`USERPROFILE`, with the network stubbed and a stand-in `update.ps1`, and covers
+the elevation and input refusals, the SHA-pinned fetch, the config, the
+settings.json merge (missing, empty, unrelated hooks, stale Calico entries, a
+symlinked file, non-ASCII, a BOM, date-looking strings, number spellings, 100
+levels of nesting, strict parsing, a change between read and rename, and the
+owner-only backup), the scheduled task as registered (under a test folder,
+deleted afterwards), `irm | iex`, and uninstall. Creating the symlink fixture
+needs admin rights or Developer Mode; without either, pass `-SymlinkHome <dir>`
+with `<dir>\.claude\settings.json` already a link to `..\dotfiles\settings.json`,
+or the case is reported as skipped.
+
 ## Uninstall
 
 If the root installer set it up, use its `--uninstall` mode; it removes the hook entry, the timer,
@@ -390,6 +419,12 @@ and everything below, and nothing else:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.sh | bash -s -- --uninstall
+```
+
+On Windows, from a normal (not elevated) PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Nanako0129/calico-claude/main/install-patched-claude.ps1))) -Uninstall
 ```
 
 By hand:

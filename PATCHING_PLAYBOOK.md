@@ -36,7 +36,7 @@ The important consequence: almost all real behavior lives in `patch-claude-displ
 - `scripts/patch-native-with-tweakcc.ts`: compatibility entrypoint for the native patcher
 - `.github/workflows/patch-claude.yml`: CI download, patch, sign, release path
 - `install-patched-claude.sh`: macOS/Linux bootstrapper that installs `calico-claude` side by side through `examples/local-auto-update/update.sh` and wires its SessionStart hook and (macOS) launchd timer
-- `install-patched-claude.ps1`: Windows installer that resolves release tags and downloads patched assets
+- `install-patched-claude.ps1`: Windows bootstrapper that installs `calico-claude.exe` side by side through `examples/local-auto-update/update.ps1` and wires its SessionStart hook and hourly scheduled task
 
 ## How The Patcher Is Structured
 
