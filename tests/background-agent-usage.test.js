@@ -602,3 +602,42 @@ test("reaches the transcript sweep through globalThis, never a bare name", () =>
     2
   );
 });
+
+// 2.1.282 skips the screen for provisional wrappers, which it now marks
+// `isUnmetered` until the authoritative usage is copied in:
+//
+//   let g=n.isUnmetered===!0?void 0:wte(n.message.usage);if(g){…
+//
+// The initialiser is re-emitted verbatim, so upstream's guard keeps its
+// verdict: an unmetered wrapper runs nothing upstream put behind the guard.
+function unmeteredFixture() {
+  return normalizedFixture().replace(
+    "let o=nrm(t.message.usage);",
+    "let o=t.isUnmetered===!0?void 0:nrm(t.message.usage);"
+  );
+}
+
+test("patches the 2.1.282 unmetered-screened usage read", () => {
+  const source = unmeteredFixture();
+  assert.notEqual(source, normalizedFixture());
+  const result = patchBackgroundAgentUsage(source);
+
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
+});
+
+test("an unmetered wrapper runs nothing behind upstream's guard", () => {
+  const { context } = runtime(unmeteredFixture());
+  const tool = [{ type: "tool_use", name: "Read", input: {} }];
+  const usage = { input_tokens: 400, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 90 };
+
+  const unmetered = context.fQn();
+  context.hQn(unmetered, { ...assistant("resp-provisional", usage, null, tool), isUnmetered: true });
+  assert.equal(unmetered.toolUseCount, 0);
+
+  const metered = context.fQn();
+  context.hQn(metered, assistant("resp-final", usage, "end_turn", tool));
+  assert.equal(metered.toolUseCount, 1);
+  assert.equal(context.mQn(metered), 490);
+});

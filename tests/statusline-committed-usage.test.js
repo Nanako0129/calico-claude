@@ -1060,3 +1060,24 @@ function bJt(e){for(let t=e.length-1;t>=0;t--){let r=e[t],n=r?LCe(r):void 0;if(n
   assert.equal(result.patched, 0);
   assert.equal(result.content, both);
 });
+
+// 2.1.282 inserted a plain field between `requestId` and the telemetry spread
+// in the canonical wrapper (`requestId:di??void 0,requestRef:q0,...K6(…)`),
+// which took the wrapper, and with it the whole module, to zero.
+test("accepts a plain field between requestId and the telemetry spread", () => {
+  const base = batchCommittedUsageFixture();
+  const variant = base.replace(
+    "},requestId:ge??void 0,...OG(",
+    "},requestId:ge??void 0,requestRef:ge,...OG("
+  );
+  assert.notEqual(variant, base);
+  const result = patchStatuslineCommittedUsage(variant);
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+
+  const { context } = loadCommittedFixture(variant);
+  const completed = context.query(usage(333, 44), "end_turn");
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
+});
