@@ -635,6 +635,10 @@ test("an unmetered wrapper runs nothing behind upstream's guard", () => {
   const unmetered = context.fQn();
   context.hQn(unmetered, { ...assistant("resp-provisional", usage, null, tool), isUnmetered: true });
   assert.equal(unmetered.toolUseCount, 0);
+  // The Calico tracker still records the raw usage, keyed by message id, the
+  // same way the transcript sweep will: upstream's skip covers only its own
+  // accounting block.
+  assert.equal(context.mQn(unmetered), 490);
 
   const metered = context.fQn();
   context.hQn(metered, assistant("resp-final", usage, "end_turn", tool));
