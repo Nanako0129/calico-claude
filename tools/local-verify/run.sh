@@ -83,15 +83,22 @@ LC_ALL=C perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\e\][^\a]*(?:\a|\e\\)//g; s/
 # for the healthy one, while every other line — rendered text, no errors — was
 # identical. "At least one request" would have passed it.
 EXPECTED_REQUESTS=2
-REQUEST_COUNT="$(grep -c REQUEST "$WORK/mock.err" 2>/dev/null || echo 0)"
+# grep -c already prints 0 on no match (and exits 1), so `|| echo 0` printed a
+# second 0 and broke the integer test below; default only the missing-file case.
+REQUEST_COUNT="$(grep -c REQUEST "$WORK/mock.err" 2>/dev/null)"
+REQUEST_COUNT="${REQUEST_COUNT:-0}"
 
+# Earlier builds position the reply's words with cursor moves, which the
+# stripping above deletes ("pongfromthemock"); 2.1.283 writes real spaces
+# ("pong from the mock"). Accept both.
+RENDERED_TEXT="pong ?from ?the ?mock"
 echo "binary        : $BINARY"
 if [ "$REQUEST_COUNT" -gt 0 ]; then
   echo "request       : SENT ($REQUEST_COUNT)"
 else
   echo "request       : NEVER SENT  <-- the turn died before reaching the API"
 fi
-grep -aq "pongfromthemock" "$WORK/tui.clean" \
+grep -aqE "$RENDERED_TEXT" "$WORK/tui.clean" \
   && echo "assistant text: RENDERED" \
   || echo "assistant text: MISSING  <-- the stream arrived but nothing was rendered"
 # Two phrases used to be the whole error vocabulary, which covered a missing
@@ -123,4 +130,4 @@ if [ "$REQUEST_COUNT" -ne "$EXPECTED_REQUESTS" ]; then
   exit 1
 fi
 
-grep -aq "pongfromthemock" "$WORK/tui.clean"
+grep -aqE "$RENDERED_TEXT" "$WORK/tui.clean"

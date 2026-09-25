@@ -3743,9 +3743,17 @@ function patchStatuslineCommittedUsage(content) {
     return segment.includes("context_window:") && consumption.test(segment);
   });
   const cloneArray = cloneSyncMatches[0]?.[3];
+  // 2.1.283 registers the rows too, for a second loop after the sync that
+  // clears `isUnmetered` on the clone (`for(let{srcRow:Y,dstRow:Se}of le)…`):
+  //
+  //   2.1.282  ve.push({src:I.message,dst:Be.message})
+  //   2.1.283  le.push({src:C.message,dst:ye.message,srcRow:C,dstRow:ye})
+  //
+  // The rows are pinned to the same locals as src/dst and re-emitted verbatim;
+  // dropping them would make upstream's loop destructure undefined.
   const cloneRegistrationPattern = cloneArray
     ? new RegExp(
-        `${escapeRegExp(cloneArray)}\\.push\\(\\{src:(${identifierPattern})\\.message,dst:(${identifierPattern})\\.message\\}\\)`,
+        `${escapeRegExp(cloneArray)}\\.push\\(\\{src:(${identifierPattern})\\.message,dst:(${identifierPattern})\\.message(,srcRow:\\1,dstRow:\\2)?\\}\\)`,
         "g"
       )
     : null;
@@ -3913,7 +3921,7 @@ function patchStatuslineCommittedUsage(content) {
       ? `for(let ${terminalItem} of ${terminalArray})${terminalAssignments},${terminalCommit};`
       : `for(let ${terminalItem} of ${terminalArray})if(${terminalAssignments},${terminalCommit},${terminalForm.condition})${terminalForm.body};`;
   const cloneReplacements = cloneMatches.map(
-    (match) => `${cloneArray}.push({src:${match[1]},dst:${match[2]}})`
+    (match) => `${cloneArray}.push({src:${match[1]},dst:${match[2]}${match[3] ?? ""}})`
   );
   const cloneSyncSource = cloneSyncMatches[0][1];
   const cloneSyncDestination = cloneSyncMatches[0][2];

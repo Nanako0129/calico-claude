@@ -31,9 +31,11 @@ set env(no_proxy) "127.0.0.1,localhost"
 
 spawn -noecho $binary
 # Wait for the status line the main renderer draws, then for the input
-# placeholder, so the prompt is not typed before the box exists.
+# placeholder, so the prompt is not typed before the box exists. 2.1.283 made
+# auto mode the default, and with it on the status line reads "auto mode on
+# (shift+tab to cycle)" instead of "? for shortcuts".
 expect {
-    -re {shortcuts} {}
+    -re {shortcuts|shift\+tab to cycle} {}
     timeout { puts "\nHARNESS: main renderer never mounted"; exit 2 }
 }
 expect {
