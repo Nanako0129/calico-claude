@@ -42,6 +42,7 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 | `compact-tokens-saved` | Reports how many tokens `/compact` actually saved, as the Claude mobile app does |
 | `disable-bash-first` | Defaults upstream's Bash-first tool steer off; `CLAUDE_CODE_THRIFTY_SONIC=1` opts back in |
 | `thinking-summaries-default` | Defaults `showThinkingSummaries` on, so thinking is requested unredacted and shows up; `"showThinkingSummaries": false` opts out |
+| `usage-limit-under-remote-control` | With Remote Control on, a claude.ai usage limit still opens the `/rate-limit-options` menu and lets automatic continue arm; upstream silences both whenever the Remote Control bridge is active |
 | `background-agent-usage` | Accounts terminal stream usage in the background agent progress row |
 | `statusline-committed-usage` | Exposes only committed terminal assistant usage to status-line payloads |
 | `statusline-rate-limit-windows` | Forwards the Fable 5 and usage-credit rate-limit windows to status-line payloads |
