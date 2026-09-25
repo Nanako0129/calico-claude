@@ -1394,7 +1394,7 @@ const CHECKS: Check[] = [
       // where an aliased clone loop throws, and CI runs it on every
       // non-Windows leg. Kept in lockstep with patch-claude-display.ts.
       const cloneRegistrationPattern = new RegExp(
-        `${cloneArray.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.push\\(\\{src:(${identifier}),dst:(${identifier})\\}\\)`,
+        `${cloneArray.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.push\\(\\{src:(${identifier}),dst:(${identifier})(?:,srcRow:\\1,dstRow:\\2)?\\}\\)`,
         "g"
       );
       const cloneMatches = [...content.matchAll(cloneRegistrationPattern)];

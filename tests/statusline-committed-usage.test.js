@@ -222,6 +222,39 @@ test("downstream tool-input wrapper clones receive the terminal committed marker
   assert.deepEqual(readStatuslineUsage(context, clones), usage(333, 44));
 });
 
+// 2.1.283 registers the rows alongside the messages and walks them in a second
+// loop after the sync, clearing `isUnmetered` on a clone whose source is not
+// unmetered. The clones here start unmetered so that loop has work to do.
+function rowRegistrationFixture(source = committedUsageFixture) {
+  return source
+    .replace(
+      "lo={...base,message:{...base.message,content:[...base.message.content]}},eo.push({src:an.message,dst:lo.message})",
+      "lo={...base,isUnmetered:!0,message:{...base.message,content:[...base.message.content]}},eo.push({src:an.message,dst:lo.message,srcRow:an,dstRow:lo})"
+    )
+    .replace(
+      "Gi={...base,message:{...base.message,content:[...base.message.content]}},eo.push({src:an.message,dst:Gi.message})",
+      "Gi={...base,isUnmetered:!0,message:{...base.message,content:[...base.message.content]}},eo.push({src:an.message,dst:Gi.message,srcRow:an,dstRow:Gi})"
+    )
+    .replace(
+      "Ii.stop_details=_i.stop_details;}",
+      "Ii.stop_details=_i.stop_details;for(let{srcRow:_i,dstRow:Ii}of eo)if(_i.isUnmetered!==!0)delete Ii.isUnmetered;}"
+    );
+}
+
+test("2.1.283 row registrations survive, so upstream's isUnmetered loop still runs", () => {
+  const source = rowRegistrationFixture();
+  assert.equal((source.match(/srcRow:an,dstRow:/g) || []).length, 2);
+  const { context, result } = loadCommittedFixture(source);
+
+  const clones = context.query(usage(333, 44), "tool_use", true, usage(333, 44), true);
+  for (const clone of clones) {
+    assert.equal(clone.__calicoUsageState.committed, true);
+    assert.equal("isUnmetered" in clone, false);
+  }
+  assert.deepEqual(readStatuslineUsage(context, clones), usage(333, 44));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
 test("DONE exact all-zero terminal sentinel does not replace the previous snapshot", () => {
   const { context } = loadCommittedFixture();
   const completed = context.query(usage(333, 44), "end_turn");
