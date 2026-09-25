@@ -342,8 +342,10 @@ jobs:
 
           # Branding alone renders before the main renderer mounts. The shortcut
           # hint is drawn by the main renderer's status line, so it is what
-          # proves the fullscreen UI actually came up.
-          if ! grep -aqiE "for ?shortcuts" "$CLEAN"; then
+          # proves the fullscreen UI actually came up. 2.1.283 made auto mode the
+          # default, and with it on the hint reads "auto mode on (shift+tab to
+          # cycle)" instead of "? for shortcuts".
+          if ! grep -aqiE "for ?shortcuts|shift ?\+ ?tab ?to ?cycle" "$CLEAN"; then
             echo "PTY smoke test failed: main renderer did not mount (no status-line hint)." >&2
             exit 1
           fi
