@@ -2365,6 +2365,92 @@ function patchDisableBashFirst(content) {
   return { content: output, candidates, patched };
 }
 
+function patchUsageLimitUnderRemoteControl(content) {
+  // With Remote Control on, hitting a claude.ai usage limit does nothing: the
+  // `/rate-limit-options` menu does not open and automatic continue does not
+  // arm. All three are gated on one shared predicate,
+  //
+  //   function em(){return xl()||vt()||NT()!==void 0}
+  //
+  // where `xl()` is `surfaceCapabilities.replBridgeActive()` (the Remote
+  // Control bridge), `vt()` a background session and `NT()` a teammate agent.
+  // The bridge term has been there since at least 2.1.250, so the menu only
+  // ever appeared in sessions without Remote Control.
+  //
+  // The predicate has more than a dozen other callers — permission dialogs, the
+  // auto-mode classifier fallback, survey prompts — so it is not rewritten
+  // outright. It gains an argument that drops only the bridge term, and only
+  // the four usage-limit sites pass it:
+  //
+  //   auto-open   …add(h),!1;if(em())return!1;let{onSubmit:…
+  //   arm         if(!U(n)||!z3t())return!1;if(em())return!1;let s=e.resetsAt??0;
+  //   request     …||!_bt()||!z3t()||em())return{outcome:"declined",…}
+  //   UI arm      armRateLimitAutoContinue=(h)=>{if(h===this._autoContinueResetsAt)return!1;if(em())return!1;…
+  //
+  // Every other caller still passes nothing and keeps the bridge term. The
+  // background-session and teammate terms stay in force at the four sites.
+  //
+  // All five edits apply together or none do: a menu that opens and offers the
+  // wait while arming still refuses it would be worse than today.
+  const I = "[A-Za-z_$][\\w$]*";
+  const bridgeAccessors = [
+    ...content.matchAll(
+      new RegExp(`function (${I})\\(\\)\\{return ${I}\\(\\)\\.surfaceCapabilities\\.replBridgeActive\\(\\)\\}`, "g")
+    ),
+  ];
+  const definitionPattern = new RegExp(
+    `function (${I})\\(\\)\\{return (${I})\\(\\)\\|\\|(${I})\\(\\)\\|\\|(${I})\\(\\)!==void 0\\}`,
+    "g"
+  );
+  const bridgeNames = new Set(bridgeAccessors.map((match) => match[1]));
+  const definitions = [...content.matchAll(definitionPattern)].filter((match) =>
+    bridgeNames.has(match[2])
+  );
+  const openPattern = new RegExp(
+    `(return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\()(${I})\\(\\)(\\)return!1;let\\{onSubmit:)`,
+    "g"
+  );
+  const armPattern = new RegExp(
+    `(if\\(!${I}\\(${I}\\)\\|\\|!${I}\\(\\)\\)return!1;if\\()(${I})\\(\\)(\\)return!1;let ${I}=${I}\\.resetsAt\\?\\?0;)`,
+    "g"
+  );
+  const requestPattern = new RegExp(
+    `(\\|\\|!${I}\\(\\)\\|\\|!${I}\\(\\)\\|\\|)(${I})\\(\\)(\\)return\\{outcome:"declined",failureNote:void 0\\})`,
+    "g"
+  );
+  const surfaceArmPattern = new RegExp(
+    `(armRateLimitAutoContinue=\\(${I}\\)=>\\{if\\(${I}===this\\._autoContinueResetsAt\\)return!1;if\\()(${I})\\(\\)(\\)return!1;)`,
+    "g"
+  );
+  const sitePatterns = [openPattern, armPattern, requestPattern, surfaceArmPattern];
+  const sites = sitePatterns.map((pattern) => [
+    ...content.matchAll(pattern),
+  ]);
+  const candidates = definitions.length + sites.reduce((total, matches) => total + matches.length, 0);
+
+  // One definition, one match per site, and every site calling the predicate
+  // under the definition's own name. A site reaching it through a different
+  // import alias cannot be proven to be this predicate, so it fails closed.
+  const definition = definitions[0];
+  if (
+    definitions.length !== 1 ||
+    sites.some((matches) => matches.length !== 1) ||
+    sites.some((matches) => matches[0][2] !== definition[1])
+  ) {
+    return { content, candidates, patched: 0 };
+  }
+
+  const [, name, bridge, background, teammate] = definition;
+  let output = content.replace(
+    definition[0],
+    () => `function ${name}(e){return(e!==!0&&${bridge}())||${background}()||${teammate}()!==void 0}`
+  );
+  for (const pattern of sitePatterns) {
+    output = output.replace(pattern, (full, head, callee, tail) => `${head}${callee}(!0)${tail}`);
+  }
+  return { content: output, candidates, patched: 1 + sitePatterns.length };
+}
+
 function patchThinkingSummariesDefault(content) {
   // Without `showThinkingSummaries` in any settings file, Claude Code asks the
   // API to redact thinking: the request carries the `redact-thinking-2026-02-12`
@@ -5135,6 +5221,11 @@ const PATCH_MODULES = [
     apply: patchDisableBashFirst,
   },
   {
+    id: "usage-limit-under-remote-control",
+    description: "Open the usage-limit menu and allow automatic continue while Remote Control is on",
+    apply: patchUsageLimitUnderRemoteControl,
+  },
+  {
     id: "thinking-summaries-default",
     description: "Default showThinkingSummaries on so thinking is requested unredacted",
     apply: patchThinkingSummariesDefault,
@@ -5436,6 +5527,7 @@ module.exports = {
   patchCompactTokensSaved,
   patchDisableBashFirst,
   patchThinkingSummariesDefault,
+  patchUsageLimitUnderRemoteControl,
   // Exported for tests: the positional stream-reducer branch is only reachable
   // on older bundle shapes, so nothing else exercises it.
   patchThinkingStreaming,

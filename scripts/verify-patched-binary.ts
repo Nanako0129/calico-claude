@@ -1803,6 +1803,40 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "usage-limit-under-remote-control",
+    kind: "custom",
+    describe: "the four usage-limit sites skip only the Remote Control bridge term",
+    run: (content: string): string | null => {
+      const I = "[A-Za-z_$][\\w$]*";
+      const definitions = [
+        ...content.matchAll(
+          new RegExp(`function (${I})\\(e\\)\\{return\\(e!==!0&&(${I})\\(\\)\\)\\|\\|${I}\\(\\)\\|\\|${I}\\(\\)!==void 0\\}`, "g")
+        ),
+      ];
+      if (definitions.length !== 1) {
+        return `expected 1 bridge-aware limit predicate, found ${definitions.length}`;
+      }
+      const [, name, bridge] = definitions[0];
+      const bridgeAccessor = new RegExp(
+        `function ${escapeRegExp(bridge)}\\(\\)\\{return ${I}\\(\\)\\.surfaceCapabilities\\.replBridgeActive\\(\\)\\}`
+      );
+      if (!bridgeAccessor.test(content)) {
+        return "the term the predicate drops is not the Remote Control bridge accessor";
+      }
+      const call = `${escapeRegExp(name)}\\(!0\\)`;
+      const sites = {
+        "auto-open": new RegExp(`return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\(${call}\\)return!1;let\\{onSubmit:`),
+        arm: new RegExp(`if\\(!${I}\\(${I}\\)\\|\\|!${I}\\(\\)\\)return!1;if\\(${call}\\)return!1;let ${I}=${I}\\.resetsAt\\?\\?0;`),
+        "UI arm": new RegExp(`armRateLimitAutoContinue=\\(${I}\\)=>\\{if\\(${I}===this\\._autoContinueResetsAt\\)return!1;if\\(${call}\\)return!1;`),
+        request: new RegExp(`\\|\\|!${I}\\(\\)\\|\\|!${I}\\(\\)\\|\\|${call}\\)return\\{outcome:"declined",failureNote:void 0\\}`),
+      };
+      for (const [site, pattern] of Object.entries(sites)) {
+        if (!pattern.test(content)) return `the ${site} site does not skip the bridge term`;
+      }
+      return null;
+    },
+  },
+  {
     id: "thinking-summaries-default",
     kind: "custom",
     describe: "showThinkingSummaries defaults on, with an explicit false still honoured",
