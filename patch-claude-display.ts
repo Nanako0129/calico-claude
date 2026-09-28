@@ -3941,7 +3941,13 @@ function patchStatuslineCommittedUsage(content) {
   // after the rewrite they are rows, so each `X.` becomes `X.message.`. Every
   // occurrence has to be a member access for that to be sound; a bare use
   // (passed to a call, compared by identity) leaves the module untouched.
+  // A string or template literal could contain text shaped like `X.`, which
+  // the rewrite would change too; rather than tokenise JavaScript, any quote
+  // character fails closed (2.1.284's condition and body contain none).
   const cloneSyncMessageAccess = (expression) => {
+    if (/["'`]/.test(expression)) {
+      return null;
+    }
     let rewritten = expression;
     for (const local of [cloneSyncSource, cloneSyncDestination]) {
       const escaped = escapeRegExp(local);
@@ -3950,7 +3956,7 @@ function patchStatuslineCommittedUsage(content) {
       if ((expression.match(bare) || []).length !== (expression.match(member) || []).length) {
         return null;
       }
-      rewritten = rewritten.replace(member, `${local}.message.`);
+      rewritten = rewritten.replace(member, () => `${local}.message.`);
     }
     return rewritten;
   };

@@ -282,8 +282,28 @@ test("2.1.284 if-form clone sync still copies context_management onto the clone 
 });
 
 test("an if-form sync that uses a loop local other than by member access is not touched", () => {
-  const source = contextManagementSyncFixture("_i.context_management!==void 0&&typeof _i==\"object\"");
+  const source = contextManagementSyncFixture("_i.context_management!==void 0&&typeof _i!==void 0");
   assert.equal(patchStatuslineCommittedUsage(source).patched, 0);
+});
+
+// A quoted `_i.` would be rewritten along with the real member accesses and
+// change what the condition tests, so any string literal fails closed.
+test("an if-form sync containing a string literal is not touched", () => {
+  const source = contextManagementSyncFixture('_i.context_management!==void 0&&"_i.context_management".length===21');
+  assert.equal(patchStatuslineCommittedUsage(source).patched, 0);
+});
+
+// `$$` is a valid minified name, and a string replacement would read it as a
+// `$` escape and emit `$.message.`.
+test("a loop local named $$ is rewritten intact", () => {
+  // renameToken replaces with a string, which would itself collapse `$$`,
+  // so rename by token with a callback.
+  const source = contextManagementSyncFixture().replace(/(?<![A-Za-z0-9_$])_i(?![A-Za-z0-9_$])/g, () => "$$");
+  assert.match(source, /\$\$\.context_management/);
+  const { context, result } = loadCommittedFixture(source);
+  assert.match(result.content, /\$\$\.message\.context_management!==void 0/);
+  const clones = context.query(usage(333, 44), "tool_use", true, usage(333, 44), true);
+  for (const clone of clones) assert.equal(clone.message.context_management, "cm");
 });
 
 test("DONE exact all-zero terminal sentinel does not replace the previous snapshot", () => {
