@@ -3587,8 +3587,19 @@ function patchStatuslineCommittedUsage(content) {
     `for\\(let (${identifierPattern}) of (${identifierPattern})\\)\\{if\\(\\1\\.message\\.usage=(${identifierPattern}),\\1\\.message\\.stop_reason=(${identifierPattern}),((?:[^()]|\\([^()]*\\))*)\\)\\1\\.message\\.stop_details=(${identifierPattern})\\.delta\\.stop_details\\?\\?null;((?:[^{}]|\\{[^{}]*\\})*)\\}`,
     "g"
   );
+  // Two spellings of the clone sync, paired like the terminal commit above.
+  // 2.1.284 folded the three copies into an `if` head so it could append a
+  // context_management copy:
+  //
+  //   2.1.283  for(let{src:Y,dst:Se}of le)Se.usage=Y.usage,…,Se.stop_details=Y.stop_details;
+  //   2.1.284  for(let{src:V,dst:be}of ae)if(be.usage=V.usage,…,be.stop_details=V.stop_details,
+  //              V.context_management!==void 0)be.context_management=V.context_management;
+  //
+  // Groups 4 and 5 capture that condition and body. They are re-emitted after
+  // the registrations are rewritten to push rows, so their src/dst references
+  // are rewritten from `X.` to `X.message.` (see cloneSyncMessageAccess).
   const cloneSyncPattern = new RegExp(
-    `for\\(let\\{src:(${identifierPattern}),dst:(${identifierPattern})\\}of (${identifierPattern})\\)\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details;`,
+    `for\\(let\\{src:(${identifierPattern}),dst:(${identifierPattern})\\}of (${identifierPattern})\\)(?:\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details;|if\\(\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details,((?:[^()]|\\([^()]*\\))*)\\)([^;{}]*);)`,
     "g"
   );
   const reducerMatches = [
@@ -3925,7 +3936,43 @@ function patchStatuslineCommittedUsage(content) {
   );
   const cloneSyncSource = cloneSyncMatches[0][1];
   const cloneSyncDestination = cloneSyncMatches[0][2];
-  const cloneSyncReplacement = `for(let{src:${cloneSyncSource},dst:${cloneSyncDestination}}of ${cloneArray})${cloneSyncDestination}.message.usage=${cloneSyncSource}.message.usage,${cloneSyncDestination}.message.stop_reason=${cloneSyncSource}.message.stop_reason,${cloneSyncDestination}.message.stop_details=${cloneSyncSource}.message.stop_details,${cloneSyncDestination}.__calicoUsageState=${cloneSyncSource}.__calicoUsageState;`;
+  const cloneSyncAssignments = `${cloneSyncDestination}.message.usage=${cloneSyncSource}.message.usage,${cloneSyncDestination}.message.stop_reason=${cloneSyncSource}.message.stop_reason,${cloneSyncDestination}.message.stop_details=${cloneSyncSource}.message.stop_details,${cloneSyncDestination}.__calicoUsageState=${cloneSyncSource}.__calicoUsageState`;
+  // The `if` form's condition and body read the loop locals as messages, but
+  // after the rewrite they are rows, so each `X.` becomes `X.message.`. Every
+  // occurrence has to be a member access for that to be sound; a bare use
+  // (passed to a call, compared by identity) leaves the module untouched.
+  // A string or template literal could contain text shaped like `X.`, which
+  // the rewrite would change too; rather than tokenise JavaScript, any quote
+  // character fails closed (2.1.284's condition and body contain none).
+  const cloneSyncMessageAccess = (expression) => {
+    if (/["'`]/.test(expression)) {
+      return null;
+    }
+    let rewritten = expression;
+    for (const local of [cloneSyncSource, cloneSyncDestination]) {
+      const escaped = escapeRegExp(local);
+      const bare = new RegExp(`(?<![\\w$.])${escaped}(?![\\w$])`, "g");
+      const member = new RegExp(`(?<![\\w$.])${escaped}\\.`, "g");
+      if ((expression.match(bare) || []).length !== (expression.match(member) || []).length) {
+        return null;
+      }
+      rewritten = rewritten.replace(member, () => `${local}.message.`);
+    }
+    return rewritten;
+  };
+  const cloneSyncCondition = cloneSyncMatches[0][4];
+  const cloneSyncBody = cloneSyncMatches[0][5];
+  const cloneSyncConditionAsMessage =
+    cloneSyncCondition === undefined ? undefined : cloneSyncMessageAccess(cloneSyncCondition);
+  const cloneSyncBodyAsMessage =
+    cloneSyncBody === undefined ? undefined : cloneSyncMessageAccess(cloneSyncBody);
+  if (cloneSyncConditionAsMessage === null || cloneSyncBodyAsMessage === null) {
+    return { content: original, candidates, patched: 0 };
+  }
+  const cloneSyncReplacement =
+    cloneSyncCondition === undefined
+      ? `for(let{src:${cloneSyncSource},dst:${cloneSyncDestination}}of ${cloneArray})${cloneSyncAssignments};`
+      : `for(let{src:${cloneSyncSource},dst:${cloneSyncDestination}}of ${cloneArray})if(${cloneSyncAssignments},${cloneSyncConditionAsMessage})${cloneSyncBodyAsMessage};`;
   const selectorMatch = selectorMatches[0];
   // The reducer is called through whatever local name this chunk imported it
   // under (selectorMatch[3]), not the name captured at its declaration site.

@@ -255,6 +255,57 @@ test("2.1.283 row registrations survive, so upstream's isUnmetered loop still ru
   assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
 });
 
+// 2.1.284 turned the sync into an `if` head that also copies
+// context_management. The source message gains one just before the sync, so a
+// clone only carries it if upstream's condition and body still run against the
+// message after the registrations are rewritten to push rows.
+function contextManagementSyncFixture(syncCondition = "_i.context_management!==void 0", syncBody = "Ii.context_management=_i.context_management") {
+  return rowRegistrationFixture().replace(
+    'if(an.type==="stream_event"&&an.event.type==="message_delta"){for(let{src:_i,dst:Ii}of eo)Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details;',
+    `an.message.context_management="cm";if(an.type==="stream_event"&&an.event.type==="message_delta"){for(let{src:_i,dst:Ii}of eo)if(Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details,${syncCondition})${syncBody};`
+  );
+}
+
+test("2.1.284 if-form clone sync still copies context_management onto the clone message", () => {
+  const source = contextManagementSyncFixture();
+  assert.match(source, /context_management=_i\.context_management/);
+  const { context, result } = loadCommittedFixture(source);
+
+  const clones = context.query(usage(333, 44), "tool_use", true, usage(333, 44), true);
+  for (const clone of clones) {
+    assert.equal(clone.message.context_management, "cm");
+    assert.equal(clone.__calicoUsageState.committed, true);
+    assert.equal("isUnmetered" in clone, false);
+  }
+  assert.deepEqual(readStatuslineUsage(context, clones), usage(333, 44));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+test("an if-form sync that uses a loop local other than by member access is not touched", () => {
+  const source = contextManagementSyncFixture("_i.context_management!==void 0&&typeof _i!==void 0");
+  assert.equal(patchStatuslineCommittedUsage(source).patched, 0);
+});
+
+// A quoted `_i.` would be rewritten along with the real member accesses and
+// change what the condition tests, so any string literal fails closed.
+test("an if-form sync containing a string literal is not touched", () => {
+  const source = contextManagementSyncFixture('_i.context_management!==void 0&&"_i.context_management".length===21');
+  assert.equal(patchStatuslineCommittedUsage(source).patched, 0);
+});
+
+// `$$` is a valid minified name, and a string replacement would read it as a
+// `$` escape and emit `$.message.`.
+test("a loop local named $$ is rewritten intact", () => {
+  // renameToken replaces with a string, which would itself collapse `$$`,
+  // so rename by token with a callback.
+  const source = contextManagementSyncFixture().replace(/(?<![A-Za-z0-9_$])_i(?![A-Za-z0-9_$])/g, () => "$$");
+  assert.match(source, /\$\$\.context_management/);
+  const { context, result } = loadCommittedFixture(source);
+  assert.match(result.content, /\$\$\.message\.context_management!==void 0/);
+  const clones = context.query(usage(333, 44), "tool_use", true, usage(333, 44), true);
+  for (const clone of clones) assert.equal(clone.message.context_management, "cm");
+});
+
 test("DONE exact all-zero terminal sentinel does not replace the previous snapshot", () => {
   const { context } = loadCommittedFixture();
   const completed = context.query(usage(333, 44), "end_turn");
