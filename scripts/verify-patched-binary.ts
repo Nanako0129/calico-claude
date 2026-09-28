@@ -1374,8 +1374,11 @@ const CHECKS: Check[] = [
       }
       const aggregationIndex = canonicalStart + (aggregationMatches[0].index ?? -1);
 
+      // Statement form, or 2.1.284's `if` form with upstream's condition and
+      // body re-emitted after the copies. Paired, not crossed.
+      const cloneSyncCopies = `\\2\\.message\\.usage=\\1\\.message\\.usage,\\2\\.message\\.stop_reason=\\1\\.message\\.stop_reason,\\2\\.message\\.stop_details=\\1\\.message\\.stop_details,\\2\\.__calicoUsageState=\\1\\.__calicoUsageState`;
       const cloneSyncPattern = new RegExp(
-        `for\\(let\\{src:(${identifier}),dst:(${identifier})\\}of (${identifier})\\)\\2\\.message\\.usage=\\1\\.message\\.usage,\\2\\.message\\.stop_reason=\\1\\.message\\.stop_reason,\\2\\.message\\.stop_details=\\1\\.message\\.stop_details,\\2\\.__calicoUsageState=\\1\\.__calicoUsageState;`,
+        `for\\(let\\{src:(${identifier}),dst:(${identifier})\\}of (${identifier})\\)(?:${cloneSyncCopies};|if\\(${cloneSyncCopies},(?:[^()]|\\([^()]*\\))*\\)[^;{}]*;)`,
         "g"
       );
       const cloneSyncMatches = [...content.matchAll(cloneSyncPattern)];
