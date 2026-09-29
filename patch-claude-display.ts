@@ -2488,6 +2488,38 @@ function patchThinkingSummariesDefault(content) {
   return { content: output, candidates, patched };
 }
 
+function patchThinkingNotCollapsed(content) {
+  // thinking-inline rewrites the standalone `case"thinking":` renderer, but a
+  // finished thinking block with text never reaches it in the prompt screen.
+  // The grouping pass that builds `collapsed_read_search` rows folds every
+  // non-blank thinking message into the row, where only "Thought for Ns" is
+  // drawn; `ctrl+o` or `--verbose` is needed to see the text (issue #67).
+  //
+  //   2.1.284  else if(WEr(Ee)||Me!==void 0&&vPt(Me.message))ve(),w.push(Ee);
+  //            else if(Me!==void 0){let Ne=Me.memo.summary??=…;D.messages.push(Me.message)}
+  //
+  // `Me` is only defined for a thinking block whose text is not blank (its
+  // builder returns undefined otherwise), and `vPt` keeps just the narration
+  // kind standalone. Dropping the `vPt` test sends every non-blank thinking
+  // block down the standalone branch: the open row is closed and the thinking
+  // is pushed as its own message, so the patched renderer draws it. Tool calls
+  // still collapse; blank or redacted thinking keeps folding as before.
+  //
+  // The fold branch is part of the anchor so this only matches the grouping
+  // pass, not the other callers of the narration predicate.
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const pattern = new RegExp(
+    `(else if\\(${identifier}\\((${identifier})\\)\\|\\|(${identifier})!==void 0)&&${identifier}\\(\\3\\.message\\)(\\)${identifier}\\(\\),${identifier}\\.push\\(\\2\\);else if\\(\\3!==void 0\\)\\{let ${identifier}=\\3\\.memo\\.summary\\?\\?=)`,
+    "g"
+  );
+  const matches = [...content.matchAll(pattern)];
+  if (matches.length !== 1) {
+    return { content, candidates: matches.length, patched: 0 };
+  }
+  const output = content.replace(pattern, (full, head, item, thinking, tail) => `${head}${tail}`);
+  return { content: output, candidates: 1, patched: 1 };
+}
+
 function patchInstallerMigrationMessage(content, ctx = {}) {
   const needle = "switched from npm to native installer";
   let output = content;
@@ -5306,6 +5338,11 @@ const PATCH_MODULES = [
     apply: patchThinkingCase,
   },
   {
+    id: "thinking-not-collapsed",
+    description: "Keep non-empty thinking out of collapsed read/search rows so it renders inline",
+    apply: patchThinkingNotCollapsed,
+  },
+  {
     id: "redacted-thinking-inline",
     description: "Render redacted thinking summaries inline as thinking text",
     apply: patchRedactedThinkingSummaries,
@@ -5582,6 +5619,7 @@ module.exports = {
   patchCompactTokensSaved,
   patchDisableBashFirst,
   patchThinkingSummariesDefault,
+  patchThinkingNotCollapsed,
   patchUsageLimitUnderRemoteControl,
   // Exported for tests: the positional stream-reducer branch is only reachable
   // on older bundle shapes, so nothing else exercises it.
