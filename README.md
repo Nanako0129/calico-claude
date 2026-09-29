@@ -33,6 +33,7 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 |---|---|
 | `thinking-inline` | Renders thinking blocks inline instead of hiding them behind transcript mode |
 | `thinking-streaming` | Streams thinking live, so a 10-minute think shows progress instead of a silent spinner |
+| `thinking-not-collapsed` | Keeps finished, non-empty thinking out of collapsed read/search rows, so it renders inline instead of as `Thought for Ns` |
 | `redacted-thinking-inline` | Renders redacted thinking summaries inline as thinking text |
 | `subagent-prompt` | Shows subagent `Prompt:` blocks outside transcript mode |
 | `tool-call-verbose` | Forces verbose rendering of collapsed read/search tool calls |

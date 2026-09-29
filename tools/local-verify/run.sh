@@ -130,4 +130,19 @@ if [ "$REQUEST_COUNT" -ne "$EXPECTED_REQUESTS" ]; then
   exit 1
 fi
 
-grep -aqE "$RENDERED_TEXT" "$WORK/tui.clean"
+grep -aqE "$RENDERED_TEXT" "$WORK/tui.clean" || exit 1
+
+# The mock sends a thinking block before the reply. A finished, non-empty
+# thinking block has to be drawn in the prompt screen; before
+# thinking-not-collapsed it was folded into a collapsed row that shows only
+# "Thought for Ns" (issue #67). thinking-inline's text check could not see that,
+# because the renderer it rewrites was never reached. Measured on 2.1.284: the
+# build without the module never draws this text, even transiently, and the one
+# with it does.
+THINKING_TEXT="Let ?me ?think ?about ?this ?carefully"
+if grep -aqE "$THINKING_TEXT" "$WORK/tui.clean"; then
+  echo "thinking text : RENDERED"
+else
+  echo "thinking text : FOLDED  <-- finished thinking was collapsed into \"Thought for Ns\"" >&2
+  exit 1
+fi

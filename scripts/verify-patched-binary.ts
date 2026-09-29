@@ -1840,6 +1840,22 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "thinking-not-collapsed",
+    kind: "custom",
+    describe: "non-empty thinking is not folded into collapsed read/search rows",
+    run: (content: string): string | null => {
+      const identifier = "[A-Za-z_$][\\w$]*";
+      const patched = new RegExp(
+        `else if\\(${identifier}\\((${identifier})\\)\\|\\|(${identifier})!==void 0\\)${identifier}\\(\\),${identifier}\\.push\\(\\1\\);else if\\(\\2!==void 0\\)\\{let ${identifier}=\\2\\.memo\\.summary\\?\\?=`,
+        "g"
+      );
+      const count = [...content.matchAll(patched)].length;
+      return count === 1
+        ? null
+        : `expected 1 grouping branch sending non-empty thinking standalone, found ${count}`;
+    },
+  },
+  {
     id: "thinking-summaries-default",
     kind: "custom",
     describe: "showThinkingSummaries defaults on, with an explicit false still honoured",
