@@ -67,9 +67,14 @@ for arg in "$@"; do
   prev="$arg"
 done
 [ -n "$out" ] || exit 1
-# One line per call with its full argv, so a case can assert on the options
-# every request was actually made with.
-[ -n "$FAKE_CURL_ARGS_LOG" ] && printf '%s\n' "$*" >> "$FAKE_CURL_ARGS_LOG"
+# One line per call, each argument wrapped in <>, so a case can assert on the
+# options every request was made with and on where one argument ends: "$*"
+# would log a single quoted "--connect-timeout 30 ..." argument, which curl
+# rejects, exactly like the separate arguments it needs.
+if [ -n "$FAKE_CURL_ARGS_LOG" ]; then
+  printf '<%s>' "$@" >> "$FAKE_CURL_ARGS_LOG"
+  printf '\n' >> "$FAKE_CURL_ARGS_LOG"
+fi
 # Which URL was requested, so the unattended-mode cases can tell which
 # repository a detached child actually queried.
 [ -n "$FAKE_URL_LOG" ] && printf '%s\n' "$url" >> "$FAKE_URL_LOG"
@@ -480,7 +485,7 @@ check "e2e: a good artifact installs" "0" "$?"
 # checksums -- has to go out with the connect timeout and the stall floor.
 check "e2e: a full install makes three curl calls" "3" "$(wc -l < "$E2E/curl-args" | tr -d ' ')"
 check "e2e: every curl call carries the timeouts" "3" \
-  "$(grep -c -- '--connect-timeout 30 --speed-limit 1024 --speed-time 60' "$E2E/curl-args")"
+  "$(grep -c -- '<--connect-timeout><30><--speed-limit><1024><--speed-time><60>' "$E2E/curl-args")"
 if [[ -L "$E2E/bin/calico-claude" && "$(readlink "$E2E/bin/calico-claude")" == "$E2E/versions/9.9.9" ]]; then
   ok "e2e: symlink points at the installed version"
 else bad "e2e: symlink points at the installed version"; fi
