@@ -243,6 +243,15 @@ sha256_check() {
   fi
 }
 
+# Every curl call carries these, so a connection that stalls cannot hang the
+# run. Without them curl waits forever: on 2026-09-29 a download to GitHub's
+# release CDN received no bytes for over six minutes and never exited. The run
+# kept holding LOCK_DIR the whole time, so every hook and timer after it skipped
+# as "already in progress" until the lock aged past LOCK_MAX_AGE_SECONDS.
+# 30s to connect; after that, abort if the rate stays below 1 KiB/s for a full
+# minute. A healthy download of the ~230 MB binary runs far above that floor.
+CURL_TIMEOUT_ARGS=(--connect-timeout 30 --speed-limit 1024 --speed-time 60)
+
 # A lock older than this is assumed abandoned (SIGKILL, power loss, reboot) and
 # is IGNORED, never removed. Any real run finishes far inside an hour.
 LOCK_MAX_AGE_SECONDS=3600
@@ -329,6 +338,7 @@ query_latest_release() {
   # token must never be its own array.
   local -a curl_args=(
     -fsSL
+    "${CURL_TIMEOUT_ARGS[@]}"
     -H "Accept: application/vnd.github+json"
     -H "User-Agent: calico-claude-updater"
   )
@@ -648,10 +658,10 @@ perform_update() {
   local asset_path="${TMP_DIR}/${ASSET}"
   log "Downloading ${ASSET} (${LATEST_TAG})"
   # -sS: no progress meter (this log is appended to unattended), errors still shown.
-  curl -fsSL "$ASSET_URL" -o "$asset_path" || fail "Failed to download ${ASSET}"
+  curl -fsSL "${CURL_TIMEOUT_ARGS[@]}" "$ASSET_URL" -o "$asset_path" || fail "Failed to download ${ASSET}"
 
   if [[ -n "$CHECKSUMS_URL" ]]; then
-    curl -fsSL "$CHECKSUMS_URL" -o "${TMP_DIR}/checksums.txt" || fail "Failed to download checksums.txt"
+    curl -fsSL "${CURL_TIMEOUT_ARGS[@]}" "$CHECKSUMS_URL" -o "${TMP_DIR}/checksums.txt" || fail "Failed to download checksums.txt"
   else
     fail "Release ${LATEST_TAG} has no checksums.txt asset; refusing to install"
   fi
