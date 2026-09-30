@@ -627,6 +627,67 @@ test("patches the 2.1.282 unmetered-screened usage read", () => {
   assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
 });
 
+// 2.1.285 puts one assignment between the transcript call and the finalizer.
+// The progress fixture's owner is `e`; its status local is renamed to `T` so
+// this sentence shares both. `DKe(T.get(e),e)` keeps the comma inside the
+// middle value. The decoy is the same function, before progress, and uses
+// `suppressTelemetry:!0` plus an arrow, so it must not be selected.
+function splitCompletionFixture() {
+  return fixture.replace(
+    "function asyncLoopFixture(){hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),s);let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});if(tRu(de,s))return}",
+    "function asyncLoopFixture(){let xe=Ws(T,e,de).filter((q)=>q);let De=IPn(xe,e,{...r,modelsUsed:le},{suppressTelemetry:!0});hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),T);let fo=Ws(T,e,de),pt=Ct?void 0:DKe(T.get(e),e),Ee=IPn(fo,e,{...r,modelsUsed:le},{suppressTelemetry:Tt,handback:pt,handbackInterim:Tt});}"
+  );
+}
+
+test("patches the 2.1.285 split completion without selecting the decoy", () => {
+  const source = splitCompletionFixture();
+  const result = patchBackgroundAgentUsage(source);
+
+  assert.equal(result.candidates, 4);
+  assert.equal(result.patched, 4);
+  assert.match(
+    result.content,
+    /hQn\(re,_e,ie,i\.options\.tools\),globalThis\.__calicoRefreshAgentUsage\(re,de\),Z0u\(e,a9r\(re\),T\);/
+  );
+  assert.match(
+    result.content,
+    /let fo=Ws\(T,e,de\),pt=Ct\?void 0:DKe\(T\.get\(e\),e\),Ee=IPn\(fo,e,\{\.\.\.r,modelsUsed:le\},\{suppressTelemetry:Tt,handback:pt,handbackInterim:Tt\}\);globalThis\.__calicoRefreshAgentUsage\(re,fo\),Z0u\(e,a9r\(re\),T\);/
+  );
+  assert.match(
+    result.content,
+    /let xe=Ws\(T,e,de\)\.filter\(\(q\)=>q\);let De=IPn\(xe,e,\{\.\.\.r,modelsUsed:le\},\{suppressTelemetry:!0\}\);/
+  );
+  assert.equal(
+    result.content.includes("suppressTelemetry:!0});globalThis.__calicoRefreshAgentUsage"),
+    false
+  );
+  assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
+});
+
+test("split completion fails closed when it is not the one shared site", () => {
+  const source = splitCompletionFixture();
+  const progress = "hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),T);";
+  const completion =
+    "let fo=Ws(T,e,de),pt=Ct?void 0:DKe(T.get(e),e),Ee=IPn(fo,e,{...r,modelsUsed:le},{suppressTelemetry:Tt,handback:pt,handbackInterim:Tt});";
+  const brokenFixtures = [
+    source.replace("let fo=Ws(T,e,de)", "let fo=Ws(other,e,de)"),
+    source.replace("let fo=Ws(T,e,de)", "let fo=Ws(T,other,de)"),
+    source.replace(progress + completion, progress + "const hop=()=>0;" + completion),
+    source.replace(
+      `function asyncLoopFixture(){let xe=Ws(T,e,de).filter((q)=>q);let De=IPn(xe,e,{...r,modelsUsed:le},{suppressTelemetry:!0});${progress}${completion}}`,
+      `function progressFixture(){let xe=Ws(T,e,de).filter((q)=>q);let De=IPn(xe,e,{...r,modelsUsed:le},{suppressTelemetry:!0});${progress}}function completionFixture(){${completion}}`
+    ),
+    source.replace(completion, completion + completion),
+  ];
+
+  for (const broken of brokenFixtures) {
+    const result = patchBackgroundAgentUsage(broken);
+    assert.notEqual(broken, source);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, broken);
+  }
+});
+
 test("an unmetered wrapper runs nothing behind upstream's guard", () => {
   const { context } = runtime(unmeteredFixture());
   const tool = [{ type: "tool_use", name: "Read", input: {} }];

@@ -218,3 +218,77 @@ test("fails atomically when the client factory anchor is missing", () => {
   assert.equal(result.content, broken);
   assert.equal(result.content.includes("x-calico-request-source"), false);
 });
+
+// 2.1.285: the session-id object is `Ob()`, spread once, then the custom
+// headers in `fe`. Compact is applied after active-turn, so it has to land
+// between `...fe,` and the prompt spread.
+const fixture285 = `
+var Pt={promptId:"turn-a"};
+var currentContext;
+var Pkr={getStore:()=>currentContext,run:(context,callback)=>{let previous=currentContext;currentContext=context;try{return callback()}finally{currentContext=previous}}};
+function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
+function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
+function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:z()}}
+function lf(e){return e.agentType==="main"}
+function Ylt(){return customHeaders}
+var customHeaders={};
+function Tt(){return false}
+function FI(){return"fixture"}
+function z(){return"session-a"}
+function b9n(e){return e}
+var Vpt="X-Claude-Code-Session-Id";
+function Ob(r,o,t){return t}
+function Ob(){return{"x-app":Tt()?"cli-bg":"cli","User-Agent":FI(),[Vpt]:z()}}
+function UX(){return Ob()}
+async function Zie({apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b}){let B=0,Y=lf(b)?void 0:b,fe=Ylt(),Q={...Ob(),...fe,...Y?.agentId&&{"x-claude-code-agent-id":b9n(Y.agentId)}};return Q}
+async function Next(){}
+`;
+
+test("hoisted custom spread stays ahead of compact and then the prompt header", async () => {
+  const withActive = patchActiveTurnPromptIdentity(fixture285);
+  assert.equal(withActive.patched, 2);
+  const withBoth = patchCompactRequestSource(withActive.content);
+  assert.equal(withBoth.candidates, 1);
+  assert.equal(withBoth.patched, 1);
+  const ordered =
+    '...Ob(),...fe,...process.env.REMORA_ACTIVE==="1"&&h==="compact"&&{"x-calico-request-source":"compact"},...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
+  assert.equal(withBoth.content.includes(ordered), true);
+  assert.equal(withBoth.content.includes("...Ob(),...__calicoPromptId"), false);
+  assert.equal(withBoth.content.includes("...Ob(),...process.env"), false);
+  assert.equal(withBoth.content.split("return Ob()").length - 1, 1);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", withBoth.content), null);
+  assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
+
+  const context = runPatched(withBoth.content);
+  context.customHeaders = {
+    "x-calico-request-source": "forged",
+    "X-Calico-Request-Source": "forged",
+  };
+  const compactHeaders = await context.Zie({
+    source: "compact",
+    agentContext: { agentType: "main" },
+  });
+  assert.equal(compactHeaders["x-calico-request-source"], "compact");
+  assert.equal(compactHeaders["X-Calico-Request-Source"], undefined);
+  assert.equal(compactHeaders["x-calico-prompt-id"], undefined);
+  context.customHeaders = {
+    "x-calico-prompt-id": "forged",
+    "x-calico-request-source": "forged",
+  };
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
+  assert.equal(mainHeaders["x-calico-request-source"], undefined);
+});
+
+test("hoisted and inline session-id anchors together patch nothing", () => {
+  const bothShapes = fixture285.replace(
+    "Q={...Ob(),...fe,",
+    'Q={...Ob(),...fe,"X-Claude-Code-Session-Id":z(),...fe,'
+  );
+  const result = patchCompactRequestSource(bothShapes);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, bothShapes);
+});

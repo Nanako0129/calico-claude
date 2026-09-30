@@ -351,3 +351,90 @@ test("fails closed when the header entry is missing", () => {
   assert.equal(result.content, noHeaderEntry);
   assert.equal(result.content.includes("__calicoQueryKind"), false);
 });
+
+// 2.1.285 hoists the session-id header into one zero-arg helper and spreads it
+// once, after which the custom-header local is `...fe,`. `Ob(r,o,t)` and the
+// bare `Ob()` call are not that helper. `Vpt` is reused as a property name;
+// only the string binding identifies the key.
+const fixture285 = `
+var Pt={promptId:"turn-a"};
+var currentContext;
+var Pkr={getStore:()=>currentContext,run:(context,callback)=>{let previous=currentContext;currentContext=context;try{return callback()}finally{currentContext=previous}}};
+function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
+function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
+function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:z()}}
+function lf(e){return e.agentType==="main"}
+function Ylt(){return customHeaders}
+var customHeaders={};
+function Tt(){return false}
+function FI(){return"fixture"}
+function z(){return"session-a"}
+function b9n(e){return e}
+var Vpt="X-Claude-Code-Session-Id";
+var bucket={Vpt:4};
+function Ob(r,o,t){return t}
+function Ob(){return{"x-app":Tt()?"cli-bg":"cli","User-Agent":FI(),[Vpt]:z()}}
+function UX(){return Ob()}
+async function Zie({apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b}){let B=0,Y=lf(b)?void 0:b,fe=Ylt(),Q={...Ob(),...fe,...Y?.agentId&&{"x-claude-code-agent-id":b9n(Y.agentId)}};return Q}
+async function Next(){}
+`;
+
+test("emits the prompt header after the hoisted custom-header spread", async () => {
+  const result = patchActiveTurnPromptIdentity(fixture285);
+  assert.equal(result.candidates, 2);
+  assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
+  const anchor = "...Ob(),...fe,";
+  const at = result.content.indexOf(anchor);
+  assert.notEqual(at, -1);
+  assert.equal(
+    result.content.startsWith(
+      anchor +
+        '...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},',
+      at
+    ),
+    true
+  );
+  assert.equal(result.content.includes("...Ob(),...__calicoPromptId"), false);
+  assert.equal(result.content.split("return Ob()").length - 1, 1);
+  assert.equal(result.content.includes("function Ob(r,o,t){return t}"), true);
+
+  const context = { process: { env: { REMORA_ACTIVE: "1" } } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+  const base = context.UX();
+  assert.equal(base["X-Claude-Code-Session-Id"], "session-a");
+  assert.equal(base["x-calico-prompt-id"], undefined);
+
+  context.customHeaders = {
+    "x-calico-prompt-id": "forged",
+    "x-calico-active-turn-version": "999",
+  };
+  const headers = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(headers["X-Claude-Code-Session-Id"], "session-a");
+  assert.equal(headers["x-calico-prompt-id"], "turn-a");
+  assert.equal(headers["x-calico-active-turn-version"], "1");
+});
+
+test("hoisted session header fails closed without a unique helper or spread", () => {
+  const missingHelper = fixture285.replace(
+    'function Ob(){return{"x-app":Tt()?"cli-bg":"cli","User-Agent":FI(),[Vpt]:z()}}',
+    ""
+  );
+  const twoSpreads = fixture285.replace(
+    "async function Next(){}",
+    "function decoy(){return {...Ob(),x:1}}async function Next(){}"
+  );
+  const bothShapes = fixture285.replace(
+    "Q={...Ob(),...fe,",
+    'Q={...Ob(),...fe,"X-Claude-Code-Session-Id":z(),...fe,'
+  );
+  for (const source of [missingHelper, twoSpreads, bothShapes]) {
+    const result = patchActiveTurnPromptIdentity(source);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, source);
+  }
+});

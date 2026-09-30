@@ -5,6 +5,7 @@ const vm = require("node:vm");
 const {
   patchCompactBodyPolicy,
   patchCompactRequestSource,
+  patchActiveTurnPromptIdentity,
 } = require("../patch-claude-display.ts");
 const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
@@ -409,4 +410,66 @@ test("fails atomically when Zie anchor is missing", () => {
   assert.equal(result.patched, 0);
   assert.equal(result.content, broken);
   assert.equal(result.content.includes("__calicoCompactWrapFetch"), false);
+});
+
+// 2.1.285 opens the same gate with the hoisted `...Ob(),` spread. The wrap is
+// still the first statement and still names this factory's own parameters.
+const fixture285 = `
+var Pt={promptId:"turn-a"};
+var currentContext;
+var Pkr={getStore:()=>currentContext,run:(context,callback)=>{let previous=currentContext;currentContext=context;try{return callback()}finally{currentContext=previous}}};
+function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
+function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
+function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:z()}}
+function lf(e){return e.agentType==="main"}
+function Ylt(){return {}}
+function Tt(){return false}
+function FI(){return"fixture"}
+function z(){return"session-a"}
+function b9n(e){return e}
+var Vpt="X-Claude-Code-Session-Id";
+function Ob(r,o,t){return t}
+function Ob(){return{"x-app":Tt()?"cli-bg":"cli","User-Agent":FI(),[Vpt]:z()}}
+function UX(){return Ob()}
+async function Zie({apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b}){let B=0,Y=lf(b)?void 0:b,fe=Ylt(),Q={...Ob(),...fe,...Y?.agentId&&{"x-claude-code-agent-id":b9n(Y.agentId)}};return{headers:Q,fetch:s}}
+async function Next(){}
+`;
+
+test("hoisted session header still wraps this factory's fetchOverride first", async () => {
+  const result = patchCompactBodyPolicy(fixture285);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("compact-body-policy", result.content), null);
+  assert.match(
+    result.content,
+    /async function Zie\(\{apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&h==="compact"\)\{s=__calicoCompactWrapFetch\(s\)\}let B=0,/
+  );
+  assert.equal(result.content.includes("return Ob()"), true);
+
+  const context = runPatched(result.content);
+  const { calls } = await callWrappedFetch(context, "compact", {
+    model: "gpt-5.6-sol",
+    output_config: { effort: "xhigh" },
+  });
+  assert.equal(JSON.parse(calls[0].init.body).output_config.effort, "medium");
+
+  const withActive = patchActiveTurnPromptIdentity(fixture285);
+  const withCompact = patchCompactRequestSource(withActive.content);
+  const withAll = patchCompactBodyPolicy(withCompact.content);
+  assert.equal(withAll.patched, 1);
+  assert.match(
+    withAll.content,
+    /async function Zie\(\{apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b\}\)\{if\(process\.env\.REMORA_ACTIVE==="1"&&h==="compact"\)\{s=__calicoCompactWrapFetch\(s\)\}let B=0,/
+  );
+  assert.equal(evaluatePatchModule("compact-body-policy", withAll.content), null);
+});
+
+test("hoisted and inline session-id anchors together patch nothing", () => {
+  const bothShapes = fixture285.replace(
+    "Q={...Ob(),...fe,",
+    'Q={...Ob(),...fe,"X-Claude-Code-Session-Id":z(),...fe,'
+  );
+  const result = patchCompactBodyPolicy(bothShapes);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, bothShapes);
 });
