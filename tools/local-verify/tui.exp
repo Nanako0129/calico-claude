@@ -33,9 +33,12 @@ spawn -noecho $binary
 # Wait for the status line the main renderer draws, then for the input
 # placeholder, so the prompt is not typed before the box exists. 2.1.283 made
 # auto mode the default, and with it on the status line reads "auto mode on
-# (shift+tab to cycle)" instead of "? for shortcuts".
+# (shift+tab to cycle)" instead of "? for shortcuts". 2.1.285 keeps those
+# words but places them with cursor-column escapes
+# (`shift+tab^[[30Gto^[[33Gcycle`), so a literal space is not required.
+# The official binary does this too; it is not introduced by the patch.
 expect {
-    -re {shortcuts|shift\+tab to cycle} {}
+    -re {shortcuts|shift\+tab(?:\x1b\[[0-9;]*[A-Za-z]| )+to(?:\x1b\[[0-9;]*[A-Za-z]| )+cycle} {}
     timeout { puts "\nHARNESS: main renderer never mounted"; exit 2 }
 }
 expect {

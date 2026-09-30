@@ -140,6 +140,47 @@ function clientFactoryLocal(fields: string, name: string): string | null {
   return match ? match[1] : null;
 }
 
+// Kept in lockstep with hoistedSessionHeader in patch-claude-display.ts.
+// Exactly one zero-arg session-id helper, and exactly one `...NAME(),` spread.
+// A computed key counts only when its single var/let/const initializer is the
+// session-id string. Other overloads and non-spread calls do not qualify.
+function hoistedSessionHeader(content: string): { name: string } | null {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const helpers = [
+    ...content.matchAll(
+      new RegExp(
+        `function (${identifier})\\(\\)\\{return\\{"x-app":${identifier}\\(\\)\\?"cli-bg":"cli","User-Agent":${identifier}\\(\\),(?:\\[(${identifier})\\]|"X-Claude-Code-Session-Id"):${identifier}\\(\\)\\}\\}`,
+        "g"
+      )
+    ),
+  ].filter((match) => {
+    const key = match[2];
+    if (!key) {
+      return true;
+    }
+    const bindings = [
+      ...content.matchAll(
+        new RegExp(
+          `(?:var|let|const) ${escapeRegExp(key)}="X-Claude-Code-Session-Id"`,
+          "g"
+        )
+      ),
+    ];
+    return bindings.length === 1;
+  });
+  if (helpers.length !== 1) {
+    return null;
+  }
+  const name = helpers[0][1];
+  const spreads = [
+    ...content.matchAll(new RegExp(`\\.\\.\\.${escapeRegExp(name)}\\(\\),`, "g")),
+  ];
+  if (spreads.length !== 1) {
+    return null;
+  }
+  return { name };
+}
+
 // Each factory in the bundle, as {index, opening, fields, body}, so a check can
 // resolve the locals it needs by name and then assert on the body.
 //
@@ -805,10 +846,22 @@ const CHECKS: Check[] = [
       }
       // Compact request-source may inject between custom headers and active-turn
       // Calico-owned headers when both modules apply (default module order).
-      const protectedHeaderOrder = new RegExp(
-        `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,(?:\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\\w$]*==="compact"&&\\{"x-calico-request-source":"compact"\\},)?\\.\\.\\.__calicoPromptId&&\\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\\}`
+      // 2.1.285 spreads a hoisted helper and then the custom-header local.
+      // Calico headers have to follow that custom spread, never sit between
+      // `...HELPER(),` and `...EXTRA,`. The helper is the unique session-id
+      // helper above, not an arbitrary call.
+      const calicoHeaders =
+        `(?:\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\\w$]*==="compact"&&\\{"x-calico-request-source":"compact"\\},)?\\.\\.\\.__calicoPromptId&&\\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\\}`;
+      const oldOrder = new RegExp(
+        `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${calicoHeaders}`
       );
-      return protectedHeaderOrder.test(content)
+      const hoisted = hoistedSessionHeader(content);
+      const newOrder = hoisted
+        ? new RegExp(
+            `\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${calicoHeaders}`
+          )
+        : null;
+      return oldOrder.test(content) || (newOrder !== null && newOrder.test(content))
         ? null
         : "Calico-owned headers are missing or can be overridden by custom headers";
     },
@@ -861,8 +914,15 @@ const CHECKS: Check[] = [
         }
         const source = escapeRegExp(sourceLocal);
         const fetchOverride = escapeRegExp(fetchOverrideLocal);
+        // Old inline session-id entry, or the unique hoisted helper spread.
+        // Either way the compact header has to follow `...EXTRA,`, so a
+        // spread inserted between the helper and the custom headers fails.
+        const hoisted = hoistedSessionHeader(content);
+        const sessionAnchor = hoisted
+          ? `(?:${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\)|\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\))`
+          : `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\)`;
         return new RegExp(
-          `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?[A-Za-z_$][\\w$]*=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\([A-Za-z_$][\\w$]*\\(\\)\\),[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`
+          `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?[A-Za-z_$][\\w$]*=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\([A-Za-z_$][\\w$]*\\(\\)\\),[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${sessionAnchor},\\.\\.\\.[A-Za-z_$][\\w$]*,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`
         ).test(segment);
       });
       if (!owned) {
@@ -1081,6 +1141,14 @@ const CHECKS: Check[] = [
         `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\),(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);globalThis\\.__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
         "g"
       );
+      // Same statement as splitCompletionPattern in patch-claude-display.ts,
+      // plus the refresh suffix. The middle-assignment quantifier is `+` here
+      // too: `*` would also match the modelsUsed form above. Groups stay on
+      // the modelsUsed map because the middle assignment is non-capturing.
+      const splitCompletionPattern = new RegExp(
+        `let (${identifier})=(${identifier})\\((${identifier}),(${identifier}),(${identifier})\\)(?:,${identifier}=(?:[^;{]|\\{(?:[^;}])*\\})*)+,(${identifier})=(${identifier})\\(\\1,\\4,\\{\\.\\.\\.(${identifier}),modelsUsed:(${identifier})\\},\\{suppressTelemetry:(${identifier})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);globalThis\\.__calicoRefreshAgentUsage\\((${identifier}),\\1\\),(${identifier})\\((${identifier}),(${identifier})\\((${identifier})\\),(${identifier})\\);`,
+        "g"
+      );
       const completionMatches = [
         ...[...content.matchAll(legacyCompletionPattern)].map((match) => ({
           match,
@@ -1096,6 +1164,19 @@ const CHECKS: Check[] = [
           refreshStatus: match[15],
         })),
         ...[...content.matchAll(modelsUsedCompletionPattern)].map((match) => ({
+          match,
+          result: match[1],
+          status: match[3],
+          owner: match[4],
+          transcript: match[5],
+          refreshTracker: match[11],
+          refreshFunction: match[12],
+          refreshOwner: match[13],
+          summaryFunction: match[14],
+          summaryTracker: match[15],
+          refreshStatus: match[16],
+        })),
+        ...[...content.matchAll(splitCompletionPattern)].map((match) => ({
           match,
           result: match[1],
           status: match[3],

@@ -3363,6 +3363,19 @@ function patchBackgroundAgentUsage(content) {
     `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\),(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,\\{\\.\\.\\.(${identifierPattern}),modelsUsed:(${identifierPattern})\\},\\{suppressTelemetry:(${identifierPattern})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);`,
     "g"
   );
+  // 2.1.285 inserts at least one assignment between the transcript call and
+  // the finalizer (`pt=Ct?void 0:DKe(T.get(e),e)`). The quantifier is `+`:
+  // `*` would also match the modelsUsed form above, which has no middle
+  // assignment, and the concatenated matchAll length would be 2. The middle
+  // assignment is non-capturing so groups 1, 3, 4 and 5 stay the modelsUsed
+  // map (processed transcript, status, owner, raw messages). Its value
+  // excludes `;`, including inside one level of braces, so a second finalizer
+  // after a semicolon cannot be swallowed into this match. `suppressTelemetry`
+  // stays an identifier, which excludes the `!0` decoy.
+  const splitCompletionPattern = new RegExp(
+    `let (${identifierPattern})=(${identifierPattern})\\((${identifierPattern}),(${identifierPattern}),(${identifierPattern})\\)(?:,${identifierPattern}=(?:[^;{]|\\{(?:[^;}])*\\})*)+,(${identifierPattern})=(${identifierPattern})\\(\\1,\\4,\\{\\.\\.\\.(${identifierPattern}),modelsUsed:(${identifierPattern})\\},\\{suppressTelemetry:(${identifierPattern})(?:,(?:[^{}]|\\{[^{}]*\\})*)?\\}\\);`,
+    "g"
+  );
   const progressMatches = progressPattern ? [...content.matchAll(progressPattern)] : [];
   const completionMatches = [
     ...[...content.matchAll(legacyCompletionPattern)].map((match) => ({
@@ -3373,6 +3386,13 @@ function patchBackgroundAgentUsage(content) {
       transcript: match[5],
     })),
     ...[...content.matchAll(modelsUsedCompletionPattern)].map((match) => ({
+      match,
+      result: match[1],
+      status: match[3],
+      owner: match[4],
+      transcript: match[5],
+    })),
+    ...[...content.matchAll(splitCompletionPattern)].map((match) => ({
       match,
       result: match[1],
       status: match[3],
@@ -4811,6 +4831,80 @@ const SESSION_ID_HEADER_ENTRY = new RegExp(
   `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,`
 );
 
+// 2.1.285 lifted that same object into one zero-arg helper and spreads it
+// once (`...Ob(),...fe,`). The key's minified name collides across chunks, so
+// the var/let/const initializer is what identifies it; a literal key is
+// accepted too. Other `function Ob(...)` overloads and bare `Ob()` calls are
+// not this helper. Kept in lockstep with hoistedSessionHeader in
+// scripts/verify-patched-binary.ts.
+function hoistedSessionHeader(content) {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const helpers = [
+    ...content.matchAll(
+      new RegExp(
+        `function (${identifier})\\(\\)\\{return\\{"x-app":${identifier}\\(\\)\\?"cli-bg":"cli","User-Agent":${identifier}\\(\\),(?:\\[(${identifier})\\]|"X-Claude-Code-Session-Id"):${identifier}\\(\\)\\}\\}`,
+        "g"
+      )
+    ),
+  ].filter((match) => {
+    const key = match[2];
+    if (!key) {
+      return true;
+    }
+    const bindings = [
+      ...content.matchAll(
+        new RegExp(
+          `(?:var|let|const) ${escapeRegExp(key)}="X-Claude-Code-Session-Id"`,
+          "g"
+        )
+      ),
+    ];
+    return bindings.length === 1;
+  });
+  if (helpers.length !== 1) {
+    return null;
+  }
+  const name = helpers[0][1];
+  const spreads = [
+    ...content.matchAll(new RegExp(`\\.\\.\\.${escapeRegExp(name)}\\(\\),`, "g")),
+  ];
+  if (spreads.length !== 1) {
+    return null;
+  }
+  return { name };
+}
+
+// The custom-header local is the `,EXTRA=FN(),HEADER={` binding. Injection
+// goes after `...HELPER(),...EXTRA,` and never between the two spreads, so
+// ANTHROPIC_CUSTOM_HEADERS cannot override x-calico headers. Two copies of
+// that anchor fail closed rather than guessing.
+function hoistedHeaderAnchor(segment, helperName) {
+  const declaration = segment.match(
+    /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/
+  );
+  if (!declaration) {
+    return null;
+  }
+  const anchor = `...${helperName}(),...${declaration[1]},`;
+  const at = segment.indexOf(anchor);
+  if (at === -1 || segment.indexOf(anchor, at + anchor.length) !== -1) {
+    return null;
+  }
+  return anchor;
+}
+
+function insertAfter(text, anchor, insertion) {
+  if (!anchor) {
+    return null;
+  }
+  const at = text.indexOf(anchor);
+  if (at === -1 || text.indexOf(anchor, at + anchor.length) !== -1) {
+    return null;
+  }
+  const cut = at + anchor.length;
+  return text.slice(0, cut) + insertion + text.slice(cut);
+}
+
 // The client factory those same three modules open on. Its destructured
 // parameter list was pinned field by field, in order, and that broke twice for
 // the same reason: 2.1.238 appended `credentials:s`, absorbed only because a
@@ -4956,6 +5050,8 @@ function patchActiveTurnPromptIdentity(content) {
   // Add a versioned, Calico-owned header only inside a remora child process.
   // Main-session requests use the live prompt id; agent requests prefer the
   // value frozen at their AsyncLocalStorage entry point.
+  // Resolved after the publishes above so the helper search sees this output.
+  const hoisted = hoistedSessionHeader(output);
   const clientStartPattern = clientFactoryPattern();
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
@@ -4966,8 +5062,16 @@ function patchActiveTurnPromptIdentity(content) {
     );
     const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
     const segment = output.slice(start, end);
+    const hasOld = SESSION_ID_HEADER_ENTRY.test(segment);
+    const hasSpread =
+      hoisted !== null && segment.includes(`...${hoisted.name}(),`);
+    // One factory carrying both anchors would be patched twice. Drop the
+    // whole module instead of guessing which spread is the custom headers.
+    if (hasOld && hasSpread) {
+      return { content: original, candidates: 0, patched: 0 };
+    }
     if (
-      !SESSION_ID_HEADER_ENTRY.test(segment) ||
+      (!hasOld && !hasSpread) ||
       !segment.includes('"x-claude-code-agent-id"') ||
       segment.includes('"x-calico-active-turn-version"')
     ) {
@@ -5013,21 +5117,37 @@ function patchActiveTurnPromptIdentity(content) {
     // regex with capture groups, so a captured name like `$1e` would be
     // read back as a backreference if passed as a plain string; go through a
     // callback so it is emitted verbatim instead.
+    const promptSpread =
+      '...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
+    // Captured before the sanitizer rewrite. On the hoisted shape the anchor
+    // is `...HELPER(),...EXTRA,` from `,EXTRA=FN(),HEADER={`; the prompt
+    // spread is inserted after EXTRA, never between the two spreads.
+    const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
+    if (hasSpread && anchor === null) {
+      continue;
+    }
     let nextSegment = segment.replace(
       localsPattern,
       () =>
         `,${contextLocal}=${sanitizer}(${contextParam})?void 0:${contextParam},__calicoActiveTurnAdapter="calico-active-turn-adapter:v1",__calicoQueryKind=${querySourceRef}(${sourceParam}),__calicoPromptId=process.env.REMORA_ACTIVE==="1"&&(__calicoQueryKind==="main"||__calicoQueryKind==="subagent")?(${contextLocal}?.__calicoPromptId??${promptGetterCall}):void 0,`
     );
-    // The spread that follows the session-id header is the extra-header local
-    // whichever name it carries, so it is matched on shape here instead of
-    // being carried down from the declaration run above.
-    nextSegment = nextSegment.replace(
-      new RegExp(
-        `(${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,)`
-      ),
-      (full) =>
-        `${full}...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},`
-    );
+    if (hasOld) {
+      // The spread that follows the session-id header is the extra-header local
+      // whichever name it carries, so it is matched on shape here instead of
+      // being carried down from the declaration run above.
+      nextSegment = nextSegment.replace(
+        new RegExp(
+          `(${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,)`
+        ),
+        (full) => `${full}${promptSpread}`
+      );
+    } else {
+      const inserted = insertAfter(nextSegment, anchor, promptSpread);
+      if (inserted === null) {
+        continue;
+      }
+      nextSegment = inserted;
+    }
     // Both injections or neither. The declaration replace always fires once
     // localsPattern matched, so comparing against the original segment could
     // only ever prove the first half ran; assert on the header entry, which is
@@ -5075,6 +5195,7 @@ function patchCompactRequestSource(content) {
 `;
 
   // Same Zie-shaped client factory active-turn targets: owns source + agentContext.
+  const hoisted = hoistedSessionHeader(output);
   const clientStartPattern = clientFactoryPattern();
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
@@ -5085,10 +5206,13 @@ function patchCompactRequestSource(content) {
     );
     const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
     const segment = output.slice(start, end);
-    if (
-      !SESSION_ID_HEADER_ENTRY.test(segment) ||
-      segment.includes('"x-calico-request-source"')
-    ) {
+    const hasOld = SESSION_ID_HEADER_ENTRY.test(segment);
+    const hasSpread =
+      hoisted !== null && segment.includes(`...${hoisted.name}(),`);
+    if (hasOld && hasSpread) {
+      return { content: original, candidates: 0, patched: 0 };
+    }
+    if ((!hasOld && !hasSpread) || segment.includes('"x-calico-request-source"')) {
       continue;
     }
 
@@ -5101,13 +5225,22 @@ function patchCompactRequestSource(content) {
     // header-object local (2.1.237 `u=…(),p={` → 2.1.238 `d=…(),f={`), so both
     // names are captured. The IIFE parameter stays the literal `u` regardless,
     // because the wrap-needle lookup below matches on `((u)=>…`.
+    // Taken before the omit wrap rewrites `,EXTRA=FN(),HEADER={`. On the
+    // hoisted shape this is `...HELPER(),...EXTRA,`, which active-turn may
+    // already have followed with the prompt spread. Inserting here puts
+    // compact between the custom spread and that prompt spread.
+    const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
+    if (hasSpread && anchor === null) {
+      continue;
+    }
     let nextSegment = segment.replace(
       /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/,
       (full, extraLocal, factory, headerLocal) =>
         `,${extraLocal}=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(${factory}()),${headerLocal}={`
     );
-    // Inject after Session-Id + custom-header spread (...u,). Works with or
-    // without a subsequent active-turn __calicoPromptId spread.
+    // Inject after Session-Id + custom-header spread (...u,), or after the
+    // hoisted `...HELPER(),...EXTRA,`. Works with or without a subsequent
+    // active-turn __calicoPromptId spread.
     const sourceParam = clientFactoryLocal(clientStartMatch[1], "source");
     if (!sourceParam) {
       continue;
@@ -5117,12 +5250,21 @@ function patchCompactRequestSource(content) {
     // so a plain-string replacement would let `$1`-in-sourceParam expand as
     // a backreference to the entire matched header prefix instead of naming
     // the source param — go through a callback so the capture is threaded
-    // explicitly and sourceParam is emitted verbatim.
-    nextSegment = nextSegment.replace(
-      new RegExp(`(${SESSION_ID_HEADER_ENTRY.source})`),
-      (_full, headerPrefix) =>
-        `${headerPrefix}...process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"&&{"x-calico-request-source":"compact"},`
-    );
+    // explicitly and sourceParam is emitted verbatim. The hoisted path uses
+    // slice insertion for the same reason.
+    const compactSpread = `...process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"&&{"x-calico-request-source":"compact"},`;
+    if (hasOld) {
+      nextSegment = nextSegment.replace(
+        new RegExp(`(${SESSION_ID_HEADER_ENTRY.source})`),
+        (_full, headerPrefix) => `${headerPrefix}${compactSpread}`
+      );
+    } else {
+      const inserted = insertAfter(nextSegment, anchor, compactSpread);
+      if (inserted === null) {
+        continue;
+      }
+      nextSegment = inserted;
+    }
     if (nextSegment === segment) {
       continue;
     }
@@ -5184,6 +5326,8 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
   let output = content;
 
   // Same Zie-shaped client factory: wrap fetchOverride when this client is for compact.
+  // The hoisted spread only opens the gate. The wrap stays the first statement.
+  const hoisted = hoistedSessionHeader(output);
   const clientStartPattern = clientFactoryPattern();
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
@@ -5192,8 +5336,14 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     const nextAsyncFunction = output.indexOf("async function ", openEnd);
     const end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
     const segment = output.slice(start, end);
+    const hasOld = SESSION_ID_HEADER_ENTRY.test(segment);
+    const hasSpread =
+      hoisted !== null && segment.includes(`...${hoisted.name}(),`);
+    if (hasOld && hasSpread) {
+      return { content: original, candidates: 0, patched: 0 };
+    }
     if (
-      !SESSION_ID_HEADER_ENTRY.test(segment) ||
+      (!hasOld && !hasSpread) ||
       segment.includes("__calicoCompactWrapFetch(")
     ) {
       continue;
