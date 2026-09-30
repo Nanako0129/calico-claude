@@ -67,6 +67,9 @@ for arg in "$@"; do
   prev="$arg"
 done
 [ -n "$out" ] || exit 1
+# One line per call with its full argv, so a case can assert on the options
+# every request was actually made with.
+[ -n "$FAKE_CURL_ARGS_LOG" ] && printf '%s\n' "$*" >> "$FAKE_CURL_ARGS_LOG"
 # Which URL was requested, so the unattended-mode cases can tell which
 # repository a detached child actually queried.
 [ -n "$FAKE_URL_LOG" ] && printf '%s\n' "$url" >> "$FAKE_URL_LOG"
@@ -470,8 +473,14 @@ printf '#!/bin/sh\necho "9.9.99 (Claude Code)"\necho "(patched)"\n' > "${SANDBOX
 printf '#!/bin/sh\nn=$(cat "$E2E_COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$E2E_COUNTER"\nif [ "$n" -le 1 ]; then echo "9.9.9 (Claude Code)"; echo "(patched)"; else echo "0.0.0 (Claude Code)"; echo "(patched)"; fi\n' > "${SANDBOX}/asset-flips"
 
 e2e_reset "${SANDBOX}/asset-good"
-out="$(e2e_run --run)"
+out="$(FAKE_CURL_ARGS_LOG="$E2E/curl-args" e2e_run --run)"
 check "e2e: a good artifact installs" "0" "$?"
+# A stalled connection used to hang the run forever while it held the lock
+# (2026-09-29). Every request of a full install -- releases API, asset,
+# checksums -- has to go out with the connect timeout and the stall floor.
+check "e2e: a full install makes three curl calls" "3" "$(wc -l < "$E2E/curl-args" | tr -d ' ')"
+check "e2e: every curl call carries the timeouts" "3" \
+  "$(grep -c -- '--connect-timeout 30 --speed-limit 1024 --speed-time 60' "$E2E/curl-args")"
 if [[ -L "$E2E/bin/calico-claude" && "$(readlink "$E2E/bin/calico-claude")" == "$E2E/versions/9.9.9" ]]; then
   ok "e2e: symlink points at the installed version"
 else bad "e2e: symlink points at the installed version"; fi
