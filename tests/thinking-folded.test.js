@@ -26,25 +26,27 @@ const fixture = reactChunk + BOUNDARY + rendererChunk;
 function draw(param, { open = false, transcript = false, ms } = {}) {
   const result = patchThinkingFolded(fixture);
   assert.equal(result.patched, 1);
+  const sets = [];
   const renderer = result.content.split(BOUNDARY)[1].replace(/import\{[^}]*\}from"[^"]+";/g, "");
   const context = {
     e: (type, props) => ({ type, props }),
     s: "Box",
     n: "Text",
-    g: () => [open, () => {}],
+    g: () => [open, (next) => sets.push(next)],
   };
   vm.createContext(context);
   vm.runInContext(renderer, context);
   context.__calicoThoughtMs = new WeakMap(ms === undefined ? [] : [[param, ms]]);
   const element = context.render(param, false, transcript, false);
-  return { tree: element.type(element.props), Ir: context.Ir };
+  return { tree: element.type(element.props), Ir: context.Ir, sets };
 }
 
 const folded = (tree) => tree.props.children.props.children;
 
 test("folded: first sentence in italics, duration upright, clickable", () => {
-  const { tree } = draw({ type: "thinking", signature: "sig", thinking: "Check the version.  Then patch it." }, { ms: 5200 });
-  assert.equal(typeof tree.props.onClick, "function");
+  const { tree, sets } = draw({ type: "thinking", signature: "sig", thinking: "Check the version.  Then patch it." }, { ms: 5200 });
+  tree.props.onClick();
+  assert.deepEqual(sets, [true]);
   const [sentence, duration] = folded(tree);
   assert.equal(sentence.props.children, "∴ Check the version.");
   assert.equal(sentence.props.italic, true);
@@ -65,8 +67,9 @@ test("folded: no recorded duration leaves the sentence alone", () => {
 });
 
 test("expanded: full component plus the duration, and a click folds it back", () => {
-  const { tree, Ir } = draw({ type: "thinking", signature: "sig", thinking: "Check the version. Then patch it." }, { open: true, ms: 65000 });
-  assert.equal(typeof tree.props.onClick, "function");
+  const { tree, Ir, sets } = draw({ type: "thinking", signature: "sig", thinking: "Check the version. Then patch it." }, { open: true, ms: 65000 });
+  tree.props.onClick();
+  assert.deepEqual(sets, [false]);
   const [full, duration] = tree.props.children;
   assert.equal(full.type, Ir);
   assert.equal(duration.props.children.props.children, "Thought for 1m 5s");
