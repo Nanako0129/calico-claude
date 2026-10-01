@@ -572,6 +572,25 @@ test("accepts a plain field appended after the effort spread", () => {
   assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
 });
 
+// 2.1.287 inserted `...zl!==void 0&&{thinkingDurationMs:zl}` between the
+// message and the batchToolUses spread, taking the wrapper match to zero and
+// the module with it.
+test("accepts a spread between the message and batchToolUses", () => {
+  const source = batchCommittedUsageFixture().replace(
+    "content:Ct},...Bt.length>0&&",
+    "content:Ct},...Ie!==void 0&&{thinkingDurationMs:Ie},...Bt.length>0&&"
+  );
+  assert.notEqual(source, batchCommittedUsageFixture());
+
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+
+  assert.equal(result.patched, 6);
+  assert.equal(completed[0].thinkingDurationMs, "high");
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
 test("preserves the 2.1.212 effort metadata wrapper", () => {
   const source = effortCommittedUsageFixture();
   const { context, result } = loadCommittedFixture(source);

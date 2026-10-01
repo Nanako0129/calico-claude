@@ -45,3 +45,18 @@ test("a resolver that does not test the headers parameter is left alone", () => 
   assert.equal(result.patched, 0);
   assert.equal(result.content, unrelated);
 });
+
+// The effective-window site is a separate rewrite in the same module, so losing
+// it leaves the module "patched" by the resolver alone; only the verifier's gate
+// check noticed when 2.1.287 changed the reserve operand. Each fixture is the
+// real function from that release, minified names and all.
+for (const [name, fixture, windowLocal] of [
+  ["2.1.285 reserves from a helper over the model", "function BK(e,n){let r=Math.min(rst(e.model),Mht),s=Uf()?n:void 0,{window:g}=XA(e,s);return g-r}", "g"],
+  ["2.1.287 reserves from maxOutputTokens", "function YV(e,n){let r=Math.min(e.maxOutputTokens,F_t),s=bm()?n:void 0,{window:g}=wE(e,s);return g-r}", "g"],
+]) {
+  test(`effective window is gated when ${name}`, () => {
+    const result = patchCustomContextWindows(fixture);
+    assert.equal(result.patched, 1);
+    assert.ok(result.content.includes(`return process.env.CALICO_MODEL_CONTEXT_WINDOWS?${windowLocal}:${windowLocal}-r}`));
+  });
+}
