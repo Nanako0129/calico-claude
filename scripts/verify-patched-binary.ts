@@ -1927,13 +1927,31 @@ const CHECKS: Check[] = [
     run: (content: string): string | null => {
       const identifier = "[A-Za-z_$][\\w$]*";
       const patched = new RegExp(
-        `else if\\(${identifier}\\((${identifier})\\)\\|\\|(${identifier})!==void 0\\)${identifier}\\(\\),${identifier}\\.push\\(\\1\\);else if\\(\\2!==void 0\\)\\{let ${identifier}=\\2\\.memo\\.summary\\?\\?=`,
+        `else if\\(${identifier}\\((${identifier})\\)\\|\\|(${identifier})!==void 0(?:&&\\(${identifier}!==void 0&&\\(globalThis\\.__calicoThoughtMs\\?\\?=new WeakMap\\)\\.set\\(\\1\\.message\\.content\\[0\\],Math\\.min\\(Date\\.parse\\(\\1\\.timestamp\\)-Date\\.parse\\(${identifier}\\),${identifier}\\)\\),!0\\))?\\)${identifier}\\(\\),${identifier}\\.push\\(\\1\\);else if\\(\\2!==void 0\\)\\{let ${identifier}=\\2\\.memo\\.summary\\?\\?=`,
         "g"
       );
       const count = [...content.matchAll(patched)].length;
       return count === 1
         ? null
         : `expected 1 grouping branch sending non-empty thinking standalone, found ${count}`;
+    },
+  },
+  {
+    id: "thinking-folded",
+    kind: "custom",
+    describe: "finished thinking folds to one clickable line with its recorded duration",
+    run: (content: string): string | null => {
+      const definitions = content.split("function __calicoFoldedThinking(").length - 1;
+      if (definitions !== 1) {
+        return `expected 1 folded-thinking wrapper, found ${definitions}`;
+      }
+      if (!/case"thinking":[\s\S]{0,2000}?\(__calicoFoldedThinking,\{addMargin:/.test(content)) {
+        return 'case"thinking" does not render through the folded-thinking wrapper';
+      }
+      // Without the record the line still folds but never shows its duration.
+      return content.includes("(globalThis.__calicoThoughtMs??=new WeakMap).set(")
+        ? null
+        : "no thinking duration is recorded for the folded line";
     },
   },
   {

@@ -146,3 +146,16 @@ else
   echo "thinking text : FOLDED  <-- finished thinking was collapsed into \"Thought for Ns\"" >&2
   exit 1
 fi
+
+# thinking-folded draws it as one line, "∴ <first sentence> · Thought for Ns".
+# The stripping above drops the non-ASCII separator, leaving
+# "carefully.Thought for 1s" or with spaces kept. Measured: 2.1.283-2.1.285
+# pass; 2.1.285 built without thinking-folded draws the full text with no
+# duration beside it and fails here.
+FOLDED_TEXT="carefully\. ?.? ?Thought ?for ?[0-9]+s"
+if grep -aqE "$FOLDED_TEXT" "$WORK/tui.clean"; then
+  echo "thinking fold : FOLDED WITH DURATION"
+else
+  echo "thinking fold : MISSING  <-- expected one line ending in \"· Thought for Ns\"" >&2
+  exit 1
+fi

@@ -2507,16 +2507,148 @@ function patchThinkingNotCollapsed(content) {
   //
   // The fold branch is part of the anchor so this only matches the grouping
   // pass, not the other callers of the narration predicate.
+  //
+  // A standalone block loses the "Thought for Ns" the row would have shown, so
+  // the same duration the fold branch adds to the row (this message's timestamp
+  // minus the previous one's, capped) is recorded in a WeakMap keyed by the
+  // thinking content block for thinking-folded to draw. It is kept off the
+  // block itself because content blocks are sent back to the API.
+  //
+  //   2.1.284  …if(W!==void 0){let Fe=Date.parse(Ee.timestamp)-Date.parse(W);
+  //            if(Number.isFinite(Fe)&&Fe>0)D.thoughtForMs+=Math.min(Fe,u$n)}
   const identifier = "[A-Za-z_$][\\w$]*";
   const pattern = new RegExp(
-    `(else if\\(${identifier}\\((${identifier})\\)\\|\\|(${identifier})!==void 0)&&${identifier}\\(\\3\\.message\\)(\\)${identifier}\\(\\),${identifier}\\.push\\(\\2\\);else if\\(\\3!==void 0\\)\\{let ${identifier}=\\3\\.memo\\.summary\\?\\?=)`,
+    `(else if\\(${identifier}\\((${identifier})\\)\\|\\|(${identifier})!==void 0)&&${identifier}\\(\\3\\.message\\)(\\)${identifier}\\(\\),${identifier}\\.push\\(\\2\\);else if\\(\\3!==void 0\\)\\{let ${identifier}=\\3\\.memo\\.summary\\?\\?=)` +
+      `(?=(?:[\\s\\S]{0,400}?if\\((${identifier})!==void 0\\)\\{let (${identifier})=Date\\.parse\\(\\2\\.timestamp\\)-Date\\.parse\\(\\5\\);if\\(Number\\.isFinite\\(\\6\\)&&\\6>0\\)${identifier}\\.thoughtForMs\\+=Math\\.min\\(\\6,(${identifier})\\)\\})?)`,
     "g"
   );
   const matches = [...content.matchAll(pattern)];
   if (matches.length !== 1) {
     return { content, candidates: matches.length, patched: 0 };
   }
-  const output = content.replace(pattern, (full, head, item, thinking, tail) => `${head}${tail}`);
+  const output = content.replace(pattern, (full, head, item, thinking, tail, previous, _gap, cap) => {
+    const record =
+      previous === undefined
+        ? ""
+        : `&&(${previous}!==void 0&&(globalThis.__calicoThoughtMs??=new WeakMap).set(${item}.message.content[0],Math.min(Date.parse(${item}.timestamp)-Date.parse(${previous}),${cap})),!0)`;
+    return `${head}${record}${tail}`;
+  });
+  return { content: output, candidates: 1, patched: 1 };
+}
+
+// The name a chunk imports React's useState under. The React chunk defines it as
+// `g=function(t){return s.H.useState(t)}` and exports it by that name; the
+// importing chunk may alias it. Requiring the rest of the import list to be
+// React-chunk exports too keeps an unrelated chunk's `g` from matching.
+function resolveUseStateName(content, moduleStart, moduleEnd) {
+  const definitions = [
+    ...content.matchAll(/([A-Za-z_$][\w$]*)=function\(([A-Za-z_$][\w$]*)\)\{return [A-Za-z_$][\w$]*\.H\.useState\(\2\)\}/g),
+  ];
+  if (definitions.length !== 1) {
+    return null;
+  }
+  const exported = definitions[0][1];
+  const reactExportList = content.slice(definitions[0].index).match(/export\{([^}]*)\}/);
+  if (!reactExportList) {
+    return null;
+  }
+  const reactExports = new Set(reactExportList[1].split(",").map((entry) => entry.trim().split(/\s+as\s+/).pop()));
+  if (!reactExports.has(exported)) {
+    return null;
+  }
+  const moduleText = content.slice(moduleStart, moduleEnd);
+  for (const match of moduleText.matchAll(/import\{([^}]*)\}from"[^"]+"/g)) {
+    const specs = match[1].split(",").map((entry) => entry.trim().split(/\s+as\s+/));
+    if (!specs.every(([name]) => reactExports.has(name))) {
+      continue;
+    }
+    const spec = specs.find(([name]) => name === exported);
+    if (spec) {
+      return spec[1] ?? spec[0];
+    }
+  }
+  return null;
+}
+
+// thinking-inline and thinking-not-collapsed put every finished thinking block
+// on the prompt screen in full. This folds it to one line instead:
+//
+//   ∴ <first sentence> · Thought for Ns
+//
+// and a click (fullscreen mode, where the TUI tracks the mouse) expands it to
+// the full text and back. ctrl+o's transcript and --verbose start expanded.
+// The duration is the one thinking-not-collapsed records for the block; it is
+// omitted when nothing was recorded.
+//
+// It wraps the thinking component rather than editing it: the component's
+// compiler memo cache is keyed on its props, so state added inside it would
+// not invalidate the cached output. The call site in `case"thinking":` is
+// pointed at the wrapper, with the transcript flag folded into `verbose`
+// because thinking-inline, which runs next, forces `isTranscriptMode` on.
+//
+//   2.1.284  case"thinking":{…ue=e(Ir,{addMargin:h,param:l,isTranscriptMode:E,verbose:R})…}
+//            function Ir(m){…e(s,{minWidth:2,children:e(n,{"aria-label":"thinking:",…
+const FOLDED_THINKING_COMPONENT = "__calicoFoldedThinking";
+
+function patchThinkingFolded(content) {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const callPattern = new RegExp(
+    `(${identifier})\\((${identifier}),\\{addMargin:(${identifier}),param:(${identifier}),isTranscriptMode:(${identifier}),verbose:(${identifier})\\}\\)`,
+    "g"
+  );
+  const calls = [];
+  for (let start = content.indexOf('case"thinking":'); start !== -1; start = content.indexOf('case"thinking":', start + 1)) {
+    const segment = content.slice(start, start + 2000);
+    for (const match of segment.matchAll(callPattern)) {
+      calls.push({ ...match, index: start + match.index, groups: match.slice(1) });
+    }
+  }
+  if (calls.length !== 1) {
+    return { content, candidates: calls.length, patched: 0 };
+  }
+  const call = calls[0];
+  const [jsx, component, addMargin, param, transcript, verbose] = call.groups;
+  const moduleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, call.index) + 1;
+  const nextBoundary = content.indexOf(BUN_MODULE_BOUNDARY, call.index);
+  const moduleEnd = nextBoundary === -1 ? content.length : nextBoundary;
+  // The wrapper is spliced in ahead of the component, and the slicing below
+  // assumes the declaration precedes the call, as it does in 2.1.283-2.1.285.
+  // Any other layout is left unpatched rather than spliced out of order.
+  const componentStart = content.indexOf(`function ${component}(`, moduleStart);
+  if (componentStart === -1 || componentStart >= call.index) {
+    return { content, candidates: 1, patched: 0 };
+  }
+  const body = content.slice(componentStart, componentStart + 1500);
+  const glyph = body.match(
+    new RegExp(`${escapeRegExp(jsx)}\\((${identifier}),\\{minWidth:2,children:${escapeRegExp(jsx)}\\((${identifier}),\\{"aria-label":"thinking:"`)
+  );
+  const useState = resolveUseStateName(content, moduleStart, moduleEnd);
+  if (!glyph || !useState) {
+    return { content, candidates: 1, patched: 0 };
+  }
+  const [, box, text] = glyph;
+  // Locals carry a __ prefix: the wrapper sits in the chunk's top-level scope,
+  // where a short name like `s` is the Box component it renders.
+  // A block without a signature is not finished: thinking-streaming's live
+  // virtual blocks carry none, and a block the API completed always has one.
+  // Those render as before, in full.
+  // The sentence is dim italic like upstream's thinking text; the duration is
+  // dim upright like upstream's "Thought for Ns" row label, and stays under the
+  // full text once expanded.
+  const wrapper =
+    `function ${FOLDED_THINKING_COMPONENT}(__p){let[__o,__O]=${useState}(!1),__t=typeof __p.param?.thinking==="string"?__p.param.thinking.trim().replace(/\\s+/g," "):"",` +
+    `__m=globalThis.__calicoThoughtMs?.get(__p.param),__s=__m>0?Math.max(1,Math.round(__m/1000)):0,` +
+    `__d=__s?"Thought for "+(__s<60?__s+"s":Math.floor(__s/60)+"m "+__s%60+"s"):"";` +
+    `if(__o||__p.verbose||!__t||typeof __p.param?.signature!=="string")return ${jsx}(${box},{flexDirection:"column",width:"100%",onClick:__o?()=>__O(!1):void 0,children:[${jsx}(${component},__p),__d&&__t?${jsx}(${box},{marginLeft:2,children:${jsx}(${text},{dimColor:!0,children:__d})}):null]});` +
+    `let __f=__t.match(/^.*?(?:[.?!](?=\\s|$)|[\\u3002\\uff1f\\uff01])/);` +
+    `return ${jsx}(${box},{marginTop:__p.addMargin?1:0,width:"100%",onClick:()=>__O(!0),children:${jsx}(${text},{dimColor:!0,wrap:"truncate-end",children:[${jsx}(${text},{dimColor:!0,italic:!0,children:"\\u2234 "+(__f?__f[0]:__t)}),__d?" \\u00b7 "+__d:""]})})}`;
+  const replacementCall = `${jsx}(${FOLDED_THINKING_COMPONENT},{addMargin:${addMargin},param:${param},isTranscriptMode:${transcript},verbose:${verbose}||${transcript}})`;
+  const output =
+    content.slice(0, componentStart) +
+    wrapper +
+    content.slice(componentStart, call.index) +
+    replacementCall +
+    content.slice(call.index + call[0].length);
   return { content: output, candidates: 1, patched: 1 };
 }
 
@@ -5483,6 +5615,11 @@ const PATCH_MODULES = [
     apply: patchWordDiffLineBackgrounds,
   },
   {
+    id: "thinking-folded",
+    description: "Fold finished thinking to one clickable line with its first sentence and duration",
+    apply: patchThinkingFolded,
+  },
+  {
     id: "thinking-inline",
     description: "Always render thinking blocks inline",
     apply: patchThinkingCase,
@@ -5770,6 +5907,7 @@ module.exports = {
   patchDisableBashFirst,
   patchThinkingSummariesDefault,
   patchThinkingNotCollapsed,
+  patchThinkingFolded,
   patchUsageLimitUnderRemoteControl,
   // Exported for tests: the positional stream-reducer branch is only reachable
   // on older bundle shapes, so nothing else exercises it.
