@@ -2611,8 +2611,11 @@ function patchThinkingFolded(content) {
   const moduleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, call.index) + 1;
   const nextBoundary = content.indexOf(BUN_MODULE_BOUNDARY, call.index);
   const moduleEnd = nextBoundary === -1 ? content.length : nextBoundary;
+  // The wrapper is spliced in ahead of the component, and the slicing below
+  // assumes the declaration precedes the call, as it does in 2.1.283-2.1.285.
+  // Any other layout is left unpatched rather than spliced out of order.
   const componentStart = content.indexOf(`function ${component}(`, moduleStart);
-  if (componentStart === -1 || componentStart >= moduleEnd) {
+  if (componentStart === -1 || componentStart >= call.index) {
     return { content, candidates: 1, patched: 0 };
   }
   const body = content.slice(componentStart, componentStart + 1500);
@@ -2626,6 +2629,9 @@ function patchThinkingFolded(content) {
   const [, box, text] = glyph;
   // Locals carry a __ prefix: the wrapper sits in the chunk's top-level scope,
   // where a short name like `s` is the Box component it renders.
+  // A block without a signature is not finished: thinking-streaming's live
+  // virtual blocks carry none, and a block the API completed always has one.
+  // Those render as before, in full.
   // The sentence is dim italic like upstream's thinking text; the duration is
   // dim upright like upstream's "Thought for Ns" row label, and stays under the
   // full text once expanded.
@@ -2633,7 +2639,7 @@ function patchThinkingFolded(content) {
     `function ${FOLDED_THINKING_COMPONENT}(__p){let[__o,__O]=${useState}(!1),__t=typeof __p.param?.thinking==="string"?__p.param.thinking.trim().replace(/\\s+/g," "):"",` +
     `__m=globalThis.__calicoThoughtMs?.get(__p.param),__s=__m>0?Math.max(1,Math.round(__m/1000)):0,` +
     `__d=__s?"Thought for "+(__s<60?__s+"s":Math.floor(__s/60)+"m "+__s%60+"s"):"";` +
-    `if(__o||__p.verbose||!__t)return ${jsx}(${box},{flexDirection:"column",width:"100%",onClick:__o?()=>__O(!1):void 0,children:[${jsx}(${component},__p),__d&&__t?${jsx}(${box},{marginLeft:2,children:${jsx}(${text},{dimColor:!0,children:__d})}):null]});` +
+    `if(__o||__p.verbose||!__t||typeof __p.param?.signature!=="string")return ${jsx}(${box},{flexDirection:"column",width:"100%",onClick:__o?()=>__O(!1):void 0,children:[${jsx}(${component},__p),__d&&__t?${jsx}(${box},{marginLeft:2,children:${jsx}(${text},{dimColor:!0,children:__d})}):null]});` +
     `let __f=__t.match(/^.*?(?:[.?!](?=\\s|$)|[\\u3002\\uff1f\\uff01])/);` +
     `return ${jsx}(${box},{marginTop:__p.addMargin?1:0,width:"100%",onClick:()=>__O(!0),children:${jsx}(${text},{dimColor:!0,wrap:"truncate-end",children:[${jsx}(${text},{dimColor:!0,italic:!0,children:"\\u2234 "+(__f?__f[0]:__t)}),__d?" \\u00b7 "+__d:""]})})}`;
   const replacementCall = `${jsx}(${FOLDED_THINKING_COMPONENT},{addMargin:${addMargin},param:${param},isTranscriptMode:${transcript},verbose:${verbose}||${transcript}})`;

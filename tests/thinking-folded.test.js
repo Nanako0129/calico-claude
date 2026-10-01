@@ -43,7 +43,7 @@ function draw(param, { open = false, transcript = false, ms } = {}) {
 const folded = (tree) => tree.props.children.props.children;
 
 test("folded: first sentence in italics, duration upright, clickable", () => {
-  const { tree } = draw({ type: "thinking", thinking: "Check the version.  Then patch it." }, { ms: 5200 });
+  const { tree } = draw({ type: "thinking", signature: "sig", thinking: "Check the version.  Then patch it." }, { ms: 5200 });
   assert.equal(typeof tree.props.onClick, "function");
   const [sentence, duration] = folded(tree);
   assert.equal(sentence.props.children, "∴ Check the version.");
@@ -52,20 +52,20 @@ test("folded: first sentence in italics, duration upright, clickable", () => {
 });
 
 test("folded: a version number's dots do not end the sentence", () => {
-  const { tree } = draw({ type: "thinking", thinking: "Bundle 2.1.285 moved the anchor. Rebuild." }, { ms: 900 });
+  const { tree } = draw({ type: "thinking", signature: "sig", thinking: "Bundle 2.1.285 moved the anchor. Rebuild." }, { ms: 900 });
   assert.equal(folded(tree)[0].props.children, "∴ Bundle 2.1.285 moved the anchor.");
   assert.equal(folded(tree)[1], " · Thought for 1s");
 });
 
 test("folded: no recorded duration leaves the sentence alone", () => {
-  const { tree } = draw({ type: "thinking", thinking: "Only one thought" });
+  const { tree } = draw({ type: "thinking", signature: "sig", thinking: "Only one thought" });
   const [sentence, duration] = folded(tree);
   assert.equal(sentence.props.children, "∴ Only one thought");
   assert.equal(duration, "");
 });
 
 test("expanded: full component plus the duration, and a click folds it back", () => {
-  const { tree, Ir } = draw({ type: "thinking", thinking: "Check the version. Then patch it." }, { open: true, ms: 65000 });
+  const { tree, Ir } = draw({ type: "thinking", signature: "sig", thinking: "Check the version. Then patch it." }, { open: true, ms: 65000 });
   assert.equal(typeof tree.props.onClick, "function");
   const [full, duration] = tree.props.children;
   assert.equal(full.type, Ir);
@@ -73,7 +73,7 @@ test("expanded: full component plus the duration, and a click folds it back", ()
 });
 
 test("transcript mode starts expanded", () => {
-  const { tree, Ir } = draw({ type: "thinking", thinking: "Check the version." }, { transcript: true });
+  const { tree, Ir } = draw({ type: "thinking", signature: "sig", thinking: "Check the version." }, { transcript: true });
   assert.equal(tree.props.children[0].type, Ir);
   assert.equal(tree.props.onClick, undefined);
 });
@@ -88,4 +88,18 @@ test("without a resolvable useState the bundle is left untouched", () => {
   const result = patchThinkingFolded(noHook);
   assert.equal(result.patched, 0);
   assert.equal(result.content, noHook);
+});
+
+test("a live block without a signature renders in full", () => {
+  const { tree, Ir } = draw({ type: "thinking", thinking: "Still thinking. More to come." }, { ms: 3000 });
+  assert.equal(tree.props.children[0].type, Ir);
+});
+
+test("a component declared after its call site is left unpatched", () => {
+  const [react, renderer] = fixture.split(BOUNDARY);
+  const component = renderer.match(/function Ir\(m\)\{.*?\}(?=function render)/)[0];
+  const reordered = react + BOUNDARY + renderer.replace(component, "") + component;
+  const result = patchThinkingFolded(reordered);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, reordered);
 });
