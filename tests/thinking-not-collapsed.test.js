@@ -19,13 +19,13 @@ const fixture = `
 function WEr(e){return e.kind==="boundary"}
 function vPt(e){return e.narration===!0}
 function thinkingOf(e){if(e.kind!=="thinking"||!e.text||e.text.trim()==="")return;return{message:e,memo:{thinking:e.text}}}
-function group(e){let w=[],D={messages:[]};function ve(){if(D.messages.length===0)return;w.push({row:D.messages.map((m)=>m.id)}),D={messages:[]}}
-for(let Ee of e){let Me=thinkingOf(Ee);if(Ee.kind==="tool")D.messages.push(Ee);else if(WEr(Ee)||Me!==void 0&&vPt(Me.message))ve(),w.push(Ee);else if(Me!==void 0){let Ne=Me.memo.summary??=Me.memo.thinking;D.messages.push(Me.message)}else ve(),w.push(Ee)}return ve(),w.map((m)=>m.row?m:m.id)}
+var CAP=600000;
+function group(e){let w=[],D={messages:[],thoughtForMs:0},W;function ve(){if(D.messages.length===0)return;w.push({row:D.messages.map((m)=>m.id)}),D={messages:[],thoughtForMs:0}}
+for(let Ee of e){let Me=thinkingOf(Ee);if(Ee.kind==="tool")D.messages.push(Ee);else if(WEr(Ee)||Me!==void 0&&vPt(Me.message))ve(),w.push(Ee);else if(Me!==void 0){let Ne=Me.memo.summary??=Me.memo.thinking;if(W!==void 0){let Fe=Date.parse(Ee.timestamp)-Date.parse(W);if(Number.isFinite(Fe)&&Fe>0)D.thoughtForMs+=Math.min(Fe,CAP)}D.messages.push(Me.message)}else ve(),w.push(Ee);if("timestamp"in Ee&&typeof Ee.timestamp==="string")W=Ee.timestamp}return ve(),w.map((m)=>m.row?m:m.id)}
 `;
 
-function run(messages, { patch = true } = {}) {
+function run(messages, { patch = true, context = {} } = {}) {
   const source = patch ? patchThinkingNotCollapsed(fixture).content : fixture;
-  const context = {};
   vm.createContext(context);
   vm.runInContext(source, context);
   context.input = messages;
@@ -65,4 +65,15 @@ test("a second matching branch leaves the bundle untouched", () => {
   const result = patchThinkingNotCollapsed(doubled);
   assert.equal(result.patched, 0);
   assert.equal(result.content, doubled);
+});
+
+test("patched: the standalone block keeps the duration the row would have counted", () => {
+  const block = { type: "thinking" };
+  const timed = [
+    { id: "u", kind: "prompt", timestamp: "2026-10-01T00:00:00.000Z" },
+    { id: "think", kind: "thinking", text: "Plan.", message: { content: [block] }, timestamp: "2026-10-01T00:00:05.200Z" },
+  ];
+  const context = {};
+  run(timed, { context });
+  assert.equal(context.__calicoThoughtMs.get(block), 5200);
 });
