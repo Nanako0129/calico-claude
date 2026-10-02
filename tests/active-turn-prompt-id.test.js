@@ -438,3 +438,16 @@ test("hoisted session header fails closed without a unique helper or spread", ()
     assert.equal(result.content, source);
   }
 });
+
+// linux-arm64 2.1.288 spreads an unrelated, chunk-local `xw` twice in another
+// Bun module. Only spreads in the helper's own module are calls to it; a second
+// spread in the same module still fails closed (the test above).
+test("a same-named spread in another Bun module is not the hoisted helper", async () => {
+  const otherModule = fixture285.replace(
+    "async function Next(){}",
+    'async function Next(){}\n/*@@calico-bun-module-boundary@@*/\nvar Ob={};var s1={...Ob(),a:1},s2={...Ob(),b:2};'
+  );
+  const result = patchActiveTurnPromptIdentity(otherModule);
+  assert.equal(result.patched, 2);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", result.content), null);
+});

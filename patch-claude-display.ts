@@ -5023,9 +5023,13 @@ function hoistedSessionHeader(content) {
     return null;
   }
   const name = helpers[0][1];
+  // Only spreads in the helper's own Bun module are calls to it. On
+  // linux-arm64 2.1.288 an unrelated chunk-local `xw` (a schema) is spread
+  // twice in another module, which a whole-bundle count took for this helper.
+  const declaredAt = helpers[0].index;
   const spreads = [
     ...content.matchAll(new RegExp(`\\.\\.\\.${escapeRegExp(name)}\\(\\),`, "g")),
-  ];
+  ].filter((match) => inSameModule(content, declaredAt, match.index));
   if (spreads.length !== 1) {
     return null;
   }
