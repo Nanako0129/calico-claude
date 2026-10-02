@@ -2385,6 +2385,7 @@ function patchUsageLimitUnderRemoteControl(content) {
   //   auto-open   …add(h),!1;if(em())return!1;let{onSubmit:…
   //   arm         if(!U(n)||!z3t())return!1;if(em())return!1;let s=e.resetsAt??0;
   //   request     …||!_bt()||!z3t()||em())return{outcome:"declined",…}
+  //               (2.1.288: …&&nnn()&&!hm()}wouldWait(…, see requestMethodPattern)
   //   UI arm      armRateLimitAutoContinue=(h)=>{if(h===this._autoContinueResetsAt)return!1;if(em())return!1;…
   //
   // Every other caller still passes nothing and keeps the bridge term. The
@@ -2418,11 +2419,26 @@ function patchUsageLimitUnderRemoteControl(content) {
     `(\\|\\|!${I}\\(\\)\\|\\|!${I}\\(\\)\\|\\|)(${I})\\(\\)(\\)return\\{outcome:"declined",failureNote:void 0\\})`,
     "g"
   );
+  // 2.1.288 moved the request gate into a private method shared with
+  // wouldWait(), and negated the predicate there:
+  //
+  //   #c(){return ft()&&Hn()?.billingType!=="usage_based"&&this.#d()===void 0&&e0t()&&nnn()&&!hm()}wouldWait(e){…this.#c()…}
+  //
+  // Both callers are the auto-continue waiter, so the one call site covers
+  // both. The two spellings are paired, not crossed: exactly one of them must
+  // match.
+  const requestMethodPattern = new RegExp(
+    `(&&${I}\\(\\)&&${I}\\(\\)&&!)(${I})\\(\\)(\\}wouldWait\\()`,
+    "g"
+  );
   const surfaceArmPattern = new RegExp(
     `(armRateLimitAutoContinue=\\(${I}\\)=>\\{if\\(${I}===this\\._autoContinueResetsAt\\)return!1;if\\()(${I})\\(\\)(\\)return!1;)`,
     "g"
   );
-  const sitePatterns = [openPattern, armPattern, requestPattern, surfaceArmPattern];
+  const requestForm = [requestPattern, requestMethodPattern].filter(
+    (pattern) => [...content.matchAll(pattern)].length > 0
+  );
+  const sitePatterns = [openPattern, armPattern, requestForm.length === 1 ? requestForm[0] : requestPattern, surfaceArmPattern];
   const sites = sitePatterns.map((pattern) => [
     ...content.matchAll(pattern),
   ]);

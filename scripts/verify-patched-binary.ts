@@ -1913,7 +1913,8 @@ const CHECKS: Check[] = [
         "auto-open": new RegExp(`return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\(${call}\\)return!1;let\\{onSubmit:`),
         arm: new RegExp(`if\\(!${I}\\(${I}\\)\\|\\|!${I}\\(\\)\\)return!1;if\\(${call}\\)return!1;let ${I}=${I}\\.resetsAt\\?\\?0;`),
         "UI arm": new RegExp(`armRateLimitAutoContinue=\\(${I}\\)=>\\{if\\(${I}===this\\._autoContinueResetsAt\\)return!1;if\\(${call}\\)return!1;`),
-        request: new RegExp(`\\|\\|!${I}\\(\\)\\|\\|!${I}\\(\\)\\|\\|${call}\\)return\\{outcome:"declined",failureNote:void 0\\}`),
+        // 2.1.288 moved this gate into a private method shared with wouldWait().
+        request: new RegExp(`(?:\\|\\|!${I}\\(\\)\\|\\|!${I}\\(\\)\\|\\|${call}\\)return\\{outcome:"declined",failureNote:void 0\\}|&&${I}\\(\\)&&${I}\\(\\)&&!${call}\\}wouldWait\\()`),
       };
       for (const [site, pattern] of Object.entries(sites)) {
         if (!pattern.test(content)) return `the ${site} site does not skip the bridge term`;

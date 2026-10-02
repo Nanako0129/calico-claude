@@ -123,3 +123,22 @@ test("a predicate whose first term is not the bridge is not touched", () => {
   );
   assert.equal(patchUsageLimitUnderRemoteControl(notBridge).patched, 0);
 });
+
+// 2.1.288 moved the request gate into a private method that wouldWait() also
+// calls, and negated the predicate there.
+test("2.1.288: the request gate moved into a shared private method", () => {
+  const moved = fixture.replace(
+    "function request(e){if(e===void 0||!gt()||!_bt()||!z3t()||em())return{outcome:\"declined\",failureNote:void 0};return{outcome:\"accepted\"}}",
+    "class Waiter{#c(){return gt()&&_bt()&&z3t()&&!em()}wouldWait(e){return this.#c()}join(e){if(e===void 0||!this.#c())return{outcome:\"declined\",failureNote:void 0};return{outcome:\"accepted\"}}}\nfunction request(e){return new Waiter().join(e)}"
+  );
+  assert.notEqual(moved, fixture);
+  const result = patchUsageLimitUnderRemoteControl(moved);
+  assert.equal(result.patched, 5);
+  assert.equal(evaluatePatchModule("usage-limit-under-remote-control", result.content), null);
+  const context = { host: { surfaceCapabilities: { replBridgeActive: () => true } }, state: { background: false, armed: false } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+  assert.equal(vm.runInContext("request({})", context).outcome, "accepted");
+  assert.equal(vm.runInContext("new Waiter().wouldWait(1)", context), true);
+  assert.equal(vm.runInContext("unrelatedDialog()", context), true);
+});
