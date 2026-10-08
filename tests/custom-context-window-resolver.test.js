@@ -17,9 +17,16 @@ const wrapped =
   "function tU(e,n){if(Vc(e))return 1e6;if(RYe(n)?.includes(rP.header)&&RC(e))return 1e6;" +
   "let r=jEn(e);if(r!==void 0)return oEt(e)??r.believed;return 200000}";
 
+// 2.1.295 folds both 1M checks into one helper over both parameters (4 -> 3
+// again, caught by the verifier again).
+const folded =
+  "function Qv(e,n){if(RUn(e,n))return 1e6;let r=Lyo(e);if(r!==void 0)return xUn(e)??r.believed;" +
+  "if(wE(e))return 1e6;return 200000}";
+
 for (const [name, fixture] of [
   ["2.1.259 reads the headers parameter directly", bare],
   ["2.1.260 passes it through a helper first", wrapped],
+  ["2.1.295 folds both 1M checks into one helper", folded],
 ]) {
   test(`resolver is patched when ${name}`, () => {
     const result = patchCustomContextWindows(fixture);
@@ -44,6 +51,10 @@ test("a resolver that does not test the headers parameter is left alone", () => 
   const result = patchCustomContextWindows(unrelated);
   assert.equal(result.patched, 0);
   assert.equal(result.content, unrelated);
+
+  // The folded form must hand the helper both parameters, in order.
+  const swapped = folded.replace("RUn(e,n)", "RUn(n,e)");
+  assert.equal(patchCustomContextWindows(swapped).patched, 0);
 });
 
 // The effective-window site is a separate rewrite in the same module, so losing

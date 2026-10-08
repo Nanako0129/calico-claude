@@ -277,3 +277,110 @@ test("verifier rejects a build whose install command still imports the installer
   const rest = patchDisableOfficialUpdater(`${updateCommand()}${BOUNDARY}${updaterModule(NAMES)}`).content;
   assert.match(check(`${installCommand()}${rest}`), /residual install command/);
 });
+
+// 2.1.295 gave P a parameter (the DISABLE_AUTOUPDATER flag), put a shim Q
+// between it and W, and rewrote the plugin gate with a host-pin branch that
+// reads P directly. Shape measured on 2.1.295 darwin-arm64 and linux-arm64.
+function hostPinModule(n) {
+  return (
+    `function ${n.W}(){return ${n.Q}()!==null}` +
+    `function ${n.G}(){if(${n.env}.FORCE_AUTOUPDATE_PLUGINS)return!1;` +
+    `if(!${n.env}.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST)return ${n.W}();` +
+    `let e=import.meta.require("/$bunfs/root/chunk-wyef8a71.js");if(${n.P}(!1)!==null)return!0;` +
+    `let n=e.findSkipReasonUnderHostPin(${n.config}().env);if(n!==null)t(\`off (\${n})\`);return n!==null}` +
+    `function ${n.R}(e){switch(e.type){case"development":return"development build";` +
+    'case"env":return`set by env: ${e.envVar}`;case"config":return"config"}}' +
+    `function ${n.Q}(){return ${n.P}(${n.parse}(process.env.DISABLE_AUTOUPDATER))}` +
+    `function ${n.P}(e){if(${n.env}.DISABLE_UPDATES)return{type:"env",envVar:"DISABLE_UPDATES"};` +
+    `if(e)return{type:"env",envVar:"DISABLE_AUTOUPDATER"};let n=${n.extra}();if(n)return{type:"env",envVar:n};` +
+    `let r=${n.config}();if(r.autoUpdates===!1&&(r.installMethod!=="native"||r.autoUpdatesProtectedForNative!==!0))` +
+    `return{type:"config"};return null}`
+  );
+}
+
+const HOST_NAMES = { ...NAMES, P: "rA", Q: "kRe", W: "Jde", G: "Ooe", R: "aZt" };
+const HOST_DOLLAR_NAMES = { ...DOLLAR_NAMES, P: "r$A", Q: "$kRe", W: "Jd$", G: "O$e", R: "a$Zt" };
+
+function hostBehaviour(source, n, env = {}, pinReason = null) {
+  const sandbox = {
+    process: { env },
+    [n.env]: env,
+    [n.parse]: (value) => ["1", "true", "yes", "on"].includes(String(value ?? "").toLowerCase()),
+    [n.extra]: () => null,
+    [n.config]: () => ({ autoUpdates: undefined, installMethod: "native", env: {} }),
+    __req: () => ({ findSkipReasonUnderHostPin: () => pinReason }),
+    t: () => {},
+    out: {},
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${source.replace("import.meta.require", "__req")}\nout.reason=${n.Q}();out.updaterDisabled=${n.W}();` +
+      `out.pluginsDisabled=${n.G}();out.text=out.reason?${n.R}(out.reason):null;`,
+    sandbox
+  );
+  return sandbox.out;
+}
+
+function hostPatched(n = HOST_NAMES) {
+  const result = patchDisableOfficialUpdater(`x()${BOUNDARY}${hostPinModule(n)}${BOUNDARY}suffix()`);
+  return { result, module: result.content.split(BOUNDARY)[1] };
+}
+
+test("2.1.295 control: unpatched, nothing disables the updater or plugins, pinned or not", () => {
+  for (const host of [undefined, "1"]) {
+    const out = hostBehaviour(hostPinModule(HOST_NAMES), HOST_NAMES, { CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: host });
+    assert.equal(out.reason, null);
+    assert.equal(out.updaterDisabled, false);
+    assert.equal(out.pluginsDisabled, false);
+  }
+});
+
+test("2.1.295 patched: updater disabled, plugin auto-update kept on both gate paths", () => {
+  for (const n of [HOST_NAMES, HOST_DOLLAR_NAMES]) {
+    const { result, module } = hostPatched(n);
+    assert.equal(result.patched, 1);
+    const free = hostBehaviour(module, n);
+    assert.equal(free.reason.type, "calico");
+    assert.equal(free.updaterDisabled, true, "every AutoUpdater component returns early");
+    assert.equal(free.pluginsDisabled, false, "unpinned path ignores the Calico reason");
+    assert.equal(free.text, CALICO_UPDATER_REASON_TEXT);
+
+    const pinned = hostBehaviour(module, n, { CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1" });
+    assert.equal(pinned.pluginsDisabled, false, "host-pin path ignores the Calico reason too");
+    const pinSkip = hostBehaviour(module, n, { CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1" }, "pinned");
+    assert.equal(pinSkip.pluginsDisabled, true, "the host's own pin still applies");
+  }
+});
+
+test("2.1.295 patched: a user's DISABLE_UPDATES still disables plugins on both paths", () => {
+  const { module } = hostPatched();
+  for (const host of [undefined, "1"]) {
+    const out = hostBehaviour(module, HOST_NAMES, { DISABLE_UPDATES: "1", CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: host });
+    assert.equal(out.reason.envVar, "DISABLE_UPDATES");
+    assert.equal(out.pluginsDisabled, true);
+  }
+  const user = hostBehaviour(module, HOST_NAMES, { DISABLE_AUTOUPDATER: "1" });
+  assert.equal(user.pluginsDisabled, true, "unpinned: DISABLE_AUTOUPDATER keeps upstream meaning");
+});
+
+test("2.1.295 all or nothing: a gate without the direct host-pin read is left untouched", () => {
+  const n = HOST_NAMES;
+  const input = `x()${BOUNDARY}${hostPinModule(n).replace(`if(${n.P}(!1)!==null)return!0;`, "")}`;
+  const result = patchDisableOfficialUpdater(input);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, input);
+});
+
+test("2.1.295 verifier accepts the patched module and rejects a half-patched gate", () => {
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  const { result } = hostPatched();
+  const withCommands = patchDisableOfficialUpdater(`${updateCommand()};${installCommand()}`).content;
+  assert.equal(check(`${withCommands}${result.content}`), null);
+
+  const directLeft = result.content.replace(
+    /\{let __calicoUpdaterReason=rA\(!1\);if\([^)]*\)return!0\}/,
+    "if(rA(!1)!==null)return!0;"
+  );
+  assert.match(check(`${withCommands}${directLeft}`), /host-pin form: 1 wrapper read, 0 direct read, 1 unmodified/);
+});

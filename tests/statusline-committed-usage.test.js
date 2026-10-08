@@ -1184,3 +1184,24 @@ test("accepts a plain field between requestId and the telemetry spread", () => {
   assert.equal(completed[0].__calicoUsageState.committed, true);
   assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
 });
+
+// 2.1.295 added a member-valued field after requestRef
+// (`requestRef:nJ,requestedModel:X.model,...Nne(…)`); the plain-field run
+// only accepted bare identifiers, so the wrapper and the module went to zero.
+test("accepts a member-valued field between requestId and the telemetry spread", () => {
+  const base = batchCommittedUsageFixture();
+  const variant = base.replace(
+    "},requestId:ge??void 0,...OG(",
+    "},requestId:ge??void 0,requestRef:ge,requestedModel:globalThis.model,...OG("
+  );
+  assert.notEqual(variant, base);
+  const result = patchStatuslineCommittedUsage(variant);
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+
+  const { context } = loadCommittedFixture(variant);
+  const completed = context.query(usage(333, 44), "end_turn");
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(333, 44));
+});

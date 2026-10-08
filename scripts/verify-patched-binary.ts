@@ -1322,7 +1322,7 @@ const CHECKS: Check[] = [
         // object, and adds fields to the object before `requestId`. Kept in
         // lockstep with batchWrapperPattern in patch-claude-display.ts.
         // 2.1.287 adds a spread between `content` and `batchToolUses`.
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:${identifier}:${identifier},)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:${identifier}:${identifier}(?:\\.${identifier})*,)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -2382,7 +2382,7 @@ const CHECKS: Check[] = [
       const starts = [
         ...content.matchAll(
           new RegExp(
-            `function (${identifier})\\(\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
+            `function (${identifier})\\((?:${identifier})?\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
               `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
             "g"
           )
@@ -2425,8 +2425,41 @@ const CHECKS: Check[] = [
         "g"
       );
       const gateCount = (content.match(gate) ?? []).length;
-      if (gateCount !== 1) {
-        problems.push(`expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount}`);
+      // 2.1.295 form: P takes a parameter, the gate reads it through a
+      // zero-argument shim and again directly on the host-pin path. Both reads
+      // must exclude the Calico reason, and neither original read may remain.
+      const shimReads = (
+        content.match(
+          new RegExp(
+            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.${identifier}\\)` +
+              `\\{let (${identifier})=${identifier}\\(\\);return \\1!==null&&\\1\\.type!=="calico"\\}`,
+            "g"
+          )
+        ) ?? []
+      ).length;
+      const directReads = (
+        content.match(
+          new RegExp(
+            `\\{let (${identifier})=${escapedPredicate}\\(!1\\);if\\(\\1!==null&&\\1\\.type!=="calico"\\)return!0\\}`,
+            "g"
+          )
+        ) ?? []
+      ).length;
+      const residualHostReads = (
+        content.match(
+          new RegExp(
+            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.${identifier}\\)return ${identifier}\\(\\);|` +
+              `if\\(${escapedPredicate}\\(!1\\)!==null\\)return!0;`,
+            "g"
+          )
+        ) ?? []
+      ).length;
+      const hostForm = shimReads === 1 && directReads === 1 && residualHostReads === 0;
+      if (gateCount !== 1 && !hostForm) {
+        problems.push(
+          `expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount} ` +
+            `(host-pin form: ${shimReads} wrapper read, ${directReads} direct read, ${residualHostReads} unmodified)`
+        );
       }
       const residualGate = new RegExp(
         `function ${identifier}\\(\\)\\{return ${identifier}\\(\\)&&!${identifier}\\.FORCE_AUTOUPDATE_PLUGINS\\}`,
