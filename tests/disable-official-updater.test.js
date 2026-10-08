@@ -280,7 +280,8 @@ test("verifier rejects a build whose install command still imports the installer
 
 // 2.1.295 gave P a parameter (the DISABLE_AUTOUPDATER flag), put a shim Q
 // between it and W, and rewrote the plugin gate with a host-pin branch that
-// reads P directly. Shape measured on 2.1.295 darwin-arm64 and linux-arm64.
+// reads P directly. Reconstructed from the 2.1.295 darwin-arm64 bundle with
+// minified names kept; the pin log message is shortened and `t` is a stub.
 function hostPinModule(n) {
   return (
     `function ${n.W}(){return ${n.Q}()!==null}` +
@@ -417,4 +418,11 @@ test("2.1.295 verifier rejects a gate rewired to a function other than P's shim"
   );
   assert.notEqual(unpatchedHost, result.content);
   assert.match(check(`${withCommands}${strayLegacyGate}${unpatchedHost}`), /found 1 \(host-pin form: 1 wrapper read, 0 direct read, 1 unmodified\)/);
+});
+
+test("verifier rejects a legacy-form build that still has an unrewritten direct P read", () => {
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  const { result } = patched();
+  assert.equal(check(result.content), null);
+  assert.match(check(`${result.content};if(${NAMES.P}(!1)!==null)return!0;`), /1 unmodified/);
 });

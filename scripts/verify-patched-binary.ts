@@ -1807,6 +1807,12 @@ const CHECKS: Check[] = [
       if (!injectedLookup.test(content)) {
         return "custom context-window lookup is not wired into the resolver";
       }
+      // One resolver, one injection: a second match would declare the helper
+      // twice in one module scope.
+      const lookupDeclarations = countOccurrences(content, "function __calico_context_window(");
+      if (lookupDeclarations !== 1) {
+        return `expected exactly 1 injected context-window lookup, found ${lookupDeclarations}`;
+      }
       // Separate injection, separate check. Replacing the old literal marker
       // with the resolver check above left the precompute bypass unverified: if
       // precomputePattern drifts, an explicitly mapped window silently gets the
@@ -2438,13 +2444,14 @@ const CHECKS: Check[] = [
           )
         ),
       ]
+        .filter((m) => inSameModule(content, start.index ?? 0, m.index ?? 0))
         .map((m) => m[1])
         .filter((name) => content.includes(`(){return ${name}()!==null}`));
       const shimAlternatives = shimNames.map((name) => name.replace(/\$/g, "\\$")).join("|") || "(?!)";
       const shimReads = (
         content.match(
           new RegExp(
-            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.${identifier}\\)` +
+            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)` +
               `\\{let (${identifier})=(?:${shimAlternatives})\\(\\);return \\1!==null&&\\1\\.type!=="calico"\\}`,
             "g"
           )
@@ -2461,16 +2468,18 @@ const CHECKS: Check[] = [
       const residualHostReads = (
         content.match(
           new RegExp(
-            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.${identifier}\\)return ${identifier}\\(\\);|` +
+            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)return ${identifier}\\(\\);|` +
               `if\\(${escapedPredicate}\\(!1\\)!==null\\)return!0;`,
             "g"
           )
         ) ?? []
       ).length;
       const hostForm = shimReads === 1 && directReads === 1 && residualHostReads === 0;
-      // The gate form follows P's signature: a parameterised P (2.1.295+) has
-      // only the host-pin gate, so the older gate shape cannot stand in for it.
-      const formOk = start[2] !== undefined ? hostForm : gateCount === 1;
+      // The gate form follows P's signature, as measured: P took a parameter
+      // in 2.1.295, in the same release that added the host-pin gate; through
+      // 2.1.289 it took none and the gate was the single-expression form. A
+      // direct P read left unrewritten fails either form.
+      const formOk = (start[2] !== undefined ? hostForm : gateCount === 1) && residualHostReads === 0;
       if (!formOk) {
         problems.push(
           `expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount} ` +

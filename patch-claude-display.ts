@@ -2927,7 +2927,7 @@ function patchDisableOfficialUpdater(content) {
       if (!wrapper) continue;
       const gate = new RegExp(
         `function ${identifier}\\(\\)\\{if\\(${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;` +
-          `if\\(!${escape(envObject)}\\.${identifier}\\)(return ${escape(wrapper[1])}\\(\\);)([^{}]*?)` +
+          `if\\(!${escape(envObject)}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)(return ${escape(wrapper[1])}\\(\\);)([^{}]*?)` +
           `(if\\(${escape(predicateName)}\\(!1\\)!==null\\)return!0;)`
       ).exec(moduleText);
       if (!gate) continue;
