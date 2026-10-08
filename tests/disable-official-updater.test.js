@@ -384,3 +384,37 @@ test("2.1.295 verifier accepts the patched module and rejects a half-patched gat
   );
   assert.match(check(`${withCommands}${directLeft}`), /host-pin form: 1 wrapper read, 0 direct read, 1 unmodified/);
 });
+
+test("2.1.295 shim is the function the wrapper calls, not the first one returning P", () => {
+  const n = HOST_NAMES;
+  const decoyShim = `function zZ(){return ${n.P}(!0)}`;
+  const input = `x()${BOUNDARY}${decoyShim}${hostPinModule(n)}`;
+  const { content, patched } = patchDisableOfficialUpdater(input);
+  assert.equal(patched, 1);
+  const module = content.split(BOUNDARY)[1];
+  assert.ok(module.includes(`{let __calicoUpdaterReason=${n.Q}();return `), "gate reads the real shim");
+  assert.equal(hostBehaviour(module, n).pluginsDisabled, false);
+});
+
+test("2.1.295 verifier rejects a gate rewired to a function other than P's shim", () => {
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  const withCommands = patchDisableOfficialUpdater(`${updateCommand()};${installCommand()}`).content;
+  const { result } = hostPatched();
+  const rewired = result.content.replace(
+    `{let __calicoUpdaterReason=${HOST_NAMES.Q}();`,
+    `{let __calicoUpdaterReason=${HOST_NAMES.extra}();`
+  );
+  assert.notEqual(rewired, result.content);
+  assert.match(check(`${withCommands}${rewired}`), /host-pin form: 0 wrapper read/);
+
+  // A stray old-form gate does not stand in for an unpatched host gate.
+  const strayLegacyGate =
+    `function AJ(){let __calicoUpdaterReason=${HOST_NAMES.P}();` +
+    `return __calicoUpdaterReason!==null&&__calicoUpdaterReason.type!=="calico"&&!a.FORCE_AUTOUPDATE_PLUGINS}`;
+  const unpatchedHost = result.content.replace(
+    /\{let __calicoUpdaterReason=rA\(!1\);if\([^)]*\)return!0\}/,
+    "if(rA(!1)!==null)return!0;"
+  );
+  assert.notEqual(unpatchedHost, result.content);
+  assert.match(check(`${withCommands}${strayLegacyGate}${unpatchedHost}`), /found 1 \(host-pin form: 1 wrapper read, 0 direct read, 1 unmodified\)/);
+});

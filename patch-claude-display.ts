@@ -2903,14 +2903,27 @@ function patchDisableOfficialUpdater(content) {
     ).exec(moduleText);
     if (!formatter) continue;
 
+    // Only the gate rewrite differs between the two forms; P's tail and the
+    // formatter case are the same edit either way.
+    const gateEdits = [];
     if (predicateParam !== undefined) {
-      const shim = new RegExp(
-        `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`
-      ).exec(moduleText);
-      if (!shim) continue;
-      const wrapper = new RegExp(
-        `function (${identifier})\\(\\)\\{return ${escape(shim[1])}\\(\\)!==null\\}`
-      ).exec(moduleText);
+      // More than one zero-argument function may return P(…); the shim is the
+      // one the `!==null` wrapper calls.
+      const shimPattern = new RegExp(
+        `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
+        "g"
+      );
+      let shimName = null;
+      let wrapper = null;
+      for (const shim of moduleText.matchAll(shimPattern)) {
+        wrapper = new RegExp(
+          `function (${identifier})\\(\\)\\{return ${escape(shim[1])}\\(\\)!==null\\}`
+        ).exec(moduleText);
+        if (wrapper) {
+          shimName = shim[1];
+          break;
+        }
+      }
       if (!wrapper) continue;
       const gate = new RegExp(
         `function ${identifier}\\(\\)\\{if\\(${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;` +
@@ -2920,42 +2933,37 @@ function patchDisableOfficialUpdater(content) {
       if (!gate) continue;
       const wrapperReadAt = moduleFrom + gate.index + gate[0].indexOf(gate[1]);
       const directReadAt = wrapperReadAt + gate[1].length + gate[2].length;
-      edits.push(
-        {
-          at: bodyEnd - "return null}".length,
-          remove: "return null}".length,
-          insert: `return{type:"${CALICO_UPDATER_REASON_TYPE}"}}`,
-        },
+      gateEdits.push(
         {
           at: wrapperReadAt,
           remove: gate[1].length,
-          insert: `{let ${reasonLocal}=${shim[1]}();return ${notCalico}}`,
+          insert: `{let ${reasonLocal}=${shimName}();return ${notCalico}}`,
         },
         {
           at: directReadAt,
           remove: gate[3].length,
           insert: `{let ${reasonLocal}=${predicateName}(!1);if(${notCalico})return!0}`,
-        },
-        {
-          at: moduleFrom + formatter.index + formatter[0].length,
-          remove: 0,
-          insert: `case"${CALICO_UPDATER_REASON_TYPE}":return"${CALICO_UPDATER_REASON_TEXT}";`,
         }
       );
-      patched += 1;
-      continue;
+    } else {
+      const wrapper = new RegExp(
+        `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\(\\)!==null\\}`
+      ).exec(moduleText);
+      if (!wrapper) continue;
+
+      const pluginGate = new RegExp(
+        `function (${identifier})\\(\\)\\{return ${escape(wrapper[1])}\\(\\)` +
+          `&&!${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\}`
+      ).exec(moduleText);
+      if (!pluginGate) continue;
+      gateEdits.push({
+        at: moduleFrom + pluginGate.index,
+        remove: pluginGate[0].length,
+        insert:
+          `function ${pluginGate[1]}(){let ${reasonLocal}=${predicateName}();` +
+          `return ${notCalico}&&!${envObject}.FORCE_AUTOUPDATE_PLUGINS}`,
+      });
     }
-
-    const wrapper = new RegExp(
-      `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\(\\)!==null\\}`
-    ).exec(moduleText);
-    if (!wrapper) continue;
-
-    const pluginGate = new RegExp(
-      `function (${identifier})\\(\\)\\{return ${escape(wrapper[1])}\\(\\)` +
-        `&&!${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\}`
-    ).exec(moduleText);
-    if (!pluginGate) continue;
 
     edits.push(
       {
@@ -2963,14 +2971,7 @@ function patchDisableOfficialUpdater(content) {
         remove: "return null}".length,
         insert: `return{type:"${CALICO_UPDATER_REASON_TYPE}"}}`,
       },
-      {
-        at: moduleFrom + pluginGate.index,
-        remove: pluginGate[0].length,
-        insert:
-          `function ${pluginGate[1]}(){let ${reasonLocal}=${predicateName}();` +
-          `return ${reasonLocal}!==null&&${reasonLocal}.type!=="${CALICO_UPDATER_REASON_TYPE}"` +
-          `&&!${envObject}.FORCE_AUTOUPDATE_PLUGINS}`,
-      },
+      ...gateEdits,
       {
         at: moduleFrom + formatter.index + formatter[0].length,
         remove: 0,
@@ -3248,9 +3249,11 @@ function patchCustomContextWindows(content) {
   //   2.1.295  function Qv(e,n){if(RUn(e,n))return 1e6;let r=Lyo(e);…
   //
   // Same silent loss as 2.1.260 (4 candidates to 3, verifier caught it), so
-  // that spelling is accepted as a second form of the opening body.
+  // that spelling is accepted as a second form of the opening body. The helper
+  // call alone says nothing about headers, so the form is also pinned to the
+  // override lookup that follows it (`let r=…(e);if(r!==void 0)return`).
   const resolverPattern =
-    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\(|if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\(\2\);if\()/g;
+    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\(|if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==void 0\)return )/g;
 
   output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
     const functionStart = `${functionOpen}${modelParam},${headersParam}${brace}`;

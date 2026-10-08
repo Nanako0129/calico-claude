@@ -2382,7 +2382,7 @@ const CHECKS: Check[] = [
       const starts = [
         ...content.matchAll(
           new RegExp(
-            `function (${identifier})\\((?:${identifier})?\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
+            `function (${identifier})\\((${identifier})?\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
               `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
             "g"
           )
@@ -2428,11 +2428,24 @@ const CHECKS: Check[] = [
       // 2.1.295 form: P takes a parameter, the gate reads it through a
       // zero-argument shim and again directly on the host-pin path. Both reads
       // must exclude the Calico reason, and neither original read may remain.
+      // The wrapper read must go through P's shim, the zero-argument function
+      // returning P(…) that a `!==null` wrapper calls.
+      const shimNames = [
+        ...content.matchAll(
+          new RegExp(
+            `function (${identifier})\\(\\)\\{return ${escapedPredicate}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
+            "g"
+          )
+        ),
+      ]
+        .map((m) => m[1])
+        .filter((name) => content.includes(`(){return ${name}()!==null}`));
+      const shimAlternatives = shimNames.map((name) => name.replace(/\$/g, "\\$")).join("|") || "(?!)";
       const shimReads = (
         content.match(
           new RegExp(
             `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.${identifier}\\)` +
-              `\\{let (${identifier})=${identifier}\\(\\);return \\1!==null&&\\1\\.type!=="calico"\\}`,
+              `\\{let (${identifier})=(?:${shimAlternatives})\\(\\);return \\1!==null&&\\1\\.type!=="calico"\\}`,
             "g"
           )
         ) ?? []
@@ -2455,7 +2468,10 @@ const CHECKS: Check[] = [
         ) ?? []
       ).length;
       const hostForm = shimReads === 1 && directReads === 1 && residualHostReads === 0;
-      if (gateCount !== 1 && !hostForm) {
+      // The gate form follows P's signature: a parameterised P (2.1.295+) has
+      // only the host-pin gate, so the older gate shape cannot stand in for it.
+      const formOk = start[2] !== undefined ? hostForm : gateCount === 1;
+      if (!formOk) {
         problems.push(
           `expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount} ` +
             `(host-pin form: ${shimReads} wrapper read, ${directReads} direct read, ${residualHostReads} unmodified)`

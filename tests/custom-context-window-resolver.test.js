@@ -51,10 +51,19 @@ test("a resolver that does not test the headers parameter is left alone", () => 
   const result = patchCustomContextWindows(unrelated);
   assert.equal(result.patched, 0);
   assert.equal(result.content, unrelated);
+});
 
-  // The folded form must hand the helper both parameters, in order.
-  const swapped = folded.replace("RUn(e,n)", "RUn(n,e)");
-  assert.equal(patchCustomContextWindows(swapped).patched, 0);
+// The folded helper call says nothing about headers by itself, so that form is
+// pinned to the parameter order and to the override lookup right after it.
+test("a folded-shape function that is not the resolver is left alone", () => {
+  for (const decoy of [
+    folded.replace("RUn(e,n)", "RUn(n,e)"),
+    folded.replace("if(r!==void 0)return", "if(r)return"),
+  ]) {
+    const result = patchCustomContextWindows(decoy);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, decoy);
+  }
 });
 
 // The effective-window site is a separate rewrite in the same module, so losing
