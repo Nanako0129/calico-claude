@@ -1322,7 +1322,7 @@ const CHECKS: Check[] = [
         // object, and adds fields to the object before `requestId`. Kept in
         // lockstep with batchWrapperPattern in patch-claude-display.ts.
         // 2.1.287 adds a spread between `content` and `batchToolUses`.
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:${identifier}:${identifier},)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}(?:,${identifier}(?:\\.${identifier})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:${identifier}:${identifier}(?:\\.${identifier})*,)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1806,6 +1806,12 @@ const CHECKS: Check[] = [
         /let __calico_window=__calico_context_window\(([A-Za-z_$][\w$]*)\);if\(__calico_window!==null\)return __calico_window;/;
       if (!injectedLookup.test(content)) {
         return "custom context-window lookup is not wired into the resolver";
+      }
+      // One resolver, one injection: a second match would declare the helper
+      // twice in one module scope.
+      const lookupDeclarations = countOccurrences(content, "function __calico_context_window(");
+      if (lookupDeclarations !== 1) {
+        return `expected exactly 1 injected context-window lookup, found ${lookupDeclarations}`;
       }
       // Separate injection, separate check. Replacing the old literal marker
       // with the resolver check above left the precompute bypass unverified: if
@@ -2382,7 +2388,7 @@ const CHECKS: Check[] = [
       const starts = [
         ...content.matchAll(
           new RegExp(
-            `function (${identifier})\\(\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
+            `function (${identifier})\\((${identifier})?\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
               `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
             "g"
           )
@@ -2425,8 +2431,71 @@ const CHECKS: Check[] = [
         "g"
       );
       const gateCount = (content.match(gate) ?? []).length;
-      if (gateCount !== 1) {
-        problems.push(`expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount}`);
+      // 2.1.295 form: P takes a parameter, the gate reads it through a
+      // zero-argument shim and again directly on the host-pin path. Both reads
+      // must exclude the Calico reason, and neither original read may remain.
+      // P's minified name collides with unrelated functions in other modules
+      // (2.1.295: a path helper named `rA`), so the host-form counts read only
+      // P's own Bun module, the scope the patcher edits.
+      const pModuleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, start.index ?? 0);
+      const pModuleNext = content.indexOf(BUN_MODULE_BOUNDARY, start.index ?? 0);
+      const pModule = content.slice(
+        pModuleStart === -1 ? 0 : pModuleStart,
+        pModuleNext === -1 ? content.length : pModuleNext
+      );
+      // The wrapper read must go through P's shim, the zero-argument function
+      // returning P(…) that a `!==null` wrapper calls.
+      const shimNames = [
+        ...pModule.matchAll(
+          new RegExp(
+            `function (${identifier})\\(\\)\\{return ${escapedPredicate}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
+            "g"
+          )
+        ),
+      ]
+        .map((m) => m[1])
+        .filter((name) => pModule.includes(`(){return ${name}()!==null}`));
+      const shimAlternatives = shimNames.map((name) => name.replace(/\$/g, "\\$")).join("|") || "(?!)";
+      const shimReads = (
+        pModule.match(
+          new RegExp(
+            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)` +
+              `\\{let (${identifier})=(?:${shimAlternatives})\\(\\);return \\1!==null&&\\1\\.type!=="calico"\\}`,
+            "g"
+          )
+        ) ?? []
+      ).length;
+      const directReads = (
+        pModule.match(
+          new RegExp(
+            `\\{let (${identifier})=${escapedPredicate}\\(!1\\);if\\(\\1!==null&&\\1\\.type!=="calico"\\)return!0\\}`,
+            "g"
+          )
+        ) ?? []
+      ).length;
+      const residualHostReads = (
+        pModule.match(
+          new RegExp(
+            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)return ${identifier}\\(\\);|` +
+              `if\\(${escapedPredicate}\\(!1\\)!==null\\)return!0;`,
+            "g"
+          )
+        ) ?? []
+      ).length;
+      const hostForm = shimReads === 1 && directReads === 1 && residualHostReads === 0;
+      // The gate form follows P's signature, as measured: P took a parameter
+      // in 2.1.295, in the same release that added the host-pin gate; through
+      // 2.1.289 it took none and the gate was the single-expression form. A
+      // direct P read left unrewritten fails either form.
+      const formOk = (start[2] !== undefined ? hostForm : gateCount === 1) && residualHostReads === 0;
+      if (!formOk) {
+        problems.push(
+          start[2] !== undefined
+            ? `host-pin plugin gate not rewritten: ${shimReads} wrapper read, ${directReads} direct read, ` +
+                `${residualHostReads} unmodified (each expected 1, 1, 0)`
+            : `expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount}` +
+                (residualHostReads > 0 ? `, and ${residualHostReads} unmodified direct read(s)` : "")
+        );
       }
       const residualGate = new RegExp(
         `function ${identifier}\\(\\)\\{return ${identifier}\\(\\)&&!${identifier}\\.FORCE_AUTOUPDATE_PLUGINS\\}`,

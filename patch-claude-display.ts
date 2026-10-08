@@ -2809,7 +2809,13 @@ function patchSelfNameInUserListing(content) {
 // `disabled (${R(reason)})`. It gains a case so that row says what is true
 // instead of `disabled (undefined)`.
 //
-// Those three rewrites happen inside P's own Bun module or none do. A build
+// 2.1.295 changed the shape: P takes the DISABLE_AUTOUPDATER flag, a
+// zero-argument shim sits between it and W, and G gained a host-pin branch that
+// reads P twice, once through W and once directly as `P(!1)`. Both reads are
+// rewritten to ignore the Calico reason; leaving the direct one would silently
+// disable plugin updates on pinned hosts. See patchDisableOfficialUpdater.
+//
+// These rewrites happen inside P's own Bun module or none do. A build
 // with P rewritten but G untouched would silently disable plugin updates, and
 // one with G rewritten but P untouched would change nothing; either is worse
 // than a loud zero. Minified names are captured, never pinned: 2.1.277 and
@@ -2835,8 +2841,22 @@ function patchDisableOfficialUpdater(content) {
   let candidates = 0;
   let patched = 0;
 
+  // 2.1.295 gave P a parameter (the DISABLE_AUTOUPDATER flag) and put a
+  // zero-argument shim between it and the `!==null` wrapper:
+  //
+  //   2.1.289  function iEe(){if(a.DISABLE_UPDATES)…}  function Fse(){return iEe()!==null}
+  //            function KZ(){return Fse()&&!a.FORCE_AUTOUPDATE_PLUGINS}
+  //   2.1.295  function kRe(){return rA(Le(process.env.DISABLE_AUTOUPDATER))}
+  //            function rA(e){if(a.DISABLE_UPDATES)…}  function Jde(){return kRe()!==null}
+  //            function Ooe(){if(a.FORCE_AUTOUPDATE_PLUGINS)return!1;
+  //              if(!a.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST)return Jde();
+  //              …;if(rA(!1)!==null)return!0;…}
+  //
+  // The plugin gate now reads P twice, once through the wrapper and once
+  // directly on the host-pin path; both reads exclude the Calico reason so
+  // plugin auto-update behaves exactly as it did before the P rewrite.
   const predicateStart = new RegExp(
-    `function (${identifier})\\(\\)\\{if\\((${identifier})\\.DISABLE_UPDATES\\)` +
+    `function (${identifier})\\((${identifier})?\\)\\{if\\((${identifier})\\.DISABLE_UPDATES\\)` +
       `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
     "g"
   );
@@ -2846,7 +2866,8 @@ function patchDisableOfficialUpdater(content) {
   while ((match = predicateStart.exec(content)) !== null) {
     candidates += 1;
     const predicateName = match[1];
-    const envObject = match[2];
+    const predicateParam = match[2];
+    const envObject = match[3];
 
     // P's body, found by brace depth from its opening brace. Safe here only
     // because P is checked afterwards: its strings are short literals with no
@@ -2879,17 +2900,8 @@ function patchDisableOfficialUpdater(content) {
     const moduleNext = content.indexOf(BUN_MODULE_BOUNDARY, bodyEnd);
     const moduleTo = moduleNext === -1 ? content.length : moduleNext;
     const moduleText = content.slice(moduleFrom, moduleTo);
-
-    const wrapper = new RegExp(
-      `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\(\\)!==null\\}`
-    ).exec(moduleText);
-    if (!wrapper) continue;
-
-    const pluginGate = new RegExp(
-      `function (${identifier})\\(\\)\\{return ${escape(wrapper[1])}\\(\\)` +
-        `&&!${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\}`
-    ).exec(moduleText);
-    if (!pluginGate) continue;
+    const reasonLocal = "__calicoUpdaterReason";
+    const notCalico = `${reasonLocal}!==null&&${reasonLocal}.type!=="${CALICO_UPDATER_REASON_TYPE}"`;
 
     const formatter = new RegExp(
       `function (${identifier})\\((${identifier})\\)\\{switch\\(\\2\\.type\\)\\{` +
@@ -2897,21 +2909,75 @@ function patchDisableOfficialUpdater(content) {
     ).exec(moduleText);
     if (!formatter) continue;
 
-    const reasonLocal = "__calicoUpdaterReason";
+    // Only the gate rewrite differs between the two forms; P's tail and the
+    // formatter case are the same edit either way.
+    const gateEdits = [];
+    if (predicateParam !== undefined) {
+      // More than one zero-argument function may return P(…); the shim is the
+      // one the `!==null` wrapper calls.
+      const shimPattern = new RegExp(
+        `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
+        "g"
+      );
+      let shimName = null;
+      let wrapper = null;
+      for (const shim of moduleText.matchAll(shimPattern)) {
+        wrapper = new RegExp(
+          `function (${identifier})\\(\\)\\{return ${escape(shim[1])}\\(\\)!==null\\}`
+        ).exec(moduleText);
+        if (wrapper) {
+          shimName = shim[1];
+          break;
+        }
+      }
+      if (!wrapper) continue;
+      const gate = new RegExp(
+        `function ${identifier}\\(\\)\\{if\\(${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;` +
+          `if\\(!${escape(envObject)}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)(return ${escape(wrapper[1])}\\(\\);)([^{}]*?)` +
+          `(if\\(${escape(predicateName)}\\(!1\\)!==null\\)return!0;)`
+      ).exec(moduleText);
+      if (!gate) continue;
+      const wrapperReadAt = moduleFrom + gate.index + gate[0].indexOf(gate[1]);
+      const directReadAt = wrapperReadAt + gate[1].length + gate[2].length;
+      gateEdits.push(
+        {
+          at: wrapperReadAt,
+          remove: gate[1].length,
+          insert: `{let ${reasonLocal}=${shimName}();return ${notCalico}}`,
+        },
+        {
+          at: directReadAt,
+          remove: gate[3].length,
+          insert: `{let ${reasonLocal}=${predicateName}(!1);if(${notCalico})return!0}`,
+        }
+      );
+    } else {
+      const wrapper = new RegExp(
+        `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\(\\)!==null\\}`
+      ).exec(moduleText);
+      if (!wrapper) continue;
+
+      const pluginGate = new RegExp(
+        `function (${identifier})\\(\\)\\{return ${escape(wrapper[1])}\\(\\)` +
+          `&&!${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\}`
+      ).exec(moduleText);
+      if (!pluginGate) continue;
+      gateEdits.push({
+        at: moduleFrom + pluginGate.index,
+        remove: pluginGate[0].length,
+        insert:
+          `function ${pluginGate[1]}(){let ${reasonLocal}=${predicateName}();` +
+          `return ${notCalico}&&!${envObject}.FORCE_AUTOUPDATE_PLUGINS}`,
+      });
+    }
+
     edits.push(
       {
         at: bodyEnd - "return null}".length,
         remove: "return null}".length,
         insert: `return{type:"${CALICO_UPDATER_REASON_TYPE}"}}`,
       },
-      {
-        at: moduleFrom + pluginGate.index,
-        remove: pluginGate[0].length,
-        insert:
-          `function ${pluginGate[1]}(){let ${reasonLocal}=${predicateName}();` +
-          `return ${reasonLocal}!==null&&${reasonLocal}.type!=="${CALICO_UPDATER_REASON_TYPE}"` +
-          `&&!${envObject}.FORCE_AUTOUPDATE_PLUGINS}`,
-      },
+      ...gateEdits,
       {
         at: moduleFrom + formatter.index + formatter[0].length,
         remove: 0,
@@ -3182,8 +3248,18 @@ function patchCustomContextWindows(content) {
   // resolver site, and with it both injected markers. --assert-all still
   // passed, so the loss was silent again; the verifier is what failed the
   // build. Accept the parameter bare or wrapped in one call.
+  //
+  // 2.1.295 folded both 1M checks into one helper taking both parameters:
+  //
+  //   2.1.289  function vv(e,n){if(Kd(e))return 1e6;if(Hbt(n)?.includes(YU.header)&&X2(e))return 1e6;let r=I5r(e);…
+  //   2.1.295  function Qv(e,n){if(RUn(e,n))return 1e6;let r=Lyo(e);…
+  //
+  // Same silent loss as 2.1.260 (4 candidates to 3, verifier caught it), so
+  // that spelling is accepted as a second form of the opening body. The helper
+  // call alone says nothing about headers, so the form is also pinned to the
+  // override lookup that follows it (`let r=…(e);if(r!==void 0)return`).
   const resolverPattern =
-    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\()/g;
+    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\(|if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==void 0\)return )/g;
 
   output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
     const functionStart = `${functionOpen}${modelParam},${headersParam}${brace}`;
@@ -3751,8 +3827,12 @@ function patchStatuslineCommittedUsage(content) {
   //
   // Spreads there are accepted without a capture group, so the group numbers
   // read below do not move.
+  //
+  // 2.1.295 added a member-valued field after requestRef
+  // (`requestRef:nJ,requestedModel:X.model,...Nne(…)`), so the plain fields
+  // between requestId and the attribution spread accept a dotted value.
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:${identifierPattern}:${identifierPattern},)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,${identifierPattern}(?:\\.${identifierPattern})*)?\\),\\6(?:,(?:[^()]|\\([^()]*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*,)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
   // Two spellings of the terminal commit, paired rather than crossed. Through
