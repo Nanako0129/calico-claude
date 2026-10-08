@@ -2434,22 +2434,30 @@ const CHECKS: Check[] = [
       // 2.1.295 form: P takes a parameter, the gate reads it through a
       // zero-argument shim and again directly on the host-pin path. Both reads
       // must exclude the Calico reason, and neither original read may remain.
+      // P's minified name collides with unrelated functions in other modules
+      // (2.1.295: a path helper named `rA`), so the host-form counts read only
+      // P's own Bun module, the scope the patcher edits.
+      const pModuleStart = content.lastIndexOf(BUN_MODULE_BOUNDARY, start.index ?? 0);
+      const pModuleNext = content.indexOf(BUN_MODULE_BOUNDARY, start.index ?? 0);
+      const pModule = content.slice(
+        pModuleStart === -1 ? 0 : pModuleStart,
+        pModuleNext === -1 ? content.length : pModuleNext
+      );
       // The wrapper read must go through P's shim, the zero-argument function
       // returning P(…) that a `!==null` wrapper calls.
       const shimNames = [
-        ...content.matchAll(
+        ...pModule.matchAll(
           new RegExp(
             `function (${identifier})\\(\\)\\{return ${escapedPredicate}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
             "g"
           )
         ),
       ]
-        .filter((m) => inSameModule(content, start.index ?? 0, m.index ?? 0))
         .map((m) => m[1])
-        .filter((name) => content.includes(`(){return ${name}()!==null}`));
+        .filter((name) => pModule.includes(`(){return ${name}()!==null}`));
       const shimAlternatives = shimNames.map((name) => name.replace(/\$/g, "\\$")).join("|") || "(?!)";
       const shimReads = (
-        content.match(
+        pModule.match(
           new RegExp(
             `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)` +
               `\\{let (${identifier})=(?:${shimAlternatives})\\(\\);return \\1!==null&&\\1\\.type!=="calico"\\}`,
@@ -2458,7 +2466,7 @@ const CHECKS: Check[] = [
         ) ?? []
       ).length;
       const directReads = (
-        content.match(
+        pModule.match(
           new RegExp(
             `\\{let (${identifier})=${escapedPredicate}\\(!1\\);if\\(\\1!==null&&\\1\\.type!=="calico"\\)return!0\\}`,
             "g"
@@ -2466,7 +2474,7 @@ const CHECKS: Check[] = [
         ) ?? []
       ).length;
       const residualHostReads = (
-        content.match(
+        pModule.match(
           new RegExp(
             `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)return ${identifier}\\(\\);|` +
               `if\\(${escapedPredicate}\\(!1\\)!==null\\)return!0;`,
@@ -2482,8 +2490,11 @@ const CHECKS: Check[] = [
       const formOk = (start[2] !== undefined ? hostForm : gateCount === 1) && residualHostReads === 0;
       if (!formOk) {
         problems.push(
-          `expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount} ` +
-            `(host-pin form: ${shimReads} wrapper read, ${directReads} direct read, ${residualHostReads} unmodified)`
+          start[2] !== undefined
+            ? `host-pin plugin gate not rewritten: ${shimReads} wrapper read, ${directReads} direct read, ` +
+                `${residualHostReads} unmodified (each expected 1, 1, 0)`
+            : `expected exactly 1 plugin gate excluding the Calico reason, found ${gateCount}` +
+                (residualHostReads > 0 ? `, and ${residualHostReads} unmodified direct read(s)` : "")
         );
       }
       const residualGate = new RegExp(

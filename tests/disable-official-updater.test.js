@@ -383,7 +383,7 @@ test("2.1.295 verifier accepts the patched module and rejects a half-patched gat
     /\{let __calicoUpdaterReason=rA\(!1\);if\([^)]*\)return!0\}/,
     "if(rA(!1)!==null)return!0;"
   );
-  assert.match(check(`${withCommands}${directLeft}`), /host-pin form: 1 wrapper read, 0 direct read, 1 unmodified/);
+  assert.match(check(`${withCommands}${directLeft}`), /1 wrapper read, 0 direct read, 1 unmodified/);
 });
 
 test("2.1.295 shim is the function the wrapper calls, not the first one returning P", () => {
@@ -406,7 +406,7 @@ test("2.1.295 verifier rejects a gate rewired to a function other than P's shim"
     `{let __calicoUpdaterReason=${HOST_NAMES.extra}();`
   );
   assert.notEqual(rewired, result.content);
-  assert.match(check(`${withCommands}${rewired}`), /host-pin form: 0 wrapper read/);
+  assert.match(check(`${withCommands}${rewired}`), /0 wrapper read/);
 
   // A stray old-form gate does not stand in for an unpatched host gate.
   const strayLegacyGate =
@@ -417,12 +417,16 @@ test("2.1.295 verifier rejects a gate rewired to a function other than P's shim"
     "if(rA(!1)!==null)return!0;"
   );
   assert.notEqual(unpatchedHost, result.content);
-  assert.match(check(`${withCommands}${strayLegacyGate}${unpatchedHost}`), /found 1 \(host-pin form: 1 wrapper read, 0 direct read, 1 unmodified\)/);
+  assert.match(check(`${withCommands}${strayLegacyGate}${unpatchedHost}`), /1 wrapper read, 0 direct read, 1 unmodified/);
 });
 
 test("verifier rejects a legacy-form build that still has an unrewritten direct P read", () => {
   const check = (content) => evaluatePatchModule("disable-official-updater", content);
   const { result } = patched();
   assert.equal(check(result.content), null);
-  assert.match(check(`${result.content};if(${NAMES.P}(!1)!==null)return!0;`), /1 unmodified/);
+  const parts = result.content.split(BOUNDARY);
+  parts[1] += `;if(${NAMES.P}(!1)!==null)return!0;`;
+  assert.match(check(parts.join(BOUNDARY)), /1 unmodified direct read/);
+  // The same read in another module is not P's gate and is ignored.
+  assert.equal(check(`${result.content}${BOUNDARY}if(${NAMES.P}(!1)!==null)return!0;`), null);
 });

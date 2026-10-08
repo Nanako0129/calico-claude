@@ -2809,7 +2809,13 @@ function patchSelfNameInUserListing(content) {
 // `disabled (${R(reason)})`. It gains a case so that row says what is true
 // instead of `disabled (undefined)`.
 //
-// Those three rewrites happen inside P's own Bun module or none do. A build
+// 2.1.295 changed the shape: P takes the DISABLE_AUTOUPDATER flag, a
+// zero-argument shim sits between it and W, and G gained a host-pin branch that
+// reads P twice, once through W and once directly as `P(!1)`. Both reads are
+// rewritten to ignore the Calico reason; leaving the direct one would silently
+// disable plugin updates on pinned hosts. See patchDisableOfficialUpdater.
+//
+// These rewrites happen inside P's own Bun module or none do. A build
 // with P rewritten but G untouched would silently disable plugin updates, and
 // one with G rewritten but P untouched would change nothing; either is worse
 // than a loud zero. Minified names are captured, never pinned: 2.1.277 and
