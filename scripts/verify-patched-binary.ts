@@ -903,9 +903,9 @@ const CHECKS: Check[] = [
       // Sanitize + compact header must be live code inside the Zie factory, not
       // merely present as string/comment text elsewhere in the bundle.
       // 2.1.238 appends `,credentials:s` to the factory parameter object and
-      // shifts the extra-header local and header-object local by one letter
-      // (`u=…(),p={` → `d=…(),f={`); the signature tail and both locals are
-      // matched generically. The IIFE parameter stays the literal `u`.
+      // shifts the extra-header local by one letter (`u=…()` → `d=…()`), so it
+      // is matched generically and tied to its spread by name below. The IIFE
+      // parameter stays the literal `u`.
       // Resolve the factory's locals by name first, then assert the injected
       // run against those exact locals — the ownership proof is that the header
       // gate reads the factory's own `source` binding, which a single regex can

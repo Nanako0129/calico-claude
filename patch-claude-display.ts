@@ -5132,44 +5132,36 @@ function hoistedHeaderAnchor(segment, helperName) {
   }
   const extraLocal = spreads[0][1];
   const header = { anchor: `...${helperName}(),...${extraLocal},`, at: spreads[0].index, extraLocal };
-  // The local after the helper must be a custom-header result (`EXTRA=FN()`),
-  // not some other spread upstream inserts there; otherwise a header placed
-  // after it could still be overridden by the custom headers that follow.
-  return hoistedExtraDeclarations(segment, header).length > 0 ? header : null;
+  // The local after the helper must be bound from a zero-arg call, as the
+  // custom-header local is, not some other spread upstream inserts there;
+  // otherwise a header placed after it could still be overridden by the
+  // custom headers that follow. compact reuses this result.
+  header.declarations = hoistedExtraDeclarations(segment, header);
+  return header.declarations.all > 0 ? header : null;
 }
 
-// Every binding of EXTRA as `=FN()` before the header spread, whether it opens
-// its statement (`let Q=Qxt(),`) or follows a comma, and whether a comma or a
-// semicolon ends it. The declaration precedes its use, so later text is not
-// searched.
+// Bindings of EXTRA as `=FN()` before the header spread. The declaration
+// precedes its use, so later text is not searched.
 //
 // Through 2.1.295 it sat right before the header object
 // (`,J=XRt(),ie={...ml(),...J,`); 2.1.296 put another binding between them
 // (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`), so it is found by name.
+//
+// Two counts on purpose. `all` takes any prefix and any terminator, so a
+// same-named binding anywhere earlier (a nested scope, a `;`-ended statement)
+// is seen. `rewritable` is only the measured shape, `,EXTRA=FN(),`, which is
+// also the only shape the verifier accepts after the wrap. compact rewrites
+// only when both counts are 1, so it never wraps a guess and never produces a
+// patch the verifier rejects; anything else fails closed.
 function hoistedExtraDeclarations(segment, header) {
   const identifier = "[A-Za-z_$][\\w$]*";
-  return [
-    ...segment
-      .slice(0, header.at)
-      .matchAll(
-        new RegExp(
-          `(,|(?:let|const|var) )${escapeRegExp(header.extraLocal)}=(${identifier})\\(\\)(?=[,;])`,
-          "g"
-        )
-      ),
-  ].map((match) => ({
-    at: match.index + match[1].length,
-    text: match[0].slice(match[1].length),
-    factory: match[2],
-  }));
-}
-
-// compact rewrites the declaration, so it needs exactly one: a same-named
-// binding in an earlier nested scope makes the target ambiguous and fails
-// closed instead of risking a wrap on the wrong local.
-function hoistedExtraDeclaration(segment, header) {
-  const declarations = hoistedExtraDeclarations(segment, header);
-  return declarations.length === 1 ? declarations[0] : null;
+  const before = segment.slice(0, header.at);
+  const name = escapeRegExp(header.extraLocal);
+  const all = [...before.matchAll(new RegExp(`(?<![\\w$.])${name}=${identifier}\\(\\)(?=[,;])`, "g"))];
+  const rewritable = [...before.matchAll(new RegExp(`,${name}=(${identifier})\\(\\)(?=,)`, "g"))].map(
+    (match) => ({ at: match.index, text: match[0], factory: match[1] })
+  );
+  return { all: all.length, rewritable };
 }
 
 function insertAfter(text, anchor, insertion) {
@@ -5500,16 +5492,20 @@ function patchCompactRequestSource(content) {
     // request-source header from custom headers so ANTHROPIC_CUSTOM_HEADERS
     // cannot spoof compact. Re-add the lowercase value only for true compact.
     // Single let-binding only — reassignment would be a SyntaxError in `let`.
-    // 2.1.238's `credentials:s` rename shifts the extra-header local and the
-    // header-object local (2.1.237 `u=…(),p={` → 2.1.238 `d=…(),f={`), so both
-    // names are captured. The IIFE parameter stays the literal `u` regardless,
+    // 2.1.238's `credentials:s` rename shifts the extra-header local
+    // (2.1.237 `u=…()` → 2.1.238 `d=…()`), so it is captured, never pinned; the
+    // inline shape also captures the header-object local after it. The IIFE
+    // parameter stays the literal `u` regardless,
     // because the wrap-needle lookup below matches on `((u)=>…`.
     // Taken before the omit wrap rewrites EXTRA's declaration. On the hoisted
     // shape this is `...HELPER(),...EXTRA,`, which active-turn may already have
     // followed with the prompt spread. Inserting here puts compact between the
     // custom spread and that prompt spread.
     const header = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
-    const declaration = header ? hoistedExtraDeclaration(segment, header) : null;
+    const declaration =
+      header && header.declarations.all === 1 && header.declarations.rewritable.length === 1
+        ? header.declarations.rewritable[0]
+        : null;
     if (hasSpread && declaration === null) {
       continue;
     }
@@ -5519,11 +5515,10 @@ function patchCompactRequestSource(content) {
     let nextSegment;
     if (hasSpread) {
       // Spliced at the counted match, not String#replace, so the rewritten
-      // binding is the one that was proven unique. wrapExtra's leading comma
-      // is dropped: the match starts after its `,` or `let ` prefix.
+      // binding is the one that was proven unique.
       nextSegment =
         segment.slice(0, declaration.at) +
-        wrapExtra(header.extraLocal, declaration.factory).slice(1) +
+        wrapExtra(header.extraLocal, declaration.factory) +
         segment.slice(declaration.at + declaration.text.length);
     } else {
       nextSegment = segment.replace(

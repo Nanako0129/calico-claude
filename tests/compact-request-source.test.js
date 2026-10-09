@@ -355,19 +355,15 @@ test("2.1.296: any same-named binding before the header spread fails compact clo
   }
 });
 
-test("2.1.296: a declaration that opens its statement is wrapped in place", async () => {
+test("2.1.296: an unmeasured declaration shape fails closed instead of producing an unverifiable patch", () => {
   const letFirst = fixture296.replace("let B=0,Y=lf(b)?void 0:b,fe=Ylt(),", "let B=0,Y=lf(b)?void 0:b;let fe=Ylt(),");
-  assert.notEqual(letFirst, fixture296);
-  const result = patchCompactRequestSource(letFirst);
-  assert.equal(result.patched, 1);
-  assert.equal(
-    result.content.includes('let fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),'),
-    true
-  );
-  const context = runPatched(result.content);
-  context.customHeaders = { "x-calico-request-source": "forged" };
-  const headers = await context.Zie({ source: "repl_main_thread", agentContext: { agentType: "main" } });
-  assert.equal(headers["x-calico-request-source"], undefined);
+  const semicolonEnded = fixture296.replace("fe=Ylt(),ie=await em(", "fe=Ylt();let ie=await em(");
+  for (const source of [letFirst, semicolonEnded]) {
+    assert.notEqual(source, fixture296);
+    const result = patchCompactRequestSource(source);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, source);
+  }
 });
 
 test("2.1.296: a spread after the helper that is not a custom-header result patches nothing", () => {
