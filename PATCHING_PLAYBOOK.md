@@ -386,12 +386,19 @@ What we widened for 2.1.238:
 
 - the factory-signature matcher tolerates any further simple `,key:local` bindings after
   `agentContext:i`, so appended destructured parameters do not drop the anchor
-- `active-turn-prompt-id` and `compact-request-source` capture the sanitized-context / extra-header /
-  header-object local names (and the extra-header spread name) instead of pinning `c`/`u`/`p`/`...u,`,
-  so a one-letter rename no longer silently skips the site. `compact-request-source` keeps the injected
-  IIFE parameter as the literal `u` because the verifier's wrap-needle matches on `((u)=>…`
+- `active-turn-prompt-id` captures the sanitized-context local, and both header modules match the
+  extra-header spread by shape instead of pinning `c`/`u`/`p`/`...u,`, so a one-letter rename no
+  longer silently skips the site
 - `scripts/verify-patched-binary.ts` mirrors both widenings in its `compact-request-source` and
   `compact-body-policy` structural checks so a patched 2.1.238 binary verifies
+
+Calico-owned header values are written, never deleted. The factory's header object becomes the SDK
+client's `defaultHeaders`, and the bundled SDK re-reads `ANTHROPIC_CUSTOM_HEADERS` and merges it
+underneath (`defaultHeaders={...custom,...defaultHeaders}`), so a key removed from the object comes
+back from the environment. Under `REMORA_ACTIVE=1` both header modules write their keys after the
+custom spread on every request, `null` where Calico has no value; the SDK's header builder drops
+`null`. Factory-level unit tests cannot see that merge: `tools/local-verify/remora-headers.js` checks
+the request the binary sends, and CI runs it on every platform (issue #78).
 
 Minified locals differ ACROSS PLATFORMS for the same version — matchers must never pin one:
 

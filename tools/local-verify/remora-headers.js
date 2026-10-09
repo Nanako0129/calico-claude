@@ -24,13 +24,16 @@ if (!binary || !fs.existsSync(binary)) {
 }
 
 const TURN_TIMEOUT_MS = 120_000;
-// One spelling per name, mixed casing: a name written twice, all-lowercase
-// first, is a documented gap (patchCompactRequestSource).
-const FORGED = [
-  "x-calico-request-source: forged",
-  "X-Calico-Prompt-Id: forged",
-  "x-calico-active-turn-version: forged",
-].join("\n");
+const NAMES = ["x-calico-request-source", "x-calico-prompt-id", "x-calico-active-turn-version"];
+// Two rounds, one spelling per name in each. All-lowercase lands on Calico's
+// own key, so it catches Calico's value sitting ahead of the custom headers.
+// Another casing is a separate key, so it catches a key Calico leaves out
+// instead of writing null. All-lowercase followed by another casing in one
+// variable is a documented gap (patchCompactRequestSource).
+const SPELLINGS = [
+  NAMES,
+  NAMES.map((name) => name.replace(/(^|-)([a-z])/g, (_m, dash, c) => dash + c.toUpperCase())),
+];
 
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "calico-remora-headers-"));
 const configDir = path.join(workDir, "config");
@@ -60,7 +63,7 @@ const waitForPort = async () => {
 };
 
 // The x-calico-* headers of each request the mock received during one run.
-const run = (port, args) =>
+const run = (port, forged, args) =>
   new Promise((resolve) => {
     const before = mockLog.length;
     const child = spawn(binary, args, {
@@ -68,7 +71,7 @@ const run = (port, args) =>
         ...process.env,
         ANTHROPIC_AUTH_TOKEN: "credential-free-test-token",
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-        ANTHROPIC_CUSTOM_HEADERS: FORGED,
+        ANTHROPIC_CUSTOM_HEADERS: forged.map((name) => `${name}: forged`).join("\n"),
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         CLAUDE_CONFIG_DIR: configDir,
         NO_PROXY: "127.0.0.1,localhost",
@@ -94,19 +97,18 @@ const run = (port, args) =>
     });
   });
 
-(async () => {
-  const port = await waitForPort();
+const check = async (port, forged) => {
   const session = crypto.randomUUID();
-  const main = await run(port, ["--print", "ping", "--session-id", session]);
-  const compact = await run(port, ["--resume", session, "--print", "/compact"]);
-  console.log(`binary        : ${binary}`);
+  const main = await run(port, forged, ["--print", "ping", "--session-id", session]);
+  const compact = await run(port, forged, ["--resume", session, "--print", "/compact"]);
+  console.log(`forged as     : ${forged.join(", ")}`);
   console.log(`main turn     : ${main.map((h) => JSON.stringify(h)).join(" ")}`);
   console.log(`compact       : ${compact.map((h) => JSON.stringify(h)).join(" ")}`);
 
-  const forged = [...main, ...compact].filter((h) =>
+  const forgedSent = [...main, ...compact].filter((h) =>
     Object.values(h).some((value) => value.includes("forged"))
   );
-  if (forged.length > 0) finish(1, "a forged ANTHROPIC_CUSTOM_HEADERS value reached the request");
+  if (forgedSent.length > 0) finish(1, "a forged ANTHROPIC_CUSTOM_HEADERS value reached the request");
   if (main.some((h) => "x-calico-request-source" in h)) {
     finish(1, "the main turn carries x-calico-request-source");
   }
@@ -119,6 +121,12 @@ const run = (port, args) =>
   if (compact.some((h) => "x-calico-prompt-id" in h || "x-calico-active-turn-version" in h)) {
     finish(1, "/compact carries an active-turn header");
   }
+};
+
+(async () => {
+  const port = await waitForPort();
+  console.log(`binary        : ${binary}`);
+  for (const forged of SPELLINGS) await check(port, forged);
   console.log("remora headers: OK");
   finish(0);
 })();

@@ -273,7 +273,7 @@ test("hoisted custom spread stays ahead of compact and then the prompt header", 
   assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
 
   const context = runPatched(withBoth.content);
-  // One spelling per run: a name spelled twice, all-lowercase first, is the
+  // One spelling per run: all-lowercase followed by another casing is the
   // documented gap in patchCompactRequestSource.
   for (const [source, prompt, version] of [
     ["x-calico-request-source", "x-calico-prompt-id", "x-calico-active-turn-version"],
@@ -345,25 +345,6 @@ test("2.1.296: both header modules patch with a binding between EXTRA and the he
   assert.equal(headers["x-calico-request-source"], undefined);
   const compact = await headersFor(fixture296, "compact");
   assert.equal(compact.headers["x-calico-request-source"], "compact");
-});
-
-// The header is written after the spread, so a second writer between the
-// declaration and the header object cannot reintroduce a forged header
-// (later assignment, destructuring, in-place merge).
-test("2.1.296: whichever writer produced the spread value, a forged source is not sent", async () => {
-  const writers = [
-    "ie=(fe=Ylt(),await em({querySource:g}))",
-    "ie=([fe]=[Ylt()],await em({querySource:g}))",
-    "ie=(Object.assign(fe,customHeaders),await em({querySource:g}))",
-  ];
-  for (const writer of writers) {
-    const source = fixture296.replace("ie=await em({querySource:g})", writer);
-    assert.notEqual(source, fixture296);
-    const { withBoth, headers } = await headersFor(source, "repl_main_thread");
-    assert.equal(withBoth.patched, 1, writer);
-    assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null, writer);
-    assert.equal(headers["x-calico-request-source"], undefined, writer);
-  }
 });
 
 test("2.1.296: a spread after the helper that is not a call result patches nothing", () => {

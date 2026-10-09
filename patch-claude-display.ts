@@ -5118,7 +5118,8 @@ function hoistedSessionHeader(content) {
 
 // The custom-header local is the one spread right after the helper,
 // `...HELPER(),...EXTRA,`. Injection goes after that pair and never between the
-// two spreads, so ANTHROPIC_CUSTOM_HEADERS cannot override x-calico headers.
+// two spreads, so the custom headers in EXTRA cannot overwrite x-calico keys
+// inside this object (the casing gap in patchCompactRequestSource remains).
 // Two copies of the pair fail closed. The search stops at the factory's Bun
 // module boundary.
 //
@@ -5379,8 +5380,8 @@ function patchActiveTurnPromptIdentity(content) {
     // underneath it, so an omitted key lets a custom value through; null
     // removes it. Measured on real 2.1.296: a forged prompt id reached the
     // /compact request until the null was written (issue #78). Same
-    // doubly-spelled-name gap as compact-request-source's header, and the
-    // same wire check (tools/local-verify/remora-headers.js).
+    // casing gap as compact-request-source's header, and the same wire check
+    // (tools/local-verify/remora-headers.js).
     const promptSpread =
       '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-prompt-id":__calicoPromptId||null,"x-calico-active-turn-version":__calicoPromptId?"1":null},';
     // Captured before the sanitizer rewrite. On the hoisted shape the anchor
@@ -5482,10 +5483,14 @@ function patchCompactRequestSource(content) {
     // casing. Issue #78: the earlier delete-based sanitizer let a forged value
     // through on real 2.1.283, 2.1.295 and 2.1.296. tools/local-verify/
     // remora-headers.js checks the request a release build actually sends.
-    // ponytail: the merged object keeps the environment's key order, so a
-    // name spelled twice in ANTHROPIC_CUSTOM_HEADERS, all-lowercase first and
-    // another casing later, still sends the later value (measured). Closing
-    // it means writing this value under every casing the custom headers use.
+    // ponytail: the merged object keeps the environment's key order, and this
+    // key takes the place of the all-lowercase spelling. If
+    // ANTHROPIC_CUSTOM_HEADERS writes the name all-lowercase and then in any
+    // other casing, the later spelling's value is sent (measured with two
+    // spellings on real 2.1.296). Closing it means writing this value under
+    // every casing the custom headers use, or stripping x-calico-* from the
+    // environment; only the user's own environment can open the gap. Only
+    // requests built by this factory are covered.
     //
     // Inline session-id shape: the header goes right after the session-id
     // entry and its custom spread. Hoisted shape: after the unique
@@ -5500,19 +5505,12 @@ function patchCompactRequestSource(content) {
     if (!sourceParam) {
       continue;
     }
-    // sourceParam is a captured minified local, so it may itself begin with
-    // `$1` (or contain any `$` sequence). This regex has one capture group,
-    // so a plain-string replacement would let `$1`-in-sourceParam expand as
-    // a backreference to the entire matched header prefix instead of naming
-    // the source param — go through a callback so the capture is threaded
-    // explicitly and sourceParam is emitted verbatim. The hoisted path uses
-    // slice insertion for the same reason.
+    // sourceParam is a captured minified local and may contain `$1` or any
+    // other `$` sequence, so the replacement is a callback (emitted verbatim),
+    // and the hoisted path uses slice insertion.
     const compactSpread = `...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":${sourceParam}==="compact"?"compact":null},`;
     const nextSegment = hasOld
-      ? segment.replace(
-          new RegExp(`(${SESSION_ID_HEADER_ENTRY.source})`),
-          (_full, headerPrefix) => `${headerPrefix}${compactSpread}`
-        )
+      ? segment.replace(SESSION_ID_HEADER_ENTRY, (full) => `${full}${compactSpread}`)
       : insertAfter(segment, anchor, compactSpread);
     if (nextSegment === null || nextSegment === segment) {
       continue;

@@ -825,11 +825,7 @@ const CHECKS: Check[] = [
     kind: "custom",
     describe: "remora-scoped prompt identity header with per-agent frozen turn id",
     run: (content: string): string | null => {
-      const requiredStrings = [
-        '"calico-active-turn-adapter:v1"',
-        '"x-calico-prompt-id"',
-        '"x-calico-active-turn-version":__calicoPromptId?"1":null',
-      ];
+      const requiredStrings = ['"calico-active-turn-adapter:v1"'];
       const missing = requiredStrings.filter((marker) => !content.includes(marker));
       if (missing.length > 0) {
         return `missing marker(s): ${missing.join(", ")}`;
@@ -855,7 +851,8 @@ const CHECKS: Check[] = [
       // `...HELPER(),` and `...EXTRA,`. The helper is the unique session-id
       // helper above, not an arbitrary call. Under REMORA_ACTIVE both keys are
       // written, null when there is no prompt id, because the SDK merges
-      // ANTHROPIC_CUSTOM_HEADERS back underneath and only null removes it.
+      // ANTHROPIC_CUSTOM_HEADERS back underneath, and a missing key lets any
+      // other casing of it through (issue #78).
       const calicoHeaders =
         `(?:\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-request-source":[A-Za-z_$][\\w$]*==="compact"\\?"compact":null\\},)?\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-prompt-id":__calicoPromptId\\|\\|null,"x-calico-active-turn-version":__calicoPromptId\\?"1":null\\}`;
       const oldOrder = new RegExp(
@@ -894,8 +891,8 @@ const CHECKS: Check[] = [
         const fetchOverride = escapeRegExp(fetchOverrideLocal);
         const head = `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?`;
         // Written on every remora request, null unless compact: the SDK
-        // merges ANTHROPIC_CUSTOM_HEADERS back underneath, and only null
-        // removes a forged value (issue #78).
+        // merges ANTHROPIC_CUSTOM_HEADERS back underneath, and a missing key
+        // lets any other casing of it through (issue #78).
         const compactHeader = `\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-request-source":${source}==="compact"\\?"compact":null\\}`;
         // Inline session-id entry: the compact header follows its `...EXTRA,`
         // spread.
