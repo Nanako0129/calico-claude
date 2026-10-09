@@ -82,11 +82,15 @@ const waitForPort = async () => {
   }
 };
 
-// A developer shell may select another provider, gateway or auth path through
-// ANTHROPIC_* / CLAUDE_CODE_* variables, which would test a different client
-// branch than CI does, so none of them are inherited.
+// A developer shell may select another provider, gateway or auth path, which
+// would test a different client branch than CI does, so those variables are
+// not inherited: every ANTHROPIC_* and the CLAUDE_CODE_ provider, host-managed
+// and OAuth selectors. Other CLAUDE_CODE_* (e.g. CLAUDE_CODE_GIT_BASH_PATH,
+// which Windows may need to start at all) pass through.
 const inherited = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => !/^(ANTHROPIC_|CLAUDE_CODE_)/i.test(name))
+  Object.entries(process.env).filter(
+    ([name]) => !/^(ANTHROPIC_|CLAUDE_CODE_(USE_|OAUTH_|PROVIDER_|HOST_))/i.test(name)
+  )
 );
 
 // The x-calico-* headers of each request the mock received during one run.

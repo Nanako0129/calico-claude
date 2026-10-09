@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const vm = require("node:vm");
 
-const { patchCalicoHeaderWire } = require("../patch-claude-display.ts");
+const { patchCalicoHeaderWire, CALICO_HEADER_FETCH } = require("../patch-claude-display.ts");
 const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
 // The client factory reduced to what this module touches: the header object
@@ -156,11 +156,35 @@ test("with both header modules disabled the patch still verifies", () => {
   assert.equal(evaluatePatchModule("calico-header-wire", result.content), null);
 });
 
-test("a factory carrying both session-id anchors drops the module", () => {
+test("a factory carrying both session-id anchors drops the whole module", () => {
   const both = hoistedFixture.replace("p={...Ob(),...customHeaders,", 'p={...Ob(),"X-Claude-Code-Session-Id":xt(),...customHeaders,');
   assert.notEqual(both, hoistedFixture);
-  const result = patchCalicoHeaderWire(both);
+  // A validly anchored factory after it would patch if the first were only
+  // skipped.
+  const valid = fixture.slice(fixture.indexOf("async function Zie")).replace("async function Zie", "async function Zie2");
+  const result = patchCalicoHeaderWire(both + valid);
   assert.equal(result.patched, 0);
-  assert.equal(result.content, both);
+  assert.equal(result.content, both + valid);
+});
+
+// A wrapper on another fetchOverride factory, with the real one left bare.
+function wrapperOn(factoryBody) {
+  return (
+    `async function Aux({apiKey:e,fetchOverride:n,source:o}){let p={${factoryBody}},q={defaultHeaders:p,...n&&{fetch:process.env.REMORA_ACTIVE==="1"?${CALICO_HEADER_FETCH}(n,p):n}};return q}\n` +
+    fixture
+  );
+}
+
+test("the verifier rejects a wrapper on a factory without the session-id anchor", () => {
+  // It carries a Calico key, so only the anchor check can reject it.
+  const content = wrapperOn('"x-calico-request-source":null');
+  assert.match(evaluatePatchModule("calico-header-wire", content), /not on the client factory's own fetch/);
+});
+
+test("the verifier rejects a wrapper on an anchored factory without the Calico keys", () => {
+  // Anchored, but the Calico keys live in the other factory, so only the key
+  // check can reject it.
+  const content = wrapperOn('"X-Claude-Code-Session-Id":xt(),...customHeaders,"x-a":1');
+  assert.match(evaluatePatchModule("calico-header-wire", content), /not on the client factory's own fetch/);
 });
 

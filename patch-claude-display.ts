@@ -5065,8 +5065,8 @@ const SESSION_ID_HEADER_KEY =
   '(?:"X-Claude-Code-Session-Id"|\\[[A-Za-z_$][\\w$]*\\])';
 
 // `<session-id key>:<fn>(),...<custom headers>,` — the inline-shape entry the
-// four client-factory modules use to recognise the factory. The two header
-// modules also inject after it; calico-header-wire only selects by it.
+// four client-factory modules use to recognise the factory. Only the two
+// header modules inject after it.
 const SESSION_ID_HEADER_ENTRY = new RegExp(
   `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,`
 );
@@ -5562,8 +5562,8 @@ function patchCalicoHeaderWire(content) {
       output.slice(start, nextAsyncFunction === -1 ? output.length : nextAsyncFunction)
     );
     const end = start + segment.length;
-    // The factory the two header modules write into: same session-id anchors,
-    // and like them the whole module drops when one factory carries both.
+    // The factory the two header modules write into: same session-id anchors.
+    // The whole module drops when the selected factory carries both.
     const hasOld = SESSION_ID_HEADER_ENTRY.test(segment);
     const hasSpread = hoisted !== null && segment.includes(`...${hoisted.name}(),`);
     if (hasOld && hasSpread) {
@@ -6075,6 +6075,7 @@ module.exports = {
   patchActiveTurnPromptIdentity,
   patchCompactRequestSource,
   patchCalicoHeaderWire,
+  CALICO_HEADER_FETCH,
   patchCompactBodyPolicy,
   patchBackgroundAgentUsage,
   patchStatuslineCommittedUsage,

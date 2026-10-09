@@ -932,7 +932,12 @@ const CHECKS: Check[] = [
       // The wrapper must sit in the factory the header modules write into,
       // selected by the same session-id anchors as the patcher, read the header
       // object that factory passes as defaultHeaders, and wrap the fetch spread
-      // of that same client options object.
+      // of that same client options object. When the bundle carries a Calico
+      // key at all, the wrapped factory must carry one too; that check is
+      // independent of the patcher's selection. With both header modules
+      // disabled there is none, and the anchors alone decide.
+      const calicoKey = /"x-calico-(?:request-source|prompt-id)":/;
+      const requireKey = calicoKey.test(content);
       const hoisted = hoistedSessionHeader(content);
       const sessionEntry = new RegExp(
         `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,`
@@ -941,7 +946,8 @@ const CHECKS: Check[] = [
         if (
           !clientFactoryLocal(fields, "fetchOverride") ||
           (!sessionEntry.test(segment) &&
-            !(hoisted !== null && segment.includes(`...${hoisted.name}(),`)))
+            !(hoisted !== null && segment.includes(`...${hoisted.name}(),`))) ||
+          (requireKey && !calicoKey.test(segment))
         ) {
           return false;
         }
