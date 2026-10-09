@@ -273,8 +273,9 @@ test("hoisted custom spread stays ahead of compact and then the prompt header", 
   assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
 
   const context = runPatched(withBoth.content);
-  // One spelling per run: all-lowercase followed by another casing is the
-  // documented gap in patchCompactRequestSource.
+  // One spelling per run. All-lowercase followed by another casing wins in the
+  // merged object and is replaced on the request by calico-header-wire, which
+  // this object-level model does not include.
   for (const [source, prompt, version] of [
     ["x-calico-request-source", "x-calico-prompt-id", "x-calico-active-turn-version"],
     ["X-Calico-Request-Source", "X-Calico-Prompt-Id", "X-Calico-Active-Turn-Version"],

@@ -78,9 +78,9 @@ test("excludes auxiliary calls and protects Calico-owned headers", async () => {
   vm.createContext(context);
   vm.runInContext(result.content, context);
 
-  // Explicit nulls, not missing keys: the SDK merges ANTHROPIC_CUSTOM_HEADERS
-  // back underneath this object, and only null keeps a forged value out of
-  // the request (issue #78).
+  // Written as null, not left out: the SDK merges ANTHROPIC_CUSTOM_HEADERS
+  // back underneath this object, and calico-header-wire only enforces names
+  // the object carries (issue #78).
   context.customHeaders = {
     "x-calico-prompt-id": "forged",
     "x-calico-active-turn-version": "999",

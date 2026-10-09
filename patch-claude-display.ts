@@ -5119,7 +5119,8 @@ function hoistedSessionHeader(content) {
 // The custom-header local is the one spread right after the helper,
 // `...HELPER(),...EXTRA,`. Injection goes after that pair and never between the
 // two spreads, so the custom headers in EXTRA cannot overwrite x-calico keys
-// inside this object (the casing gap in patchCompactRequestSource remains).
+// inside this object. Other casings are a separate key here and are replaced
+// on the request by calico-header-wire.
 // Two copies of the pair fail closed. The search stops at the factory's Bun
 // module boundary.
 //
@@ -5151,9 +5152,6 @@ function hoistedHeaderAnchor(segment, helperName) {
 }
 
 function insertAfter(text, anchor, insertion) {
-  if (!anchor) {
-    return null;
-  }
   const at = text.indexOf(anchor);
   if (at === -1 || text.indexOf(anchor, at + anchor.length) !== -1) {
     return null;
@@ -5379,9 +5377,9 @@ function patchActiveTurnPromptIdentity(content) {
     // defaultHeaders, and the SDK merges ANTHROPIC_CUSTOM_HEADERS back in
     // underneath it, so an omitted key lets a custom value through; null
     // removes it. Measured on real 2.1.296: a forged prompt id reached the
-    // /compact request until the null was written (issue #78). Same
-    // casing gap as compact-request-source's header, and the same wire check
-    // (tools/local-verify/remora-headers.js).
+    // /compact request until the null was written (issue #78). A custom
+    // spelling in another casing is replaced on the request by
+    // calico-header-wire, which reads these keys.
     const promptSpread =
       '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-prompt-id":__calicoPromptId||null,"x-calico-active-turn-version":__calicoPromptId?"1":null},';
     // Captured before the sanitizer rewrite. On the hoisted shape the anchor
@@ -5402,9 +5400,7 @@ function patchActiveTurnPromptIdentity(content) {
       // whichever name it carries, so it is matched on shape here instead of
       // being carried down from the declaration run above.
       nextSegment = nextSegment.replace(
-        new RegExp(
-          `(${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,)`
-        ),
+        SESSION_ID_HEADER_ENTRY,
         (full) => `${full}${promptSpread}`
       );
     } else {
@@ -5479,18 +5475,12 @@ function patchCompactRequestSource(content) {
     // ANTHROPIC_CUSTOM_HEADERS back in underneath it
     // (`defaultHeaders={...custom,...defaultHeaders}`), so a key deleted or
     // omitted here comes back from the environment. An explicit null removes
-    // it: the SDK's header builder lets the last entry of a name win, in any
-    // casing. Issue #78: the earlier delete-based sanitizer let a forged value
-    // through on real 2.1.283, 2.1.295 and 2.1.296. tools/local-verify/
-    // remora-headers.js checks the request a release build actually sends.
-    // ponytail: the merged object keeps the environment's key order, and this
-    // key takes the place of the all-lowercase spelling. If
-    // ANTHROPIC_CUSTOM_HEADERS writes the name all-lowercase and then in any
-    // other casing, the later spelling's value is sent (measured with two
-    // spellings on real 2.1.296). Closing it means writing this value under
-    // every casing the custom headers use, or stripping x-calico-* from the
-    // environment; only the user's own environment can open the gap. Only
-    // requests built by this factory are covered.
+    // it. Issue #78: the earlier delete-based sanitizer let a forged value
+    // through on real 2.1.283, 2.1.295 and 2.1.296. The merged object keeps
+    // the environment's key order, so a custom spelling in another casing can
+    // still come after this key and win there; calico-header-wire replaces it
+    // on the request from this key. tools/local-verify/remora-headers.js
+    // checks the request a release build actually sends.
     //
     // Inline session-id shape: the header goes right after the session-id
     // entry and its custom spread. Hoisted shape: after the unique
@@ -5512,7 +5502,7 @@ function patchCompactRequestSource(content) {
     const nextSegment = hasOld
       ? segment.replace(SESSION_ID_HEADER_ENTRY, (full) => `${full}${compactSpread}`)
       : insertAfter(segment, anchor, compactSpread);
-    if (nextSegment === null || nextSegment === segment) {
+    if (nextSegment === null) {
       continue;
     }
 
@@ -5524,11 +5514,86 @@ function patchCompactRequestSource(content) {
   if (
     candidates !== 1 ||
     patched !== 1 ||
-    output.split('"x-calico-request-source"').length - 1 !== 1
+    output.split('{"x-calico-request-source":').length - 1 !== 1
   ) {
     return { content: original, candidates, patched: 0 };
   }
 
+  return { content: output, candidates, patched };
+}
+
+// Calico-owned headers, enforced on the request as sent. active-turn-prompt-id
+// and compact-request-source write their value, or null, into the factory's
+// header object, which the SDK client receives as defaultHeaders. The bundled
+// SDK merges ANTHROPIC_CUSTOM_HEADERS underneath that object, and a custom
+// spelling in another casing is a separate key there, so it can still win:
+// measured on real 2.1.296, where a checked-in .claude/settings.json setting
+// `x-calico-request-source: x` and then `X-Calico-Request-Source: compact` put
+// `compact` on a main turn. Claude Code applies ANTHROPIC_CUSTOM_HEADERS from
+// project settings as a safe variable when no header name looks sensitive,
+// and these names do not (issue #78).
+//
+// The fetch the factory hands the SDK (`...F&&{fetch:F}`) receives a Headers
+// object, whose names are case-insensitive. Under REMORA_ACTIVE it is wrapped
+// to set each Calico name from the header object's own all-lowercase key, or
+// delete it when that key is null. A name the header object does not carry
+// (its module disabled) is left alone. Every bundle from 2.1.250 to 2.1.296
+// declares exactly one `X={defaultHeaders:H,` and one fetch spread in the
+// factory, and H's object literal holds both modules' spreads.
+const CALICO_HEADER_FETCH =
+  '((f,o)=>(u,i)=>{let h=new Headers(i?.headers);for(let k of["x-calico-request-source","x-calico-prompt-id","x-calico-active-turn-version"])if(k in o)o[k]==null?h.delete(k):h.set(k,o[k]);return f(u,{...i,headers:h})})';
+
+function patchCalicoHeaderWire(content) {
+  const original = content;
+  let candidates = 0;
+  let patched = 0;
+  let output = content;
+  const clientStartPattern = clientFactoryPattern();
+  let clientStartMatch;
+  while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
+    if (!clientFactoryLocal(clientStartMatch[1], "fetchOverride")) {
+      continue;
+    }
+    const start = clientStartMatch.index;
+    const nextAsyncFunction = output.indexOf(
+      "async function ",
+      start + clientStartMatch[0].length
+    );
+    const boundary = output.indexOf(BUN_MODULE_BOUNDARY, start);
+    let end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
+    if (boundary !== -1 && boundary < end) {
+      end = boundary;
+    }
+    const segment = output.slice(start, end);
+    const headerObjects = [
+      ...segment.matchAll(/[,{]([A-Za-z_$][\w$]*)=\{defaultHeaders:([A-Za-z_$][\w$]*),/g),
+    ];
+    const fetchSpreads = [...segment.matchAll(/\.\.\.([A-Za-z_$][\w$]*)&&\{fetch:\1\}/g)];
+    if (headerObjects.length === 0 && fetchSpreads.length === 0) {
+      continue;
+    }
+    candidates += 1;
+    if (headerObjects.length !== 1 || fetchSpreads.length !== 1) {
+      continue;
+    }
+    const [site, fetchLocal] = fetchSpreads[0];
+    const headerLocal = headerObjects[0][2];
+    // Slice insertion: both locals are minified names that may contain `$`.
+    const nextSegment =
+      segment.slice(0, fetchSpreads[0].index) +
+      `...${fetchLocal}&&{fetch:process.env.REMORA_ACTIVE==="1"?${CALICO_HEADER_FETCH}(${fetchLocal},${headerLocal}):${fetchLocal}}` +
+      segment.slice(fetchSpreads[0].index + site.length);
+    patched += 1;
+    output = output.slice(0, start) + nextSegment + output.slice(end);
+    clientStartPattern.lastIndex = start + nextSegment.length;
+  }
+  if (
+    candidates !== 1 ||
+    patched !== 1 ||
+    output.split(CALICO_HEADER_FETCH).length - 1 !== 1
+  ) {
+    return { content: original, candidates, patched: 0 };
+  }
   return { content: output, candidates, patched };
 }
 
@@ -5645,6 +5710,12 @@ const PATCH_MODULES = [
     id: "compact-request-source",
     description: "Mark Claude compact queries with x-calico-request-source for remora gateways",
     apply: patchCompactRequestSource,
+  },
+  {
+    id: "calico-header-wire",
+    description:
+      "Enforce Calico-owned x-calico-* headers case-insensitively on the request as sent under remora",
+    apply: patchCalicoHeaderWire,
   },
   {
     id: "compact-body-policy",
@@ -5996,6 +6067,7 @@ module.exports = {
   patchGatewayFastMode,
   patchActiveTurnPromptIdentity,
   patchCompactRequestSource,
+  patchCalicoHeaderWire,
   patchCompactBodyPolicy,
   patchBackgroundAgentUsage,
   patchStatuslineCommittedUsage,

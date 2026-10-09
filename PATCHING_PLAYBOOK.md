@@ -397,8 +397,14 @@ client's `defaultHeaders`, and the bundled SDK re-reads `ANTHROPIC_CUSTOM_HEADER
 underneath (`defaultHeaders={...custom,...defaultHeaders}`), so a key removed from the object comes
 back from the environment. Under `REMORA_ACTIVE=1` both header modules write their keys after the
 custom spread on every request, `null` where Calico has no value; the SDK's header builder drops
-`null`. Factory-level unit tests cannot see that merge: `tools/local-verify/remora-headers.js` checks
-the request the binary sends, and CI runs it on every platform (issue #78).
+`null`. The merged object keeps the environment's key order, so a custom spelling in another casing
+is a separate key that can come after Calico's and win; `calico-header-wire` therefore wraps the
+fetch the factory hands the SDK (`...F&&{fetch:F}`) and, on the case-insensitive `Headers` it
+receives, sets or deletes each Calico name from the header object's own all-lowercase key. A
+checked-in `.claude/settings.json` can set `ANTHROPIC_CUSTOM_HEADERS` (Claude Code treats it as safe
+when no name looks sensitive), so this is reachable from repository content. Factory-level unit tests
+cannot see the merge: `tools/local-verify/remora-headers.js` checks the request the binary sends,
+and CI runs it on every platform (issue #78).
 
 Minified locals differ ACROSS PLATFORMS for the same version — matchers must never pin one:
 

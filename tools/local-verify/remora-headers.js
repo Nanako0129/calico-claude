@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Check the Calico-owned x-calico-* headers on the wire, under REMORA_ACTIVE=1
 // with forged values in ANTHROPIC_CUSTOM_HEADERS. Runs a main turn and then
-// /compact on the same session against the canned mock.
+// /compact on the same session against the canned mock, and a plain main turn
+// without REMORA_ACTIVE.
 //
 // The unit tests check the header object the client factory returns. That
 // object becomes the SDK client's defaultHeaders, and the bundled SDK merges
@@ -9,7 +10,10 @@
 // no longer carried still reached the request on every released build until
 // issue #78. Only the request the binary actually sends shows that.
 //
-//   node tools/local-verify/remora-headers.js <claude-binary>
+//   node tools/local-verify/remora-headers.js <claude-binary> [--disable <ids>]
+//
+// --disable takes the patch-native disable list. The check needs all three
+// modules below, so it reports itself skipped when any of them is disabled.
 
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
@@ -19,21 +23,29 @@ const path = require("node:path");
 
 const binary = process.argv[2];
 if (!binary || !fs.existsSync(binary)) {
-  console.error("usage: node tools/local-verify/remora-headers.js <claude-binary>");
+  console.error("usage: node tools/local-verify/remora-headers.js <claude-binary> [--disable <ids>]");
   process.exit(2);
+}
+const disableAt = process.argv.indexOf("--disable");
+const disabled = disableAt === -1 ? [] : String(process.argv[disableAt + 1] ?? "").split(/[,\s]+/);
+const needed = ["active-turn-prompt-id", "compact-request-source", "calico-header-wire"];
+const off = needed.filter((id) => disabled.includes(id));
+if (off.length > 0) {
+  console.log(`remora headers: skipped (${off.join(", ")} disabled)`);
+  process.exit(0);
 }
 
 const TURN_TIMEOUT_MS = 120_000;
 const NAMES = ["x-calico-request-source", "x-calico-prompt-id", "x-calico-active-turn-version"];
-// Two rounds, one spelling per name in each. All-lowercase lands on Calico's
-// own key, so it catches Calico's value sitting ahead of the custom headers.
-// Another casing is a separate key, so it catches a key Calico leaves out
-// instead of writing null. All-lowercase followed by another casing in one
-// variable is a documented gap (patchCompactRequestSource).
-const SPELLINGS = [
-  NAMES,
-  NAMES.map((name) => name.replace(/(^|-)([a-z])/g, (_m, dash, c) => dash + c.toUpperCase())),
-];
+// Each name all-lowercase and then Title-Case. The lowercase line lands on
+// Calico's own key in the factory's header object, so it catches Calico's
+// value sitting ahead of the custom headers. The Title-Case line is a separate
+// key that comes after Calico's in the SDK's merged object and wins there, so
+// it catches a missing calico-header-wire (measured on real 2.1.296).
+const FORGED = NAMES.flatMap((name) => [
+  `${name}: forged`,
+  `${name.replace(/(^|-)([a-z])/g, (_m, dash, c) => dash + c.toUpperCase())}: forged`,
+]).join("\n");
 
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "calico-remora-headers-"));
 const configDir = path.join(workDir, "config");
@@ -63,7 +75,7 @@ const waitForPort = async () => {
 };
 
 // The x-calico-* headers of each request the mock received during one run.
-const run = (port, forged, args) =>
+const run = (port, env, args) =>
   new Promise((resolve) => {
     const before = mockLog.length;
     const child = spawn(binary, args, {
@@ -71,11 +83,10 @@ const run = (port, forged, args) =>
         ...process.env,
         ANTHROPIC_AUTH_TOKEN: "credential-free-test-token",
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-        ANTHROPIC_CUSTOM_HEADERS: forged.map((name) => `${name}: forged`).join("\n"),
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         CLAUDE_CONFIG_DIR: configDir,
         NO_PROXY: "127.0.0.1,localhost",
-        REMORA_ACTIVE: "1",
+        ...env,
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -97,13 +108,18 @@ const run = (port, forged, args) =>
     });
   });
 
-const check = async (port, forged) => {
+(async () => {
+  const port = await waitForPort();
+  const remora = { ANTHROPIC_CUSTOM_HEADERS: FORGED, REMORA_ACTIVE: "1" };
   const session = crypto.randomUUID();
-  const main = await run(port, forged, ["--print", "ping", "--session-id", session]);
-  const compact = await run(port, forged, ["--resume", session, "--print", "/compact"]);
-  console.log(`forged as     : ${forged.join(", ")}`);
-  console.log(`main turn     : ${main.map((h) => JSON.stringify(h)).join(" ")}`);
-  console.log(`compact       : ${compact.map((h) => JSON.stringify(h)).join(" ")}`);
+  const main = await run(port, remora, ["--print", "ping", "--session-id", session]);
+  const compact = await run(port, remora, ["--resume", session, "--print", "/compact"]);
+  const plain = await run(port, { ANTHROPIC_CUSTOM_HEADERS: "", REMORA_ACTIVE: "" }, ["--print", "ping"]);
+  const show = (requests) => requests.map((h) => JSON.stringify(h)).join(" ");
+  console.log(`binary        : ${binary}`);
+  console.log(`main turn     : ${show(main)}`);
+  console.log(`compact       : ${show(compact)}`);
+  console.log(`no remora     : ${show(plain)}`);
 
   const forgedSent = [...main, ...compact].filter((h) =>
     Object.values(h).some((value) => value.includes("forged"))
@@ -121,12 +137,9 @@ const check = async (port, forged) => {
   if (compact.some((h) => "x-calico-prompt-id" in h || "x-calico-active-turn-version" in h)) {
     finish(1, "/compact carries an active-turn header");
   }
-};
-
-(async () => {
-  const port = await waitForPort();
-  console.log(`binary        : ${binary}`);
-  for (const forged of SPELLINGS) await check(port, forged);
+  if (plain.some((h) => Object.keys(h).length > 0)) {
+    finish(1, "without REMORA_ACTIVE the request carries an x-calico header");
+  }
   console.log("remora headers: OK");
   finish(0);
 })();

@@ -850,9 +850,9 @@ const CHECKS: Check[] = [
       // Calico headers have to follow that custom spread, never sit between
       // `...HELPER(),` and `...EXTRA,`. The helper is the unique session-id
       // helper above, not an arbitrary call. Under REMORA_ACTIVE both keys are
-      // written, null when there is no prompt id, because the SDK merges
-      // ANTHROPIC_CUSTOM_HEADERS back underneath, and a missing key lets any
-      // other casing of it through (issue #78).
+      // written, null when there is no prompt id: the SDK merges
+      // ANTHROPIC_CUSTOM_HEADERS back underneath, and calico-header-wire only
+      // enforces names this object carries (issue #78).
       const calicoHeaders =
         `(?:\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-request-source":[A-Za-z_$][\\w$]*==="compact"\\?"compact":null\\},)?\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-prompt-id":__calicoPromptId\\|\\|null,"x-calico-active-turn-version":__calicoPromptId\\?"1":null\\}`;
       const oldOrder = new RegExp(
@@ -891,8 +891,8 @@ const CHECKS: Check[] = [
         const fetchOverride = escapeRegExp(fetchOverrideLocal);
         const head = `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?`;
         // Written on every remora request, null unless compact: the SDK
-        // merges ANTHROPIC_CUSTOM_HEADERS back underneath, and a missing key
-        // lets any other casing of it through (issue #78).
+        // merges ANTHROPIC_CUSTOM_HEADERS back underneath, and
+        // calico-header-wire only enforces names this object carries (#78).
         const compactHeader = `\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-request-source":${source}==="compact"\\?"compact":null\\}`;
         // Inline session-id entry: the compact header follows its `...EXTRA,`
         // spread.
@@ -913,6 +913,31 @@ const CHECKS: Check[] = [
         return "compact request-source header inject is not owned by Zie factory";
       }
       return null;
+    },
+  },
+  {
+    id: "calico-header-wire",
+    kind: "custom",
+    describe: "remora x-calico-* headers set or deleted case-insensitively on the fetch the SDK uses",
+    run: (content: string): string | null => {
+      // Kept in lockstep with CALICO_HEADER_FETCH in patch-claude-display.ts.
+      const wrapper =
+        '((f,o)=>(u,i)=>{let h=new Headers(i?.headers);for(let k of["x-calico-request-source","x-calico-prompt-id","x-calico-active-turn-version"])if(k in o)o[k]==null?h.delete(k):h.set(k,o[k]);return f(u,{...i,headers:h})})';
+      if (countOccurrences(content, wrapper) !== 1) {
+        return "expected exactly one Calico header fetch wrapper";
+      }
+      // The wrapper must read the header object this factory passes as
+      // defaultHeaders, and wrap the fetch spread of that same client options
+      // object.
+      const owned = clientFactorySegments(content).some(({ fields, segment }) => {
+        if (!clientFactoryLocal(fields, "fetchOverride")) {
+          return false;
+        }
+        return new RegExp(
+          `[,{][A-Za-z_$][\\w$]*=\\{defaultHeaders:([A-Za-z_$][\\w$]*),[^;]*?\\.\\.\\.([A-Za-z_$][\\w$]*)&&\\{fetch:process\\.env\\.REMORA_ACTIVE==="1"\\?${escapeRegExp(wrapper)}\\(\\2,\\1\\):\\2\\}`
+        ).test(segment);
+      });
+      return owned ? null : "Calico header fetch wrapper is not on the client factory's own fetch";
     },
   },
   {
