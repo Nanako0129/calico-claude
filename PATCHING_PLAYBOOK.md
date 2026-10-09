@@ -362,10 +362,14 @@ Likely break signs:
 - a later agent turn retains the previous turn's input total instead of the latest one
 - the module reports `0` candidates or the verifier reports a missing refresh seam
 
-### remora client factory (`active-turn-prompt-id`, `compact-request-source`, `compact-body-policy`)
+### remora client factory (`active-turn-prompt-id`, `compact-request-source`, `calico-header-wire`, `compact-body-policy`)
 
-These three remora adapters share one anchor: the async Anthropic client factory ("Zie") whose
-destructured parameter object owns `source` and `agentContext`. Each keys its rewrite on that factory
+These remora adapters share one anchor: the async Anthropic client factory ("Zie") whose
+destructured parameter object owns `source` and `agentContext`. Inside it, the two header modules
+key on the session-id header entry or hoisted helper and inject after it. `calico-header-wire`
+selects the factory by the same anchors (any fetchOverride factory carrying both drops the module), then
+rewrites the client options object (`X={defaultHeaders:H,` and `...F&&{fetch:F}`) with its own
+fail-closed count. Each keys its rewrite on that factory
 so quota checks, token counts, and side queries stay outside the compact/active-turn namespace.
 
 Old bundle shapes we match:
@@ -386,12 +390,26 @@ What we widened for 2.1.238:
 
 - the factory-signature matcher tolerates any further simple `,key:local` bindings after
   `agentContext:i`, so appended destructured parameters do not drop the anchor
-- `active-turn-prompt-id` and `compact-request-source` capture the sanitized-context / extra-header /
-  header-object local names (and the extra-header spread name) instead of pinning `c`/`u`/`p`/`...u,`,
-  so a one-letter rename no longer silently skips the site. `compact-request-source` keeps the injected
-  IIFE parameter as the literal `u` because the verifier's wrap-needle matches on `((u)=>…`
+- `active-turn-prompt-id` captures the sanitized-context local, and both header modules match the
+  extra-header spread by shape instead of pinning `c`/`u`/`p`/`...u,`, so a one-letter rename no
+  longer silently skips the site
 - `scripts/verify-patched-binary.ts` mirrors both widenings in its `compact-request-source` and
   `compact-body-policy` structural checks so a patched 2.1.238 binary verifies
+
+In the factory's header object, Calico-owned keys are written (null for "no value"), never deleted
+from the custom headers. The factory's header object becomes the SDK
+client's `defaultHeaders`, and the bundled SDK re-reads `ANTHROPIC_CUSTOM_HEADERS` and merges it
+underneath (`defaultHeaders={...custom,...defaultHeaders}`), so a key removed from the object comes
+back from the environment. Under `REMORA_ACTIVE=1` both header modules write their keys after the
+custom spread on every request, `null` where Calico has no value; the SDK's header builder drops
+`null`. The merged object keeps the environment's key order, so a custom spelling in another casing
+is a separate key that can come after Calico's and win; `calico-header-wire` therefore wraps the
+fetch the factory hands the SDK (`...F&&{fetch:F}`) and, on the case-insensitive `Headers` it
+receives, sets or deletes each Calico name from the header object's own all-lowercase key. A
+checked-in `.claude/settings.json` can set `ANTHROPIC_CUSTOM_HEADERS` (Claude Code treats it as safe
+when no name looks sensitive), so this is reachable from repository content. Factory-level unit tests
+cannot see the merge: `tools/local-verify/remora-headers.js` checks the request the binary sends,
+and CI runs it on every platform (issue #78).
 
 Minified locals differ ACROSS PLATFORMS for the same version — matchers must never pin one:
 

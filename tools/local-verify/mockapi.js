@@ -24,8 +24,12 @@ const server = http.createServer((req, res) => {
     try {
       parsed = JSON.parse(body || "{}");
     } catch {}
+    // The x-calico-* headers as they arrived on the wire, for remora-headers.js.
+    const calico = Object.fromEntries(
+      Object.entries(req.headers).filter(([name]) => name.startsWith("x-calico-"))
+    );
     process.stderr.write(
-      `REQUEST thinking=${JSON.stringify(parsed.thinking)} stream=${parsed.stream}\n`
+      `REQUEST thinking=${JSON.stringify(parsed.thinking)} stream=${parsed.stream} calico=${JSON.stringify(calico)}\n`
     );
 
     if (!parsed.stream) {

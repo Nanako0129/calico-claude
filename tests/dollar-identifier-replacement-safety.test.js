@@ -82,7 +82,7 @@ test("active-turn injection binds a $1e-named source and $$x-named context verba
     source: "quota_check",
     agentContext: { agentType: "main" },
   });
-  assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
+  assert.equal(auxHeaders["x-calico-prompt-id"], null);
 
   // If `$$x` had collapsed to `$x` anywhere in the injected text, `$x`
   // would be an undefined reference and this call would throw instead of
@@ -126,7 +126,7 @@ test("compact-request-source injection binds a $1-named source verbatim", async 
     source: "repl_main_thread",
     agentContext: { agentType: "main" },
   });
-  assert.equal(mainHeaders["x-calico-request-source"], undefined);
+  assert.equal(mainHeaders["x-calico-request-source"], null);
 });
 
 // The 2.1.250 turn-stream rewrite re-emits the whole matched selection and the

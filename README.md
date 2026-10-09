@@ -64,7 +64,8 @@ Each of these changes nothing at all unless its trigger is present in the proces
 |---|---|---|
 | `custom-context-window` | `CALICO_MODEL_CONTEXT_WINDOWS` | Uses an exact model-to-window map instead of the stock 200K assumption |
 | `active-turn-prompt-id` | `REMORA_ACTIVE=1` | Exposes Claude's own prompt UUID to a compatible gateway as `x-calico-prompt-id` |
-| `compact-request-source` | `REMORA_ACTIVE=1` + `compact` query source | Sends `x-calico-request-source: compact` so a gateway can apply class-level stream guards |
+| `compact-request-source` | `REMORA_ACTIVE=1` | Sends `x-calico-request-source: compact` on compact requests so a gateway can apply class-level stream guards, and removes the header from the others |
+| `calico-header-wire` | `REMORA_ACTIVE=1` | Applies the two modules above to the request as sent, whatever casing `ANTHROPIC_CUSTOM_HEADERS` uses for their header names |
 | `compact-body-policy` | `REMORA_ACTIVE=1` + `CALICO_COMPACT_*` | Rewrites the full outbound compact JSON body before it leaves the process |
 | `gateway-fast-mode` | `REMORA_ACTIVE=1` | Applies `service_tier: "priority"` from remora's shared request-time worker state |
 
@@ -609,7 +610,7 @@ accepts a later user prompt.
 | Adapter marker | `calico-active-turn-adapter:v1` |
 | Patch gate | Requires **both** the AsyncLocalStorage capture and the HTTP header anchors |
 | If either upstream shape changes | The module applies nothing and the release build fails |
-| `ANTHROPIC_CUSTOM_HEADERS` override | Impossible — Calico values are written after custom headers |
+| `ANTHROPIC_CUSTOM_HEADERS` override | Blocked on model requests, in any casing — Calico writes both headers after custom headers, as its value or as an explicit removal, and `calico-header-wire` applies them to the request as sent. This includes a value set by a checked-in `.claude/settings.json`, which Claude Code applies as a safe variable. Requests Claude Code builds outside its model client, such as gateway model discovery, are not covered |
 | Codex backend state | Not stored, not forwarded |
 | Plain Calico launch (no `REMORA_ACTIVE`) | Neither header is emitted |
 
@@ -621,7 +622,9 @@ header only provides the Claude-side turn boundary.
 When `REMORA_ACTIVE=1` and Claude's query source is `compact`, Calico sends
 `x-calico-request-source: compact` so a gateway can apply class-level stream guards (absolute
 duration, no retry) without rewriting product fields, and wraps the Anthropic client `fetchOverride`
-so the **full** outbound JSON body is rewritten before the request leaves the process.
+so the **full** outbound JSON body is rewritten before the request leaves the process. On other
+model requests it removes any `x-calico-request-source` set through `ANTHROPIC_CUSTOM_HEADERS`, with
+the same coverage as the active-turn headers.
 
 Body policy comes from the remora child process environment, not from the gateway:
 

@@ -344,7 +344,7 @@ test("compact-request-source also survives the inserted querySource field", () =
   );
   assert.match(
     result.content,
-    /\.\.\.process\.env\.REMORA_ACTIVE==="1"&&o==="compact"&&\{"x-calico-request-source":"compact"\}/
+    /\.\.\.process\.env\.REMORA_ACTIVE==="1"&&\{"x-calico-request-source":o==="compact"\?"compact":null\}/
   );
 });
 
@@ -359,12 +359,12 @@ test("the verifier rejects a request-source inject that crosses a chunk boundary
   const patched = patchCompactRequestSource(fixture).content;
   assert.equal(evaluatePatchModule("compact-request-source", patched), null);
 
-  // Inside the factory, after the sanitizer the adjacency check reads, and
-  // before the header inject the ownership regex must still reach. Without
-  // bounding, that regex's `[\s\S]*?` walks straight over the boundary and the
-  // module verifies clean on a header entry from the next chunk.
+  // Inside the factory, before the header inject the ownership regex must
+  // still reach. Without bounding, that regex's `[\s\S]*?` walks straight over
+  // the boundary and the module verifies clean on a header entry from the next
+  // chunk.
   const injectIndex = patched.indexOf(
-    '...process.env.REMORA_ACTIVE==="1"&&o==="compact"'
+    '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"'
   );
   assert.notEqual(injectIndex, -1);
   const headerIndex = patched.lastIndexOf('"X-Claude-Code-Session-Id"', injectIndex);
@@ -375,7 +375,7 @@ test("the verifier rejects a request-source inject that crosses a chunk boundary
     patched.slice(headerIndex);
   assert.equal(
     evaluatePatchModule("compact-request-source", split),
-    "compact request-source sanitize/header inject is not owned by Zie factory"
+    "compact request-source header inject is not owned by Zie factory"
   );
 });
 

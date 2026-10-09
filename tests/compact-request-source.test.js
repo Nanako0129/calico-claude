@@ -45,11 +45,25 @@ function runPatched(content, env = { REMORA_ACTIVE: "1" }) {
   return context;
 }
 
+// What the request carries, not what the factory returns. The factory's object
+// becomes the SDK client's defaultHeaders; the bundled SDK merges
+// ANTHROPIC_CUSTOM_HEADERS back in underneath it (`{...custom,...headers}`) and
+// builds headers with the last same-name entry winning and null removing it
+// (read from the 2.1.296 bundle). Checking the factory object alone is how the
+// earlier delete-based sanitizer passed while real binaries leaked (issue #78).
+function sent(custom, headers) {
+  const out = {};
+  for (const [name, value] of Object.entries({ ...custom, ...headers })) {
+    if (value === null) delete out[name.toLowerCase()];
+    else if (value !== undefined) out[name.toLowerCase()] = value;
+  }
+  return out;
+}
+
 test("emits x-calico-request-source only for compact under remora", async () => {
   const result = patchCompactRequestSource(fixture);
   assert.equal(result.candidates, 1);
   assert.equal(result.patched, 1);
-  assert.match(result.content, /function __calicoOmitHeader/);
 
   const context = runPatched(result.content);
 
@@ -64,11 +78,11 @@ test("emits x-calico-request-source only for compact under remora", async () => 
       source,
       agentContext: { agentType: "main" },
     });
-    assert.equal(headers["x-calico-request-source"], undefined, source);
+    assert.equal(headers["x-calico-request-source"], null, source);
   }
 });
 
-test("strips case-variant custom request-source before owning compact value", async () => {
+test("a case-variant custom request-source does not reach a compact request", async () => {
   const result = patchCompactRequestSource(fixture);
   const context = runPatched(result.content);
   context.customHeaders = {
@@ -79,12 +93,12 @@ test("strips case-variant custom request-source before owning compact value", as
     source: "compact",
     agentContext: { agentType: "main" },
   });
-  assert.equal(compactHeaders["x-calico-request-source"], "compact");
-  assert.equal(compactHeaders["X-Calico-Request-Source"], undefined);
-  assert.equal(compactHeaders["x-keep"], "1");
+  const request = sent(context.customHeaders, compactHeaders);
+  assert.equal(request["x-calico-request-source"], "compact");
+  assert.equal(request["x-keep"], "1");
 });
 
-test("strips spoofed compact source on non-compact remora traffic", async () => {
+test("a forged compact source does not reach non-compact remora traffic", async () => {
   const result = patchCompactRequestSource(fixture);
   const context = runPatched(result.content);
   context.customHeaders = {
@@ -95,9 +109,9 @@ test("strips spoofed compact source on non-compact remora traffic", async () => 
     source: "repl_main_thread",
     agentContext: { agentType: "main" },
   });
-  assert.equal(mainHeaders["x-calico-request-source"], undefined);
-  assert.equal(mainHeaders["X-Calico-Request-Source"], undefined);
-  assert.equal(mainHeaders["x-keep"], "1");
+  const request = sent(context.customHeaders, mainHeaders);
+  assert.equal(request["x-calico-request-source"], undefined);
+  assert.equal(request["x-keep"], "1");
 });
 
 test("does not emit compact header when REMORA_ACTIVE is off", async () => {
@@ -124,14 +138,14 @@ test("composes with active-turn without dropping either header set", async () =>
     agentContext: { agentType: "main" },
   });
   assert.equal(compactHeaders["x-calico-request-source"], "compact");
-  assert.equal(compactHeaders["x-calico-prompt-id"], undefined);
+  assert.equal(compactHeaders["x-calico-prompt-id"], null);
 
   const mainHeaders = await context.Zie({
     source: "repl_main_thread",
     agentContext: { agentType: "main", agentId: "session-a" },
   });
   assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
-  assert.equal(mainHeaders["x-calico-request-source"], undefined);
+  assert.equal(mainHeaders["x-calico-request-source"], null);
 });
 
 // No shipped build has renamed the `source` local yet, but the lesson from the
@@ -173,15 +187,15 @@ test("owns the compact header on the 2.1.238 credentials/shifted-local shape", a
     source: "compact",
     agentContext: { agentType: "main" },
   });
-  assert.equal(compactHeaders["x-calico-request-source"], "compact");
-  assert.equal(compactHeaders["x-keep"], "1");
+  const compactRequest = sent(context.customHeaders, compactHeaders);
+  assert.equal(compactRequest["x-calico-request-source"], "compact");
+  assert.equal(compactRequest["x-keep"], "1");
 
   const mainHeaders = await context.Zie({
     source: "repl_main_thread",
     agentContext: { agentType: "main" },
   });
-  assert.equal(mainHeaders["x-calico-request-source"], undefined);
-  assert.equal(mainHeaders["X-Calico-Request-Source"], undefined);
+  assert.equal(sent(context.customHeaders, mainHeaders)["x-calico-request-source"], undefined);
 });
 
 // linux-arm64 and windows-arm64 builds of 2.1.238 destructure the same
@@ -251,36 +265,40 @@ test("hoisted custom spread stays ahead of compact and then the prompt header", 
   assert.equal(withBoth.candidates, 1);
   assert.equal(withBoth.patched, 1);
   const ordered =
-    '...Ob(),...((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(fe),...process.env.REMORA_ACTIVE==="1"&&h==="compact"&&{"x-calico-request-source":"compact"},...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
+    '...Ob(),...fe,...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":h==="compact"?"compact":null},...process.env.REMORA_ACTIVE==="1"&&{"x-calico-prompt-id":__calicoPromptId||null,"x-calico-active-turn-version":__calicoPromptId?"1":null},';
   assert.equal(withBoth.content.includes(ordered), true);
-  assert.equal(withBoth.content.includes("...Ob(),...__calicoPromptId"), false);
   assert.equal(withBoth.content.includes("...Ob(),...process.env"), false);
   assert.equal(withBoth.content.split("return Ob()").length - 1, 1);
   assert.equal(evaluatePatchModule("active-turn-prompt-id", withBoth.content), null);
   assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
 
   const context = runPatched(withBoth.content);
-  context.customHeaders = {
-    "x-calico-request-source": "forged",
-    "X-Calico-Request-Source": "forged",
-  };
-  const compactHeaders = await context.Zie({
-    source: "compact",
-    agentContext: { agentType: "main" },
-  });
-  assert.equal(compactHeaders["x-calico-request-source"], "compact");
-  assert.equal(compactHeaders["X-Calico-Request-Source"], undefined);
-  assert.equal(compactHeaders["x-calico-prompt-id"], undefined);
-  context.customHeaders = {
-    "x-calico-prompt-id": "forged",
-    "x-calico-request-source": "forged",
-  };
-  const mainHeaders = await context.Zie({
-    source: "repl_main_thread",
-    agentContext: { agentType: "main", agentId: "session-a" },
-  });
-  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
-  assert.equal(mainHeaders["x-calico-request-source"], undefined);
+  // One spelling per run. All-lowercase followed by another casing wins in the
+  // merged object and is replaced on the request by calico-header-wire, which
+  // this object-level model does not include.
+  for (const [source, prompt, version] of [
+    ["x-calico-request-source", "x-calico-prompt-id", "x-calico-active-turn-version"],
+    ["X-Calico-Request-Source", "X-Calico-Prompt-Id", "X-Calico-Active-Turn-Version"],
+  ]) {
+    context.customHeaders = { [source]: "forged", [prompt]: "forged", [version]: "forged" };
+    const compactRequest = sent(
+      context.customHeaders,
+      await context.Zie({ source: "compact", agentContext: { agentType: "main" } })
+    );
+    assert.equal(compactRequest["x-calico-request-source"], "compact", source);
+    assert.equal(compactRequest["x-calico-prompt-id"], undefined, prompt);
+    assert.equal(compactRequest["x-calico-active-turn-version"], undefined, version);
+    const mainRequest = sent(
+      context.customHeaders,
+      await context.Zie({
+        source: "repl_main_thread",
+        agentContext: { agentType: "main", agentId: "session-a" },
+      })
+    );
+    assert.equal(mainRequest["x-calico-prompt-id"], "turn-a", prompt);
+    assert.equal(mainRequest["x-calico-active-turn-version"], "1", version);
+    assert.equal(mainRequest["x-calico-request-source"], undefined, source);
+  }
 });
 
 test("hoisted and inline session-id anchors together patch nothing", () => {
@@ -296,12 +314,12 @@ test("hoisted and inline session-id anchors together patch nothing", () => {
 // 2.1.296 puts another binding between the custom-header declaration and the
 // header object (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`, read from the
 // extracted 2.1.296 darwin-arm64 bundle). The local is taken from the spread
-// after the helper, and the spread operand itself is wrapped.
+// after the helper, and the Calico headers follow that spread.
 const fixture296 = fixture285
   .replace("fe=Ylt(),Q={", "fe=Ylt(),ie=await em({querySource:g}),Q={")
   .replace("async function Next(){}", "async function em(){return 1}async function Next(){}");
-const SPREAD_WRAP =
-  '...Ob(),...((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(fe),';
+const COMPACT_AFTER_SPREAD =
+  '...Ob(),...fe,...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":h==="compact"?"compact":null},';
 
 async function headersFor(source, kind) {
   const withActive = patchActiveTurnPromptIdentity(source);
@@ -312,7 +330,7 @@ async function headersFor(source, kind) {
     source: kind,
     agentContext: { agentType: "main", agentId: "session-a" },
   });
-  return { withActive, withBoth, headers };
+  return { withActive, withBoth, headers: sent(context.customHeaders, headers) };
 }
 
 test("2.1.296: both header modules patch with a binding between EXTRA and the header object", async () => {
@@ -320,7 +338,7 @@ test("2.1.296: both header modules patch with a binding between EXTRA and the he
   const { withActive, withBoth, headers } = await headersFor(fixture296, "repl_main_thread");
   assert.equal(withActive.patched, 2);
   assert.equal(withBoth.patched, 1);
-  assert.equal(withBoth.content.includes(SPREAD_WRAP), true);
+  assert.equal(withBoth.content.includes(COMPACT_AFTER_SPREAD), true);
   assert.equal(withBoth.content.includes("fe=Ylt(),ie=await em("), true, "the declaration is left alone");
   assert.equal(evaluatePatchModule("active-turn-prompt-id", withBoth.content), null);
   assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
@@ -328,26 +346,6 @@ test("2.1.296: both header modules patch with a binding between EXTRA and the he
   assert.equal(headers["x-calico-request-source"], undefined);
   const compact = await headersFor(fixture296, "compact");
   assert.equal(compact.headers["x-calico-request-source"], "compact");
-});
-
-// Wrapping the spread operand sanitizes whatever value is spread, so a second
-// writer between the declaration and the header object cannot reintroduce a
-// forged header. These are the shapes a declaration-site wrap could not prove
-// away (later assignment, destructuring, in-place merge).
-test("2.1.296: whichever writer produced the spread value, it is sanitized", async () => {
-  const writers = [
-    "ie=(fe=Ylt(),await em({querySource:g}))",
-    "ie=([fe]=[Ylt()],await em({querySource:g}))",
-    "ie=(Object.assign(fe,customHeaders),await em({querySource:g}))",
-  ];
-  for (const writer of writers) {
-    const source = fixture296.replace("ie=await em({querySource:g})", writer);
-    assert.notEqual(source, fixture296);
-    const { withBoth, headers } = await headersFor(source, "repl_main_thread");
-    assert.equal(withBoth.patched, 1, writer);
-    assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null, writer);
-    assert.equal(headers["x-calico-request-source"], undefined, writer);
-  }
 });
 
 test("2.1.296: a spread after the helper that is not a call result patches nothing", () => {
@@ -360,18 +358,13 @@ test("2.1.296: a spread after the helper that is not a call result patches nothi
   }
 });
 
-test("2.1.296: verifier rejects a sanitizer that is not on the spread operand", () => {
+// Ahead of the custom spread, a forged exact-case key would overwrite the
+// header inside the factory's own object.
+test("2.1.296: verifier rejects the request-source header ahead of the custom spread", () => {
   const patched = patchCompactRequestSource(fixture296).content;
   assert.equal(evaluatePatchModule("compact-request-source", patched), null);
-  const onDeclaration = patched
-    .replace(
-      SPREAD_WRAP,
-      "...Ob(),...fe,"
-    )
-    .replace(
-      "fe=Ylt(),ie=",
-      'fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),ie='
-    );
-  assert.notEqual(onDeclaration, patched);
-  assert.match(evaluatePatchModule("compact-request-source", onDeclaration), /not owned by Zie factory/);
+  const header = COMPACT_AFTER_SPREAD.slice("...Ob(),...fe,".length);
+  const ahead = patched.replace(COMPACT_AFTER_SPREAD, `...Ob(),${header}...fe,`);
+  assert.notEqual(ahead, patched);
+  assert.match(evaluatePatchModule("compact-request-source", ahead), /not owned by Zie factory/);
 });
