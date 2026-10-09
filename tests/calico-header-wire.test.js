@@ -163,17 +163,21 @@ test("a factory carrying both session-id anchors drops the whole module", () => 
   // skipped.
   const valid = fixture.slice(fixture.indexOf("async function Zie")).replace("async function Zie", "async function Zie2");
   const result = patchCalicoHeaderWire(both + valid);
+  assert.equal(result.candidates, 0, "dropped by the both-anchors rule, not the candidate count");
   assert.equal(result.patched, 0);
   assert.equal(result.content, both + valid);
 });
 
 // A wrapper on another fetchOverride factory, with the real one left bare.
-function wrapperOn(factoryBody) {
+function wrapperOn(factoryBody, rest = fixture) {
   return (
     `async function Aux({apiKey:e,fetchOverride:n,source:o}){let p={${factoryBody}},q={defaultHeaders:p,...n&&{fetch:process.env.REMORA_ACTIVE==="1"?${CALICO_HEADER_FETCH}(n,p):n}};return q}\n` +
-    fixture
+    rest
   );
 }
+
+const CALICO_SPREAD =
+  '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}';
 
 test("the verifier rejects a wrapper on a factory without the session-id anchor", () => {
   // It carries a Calico key, so only the anchor check can reject it.
@@ -188,3 +192,19 @@ test("the verifier rejects a wrapper on an anchored factory without the Calico k
   assert.match(evaluatePatchModule("calico-header-wire", content), /not on the client factory's own fetch/);
 });
 
+test("with both header modules disabled, the verifier still rejects an unanchored wrapper", () => {
+  // No Calico key anywhere, so the anchor check is the only gate.
+  const content = wrapperOn('"x-a":1', fixture.replace(CALICO_SPREAD, '"x-other":"1"'));
+  assert.equal(content.includes('"x-calico-request-source":'), false);
+  assert.match(evaluatePatchModule("calico-header-wire", content), /not on the client factory's own fetch/);
+});
+
+test("with only active-turn's key in the bundle, the verifier still requires it", () => {
+  const promptOnly = fixture.replace(
+    CALICO_SPREAD,
+    '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-prompt-id":null,"x-calico-active-turn-version":null}'
+  );
+  assert.notEqual(promptOnly, fixture);
+  const content = wrapperOn('"X-Claude-Code-Session-Id":xt(),...customHeaders,"x-a":1', promptOnly);
+  assert.match(evaluatePatchModule("calico-header-wire", content), /not on the client factory's own fetch/);
+});

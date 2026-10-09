@@ -5563,7 +5563,8 @@ function patchCalicoHeaderWire(content) {
     );
     const end = start + segment.length;
     // The factory the two header modules write into: same session-id anchors.
-    // The whole module drops when the selected factory carries both.
+    // Any fetchOverride factory carrying both anchors drops the whole module,
+    // before the client options object is looked for.
     const hasOld = SESSION_ID_HEADER_ENTRY.test(segment);
     const hasSpread = hoisted !== null && segment.includes(`...${hoisted.name}(),`);
     if (hasOld && hasSpread) {

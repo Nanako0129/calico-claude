@@ -367,7 +367,7 @@ Likely break signs:
 These remora adapters share one anchor: the async Anthropic client factory ("Zie") whose
 destructured parameter object owns `source` and `agentContext`. Inside it, the two header modules
 key on the session-id header entry or hoisted helper and inject after it. `calico-header-wire`
-selects the factory by the same anchors (and drops the module if the factory carries both), then
+selects the factory by the same anchors (any fetchOverride factory carrying both drops the module), then
 rewrites the client options object (`X={defaultHeaders:H,` and `...F&&{fetch:F}`) with its own
 fail-closed count. Each keys its rewrite on that factory
 so quota checks, token counts, and side queries stay outside the compact/active-turn namespace.
