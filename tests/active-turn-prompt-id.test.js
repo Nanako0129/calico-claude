@@ -364,7 +364,7 @@ function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
 function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
 function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:z()}}
 function lf(e){return e.agentType==="main"}
-var calicoEnv={};function cHpYlt(e=calicoEnv.ANTHROPIC_CUSTOM_HEADERS??""){return[]}function Ylt(){let e={};for(let[n,s]of cHpYlt())e[n]=s;return{...e,...customHeaders}}
+function Ylt(){return customHeaders}
 var customHeaders={};
 function Tt(){return false}
 function FI(){return"fixture"}

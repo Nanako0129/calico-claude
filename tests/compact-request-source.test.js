@@ -230,7 +230,7 @@ function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
 function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
 function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:z()}}
 function lf(e){return e.agentType==="main"}
-var calicoEnv={};function cHpYlt(e=calicoEnv.ANTHROPIC_CUSTOM_HEADERS??""){return[]}function Ylt(){let e={};for(let[n,s]of cHpYlt())e[n]=s;return{...e,...customHeaders}}
+function Ylt(){return customHeaders}
 var customHeaders={};
 function Tt(){return false}
 function FI(){return"fixture"}
@@ -251,7 +251,7 @@ test("hoisted custom spread stays ahead of compact and then the prompt header", 
   assert.equal(withBoth.candidates, 1);
   assert.equal(withBoth.patched, 1);
   const ordered =
-    '...Ob(),...fe,...process.env.REMORA_ACTIVE==="1"&&h==="compact"&&{"x-calico-request-source":"compact"},...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
+    '...Ob(),...((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(fe),...process.env.REMORA_ACTIVE==="1"&&h==="compact"&&{"x-calico-request-source":"compact"},...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
   assert.equal(withBoth.content.includes(ordered), true);
   assert.equal(withBoth.content.includes("...Ob(),...__calicoPromptId"), false);
   assert.equal(withBoth.content.includes("...Ob(),...process.env"), false);
@@ -294,102 +294,64 @@ test("hoisted and inline session-id anchors together patch nothing", () => {
 });
 
 // 2.1.296 puts another binding between the custom-header declaration and the
-// header object (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`). The custom
-// local is now found from the spread after the helper, not by adjacency.
+// header object (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`, read from the
+// extracted 2.1.296 darwin-arm64 bundle). The local is taken from the spread
+// after the helper, and the spread operand itself is wrapped.
 const fixture296 = fixture285
   .replace("fe=Ylt(),Q={", "fe=Ylt(),ie=await em({querySource:g}),Q={")
   .replace("async function Next(){}", "async function em(){return 1}async function Next(){}");
+const SPREAD_WRAP =
+  '...Ob(),...((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(fe),';
+
+async function headersFor(source, kind) {
+  const withActive = patchActiveTurnPromptIdentity(source);
+  const withBoth = patchCompactRequestSource(withActive.content);
+  const context = runPatched(withBoth.content);
+  context.customHeaders = { "x-calico-request-source": "forged", "x-calico-prompt-id": "forged" };
+  const headers = await context.Zie({
+    source: kind,
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  return { withActive, withBoth, headers };
+}
 
 test("2.1.296: both header modules patch with a binding between EXTRA and the header object", async () => {
   assert.notEqual(fixture296, fixture285);
-  const withActive = patchActiveTurnPromptIdentity(fixture296);
+  const { withActive, withBoth, headers } = await headersFor(fixture296, "repl_main_thread");
   assert.equal(withActive.patched, 2);
-  const withBoth = patchCompactRequestSource(withActive.content);
   assert.equal(withBoth.patched, 1);
-  assert.equal(
-    withBoth.content.includes(
-      'fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),ie=await em('
-    ),
-    true
-  );
+  assert.equal(withBoth.content.includes(SPREAD_WRAP), true);
+  assert.equal(withBoth.content.includes("fe=Ylt(),ie=await em("), true, "the declaration is left alone");
   assert.equal(evaluatePatchModule("active-turn-prompt-id", withBoth.content), null);
   assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
-
-  const context = runPatched(withBoth.content);
-  context.customHeaders = { "x-calico-request-source": "forged", "x-calico-prompt-id": "forged" };
-  const compactHeaders = await context.Zie({ source: "compact", agentContext: { agentType: "main" } });
-  assert.equal(compactHeaders["x-calico-request-source"], "compact");
-  const mainHeaders = await context.Zie({
-    source: "repl_main_thread",
-    agentContext: { agentType: "main", agentId: "session-a" },
-  });
-  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
-  assert.equal(mainHeaders["x-calico-request-source"], undefined);
+  assert.equal(headers["x-calico-prompt-id"], "turn-a");
+  assert.equal(headers["x-calico-request-source"], undefined);
+  const compact = await headersFor(fixture296, "compact");
+  assert.equal(compact.headers["x-calico-request-source"], "compact");
 });
 
-test("2.1.296: a shadowing declaration in an earlier nested scope fails compact closed", () => {
-  const shadowed = fixture296.replace(
-    "let B=0,",
-    "let q=()=>{let z=0,fe=Ylt(),w=1;return w},B=0,"
-  );
-  assert.notEqual(shadowed, fixture296);
-  const compact = patchCompactRequestSource(shadowed);
-  assert.equal(compact.patched, 0, "two candidate declarations: do not guess");
-  assert.equal(compact.content, shadowed);
-  // Two getter bindings of that name: active-turn cannot tell which one is
-  // spread either, so it fails closed too.
-  assert.equal(patchActiveTurnPromptIdentity(shadowed).patched, 0);
-});
-
-// The review's probes: the real binding in a shape the anchor does not take
-// (`fe=Ylt(g)`) next to a nested same-named binding, and a foreign spread after
-// the helper whose name a nested binding happens to share. A name-only lookup
-// wrapped or anchored on the nested binding; tied to the getter, neither is
-// taken for the custom-header local.
-test("2.1.296: same-named nested bindings never stand in for the custom-header local", () => {
-  const realHasArgs = fixture296
-    .replace("fe=Ylt(),ie=await em(", "fe=Ylt(g),ie=await em(")
-    .replace("let B=0,", "let q=()=>{let z=0,fe=Tt(),w=1;return w},B=0,");
-  const foreignShadowed = fixture296
-    .replace("Q={...Ob(),...fe,", "Q={...Ob(),...B2,...fe,")
-    .replace("let B=0,", "let B2={},q=()=>{let B2=Tt();return B2},B=0,");
-  for (const source of [realHasArgs, foreignShadowed]) {
+// Wrapping the spread operand sanitizes whatever value is spread, so a second
+// writer between the declaration and the header object cannot reintroduce a
+// forged header. These are the shapes a declaration-site wrap could not prove
+// away (later assignment, logical assignment, destructuring, in-place merge).
+test("2.1.296: whichever writer produced the spread value, it is sanitized", async () => {
+  const writers = [
+    "ie=(fe=Ylt(),await em({querySource:g}))",
+    "ie=(fe??=Ylt(),await em({querySource:g}))",
+    "ie=([fe]=[Ylt()],await em({querySource:g}))",
+    "ie=(Object.assign(fe,customHeaders),await em({querySource:g}))",
+  ];
+  for (const writer of writers) {
+    const source = fixture296.replace("ie=await em({querySource:g})", writer);
     assert.notEqual(source, fixture296);
-    for (const apply of [patchActiveTurnPromptIdentity, patchCompactRequestSource]) {
-      const result = apply(source);
-      assert.equal(result.patched, 0);
-      assert.equal(result.content, source);
-    }
+    const { withBoth, headers } = await headersFor(source, "repl_main_thread");
+    assert.equal(withBoth.patched, 1, writer);
+    assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null, writer);
+    assert.equal(headers["x-calico-request-source"], undefined, writer);
   }
 });
 
-test("2.1.296: any same-named binding before the header spread fails compact closed", () => {
-  // A look-alike ending in `;`, and the review's case: a nested `,fe=Ylt(),`
-  // while the real declaration is the last binding of its statement.
-  const lookalike = fixture296.replace("let B=0,", "let q=()=>{let z=0,fe=Ylt();return z},B=0,");
-  const realEndsInSemicolon = fixture296
-    .replace("let B=0,", "let q=()=>{let z=0,fe=Ylt(),w=1;return w},B=0,")
-    .replace("fe=Ylt(),ie=await em({querySource:g}),Q={", "fe=Ylt();let ie=await em({querySource:g}),Q={");
-  for (const source of [lookalike, realEndsInSemicolon]) {
-    assert.notEqual(source, fixture296);
-    const result = patchCompactRequestSource(source);
-    assert.equal(result.patched, 0, "two bindings named like EXTRA: do not guess which to wrap");
-    assert.equal(result.content, source);
-  }
-});
-
-test("2.1.296: an unmeasured declaration shape fails closed instead of producing an unverifiable patch", () => {
-  const letFirst = fixture296.replace("let B=0,Y=lf(b)?void 0:b,fe=Ylt(),", "let B=0,Y=lf(b)?void 0:b;let fe=Ylt(),");
-  const semicolonEnded = fixture296.replace("fe=Ylt(),ie=await em(", "fe=Ylt();let ie=await em(");
-  for (const source of [letFirst, semicolonEnded]) {
-    assert.notEqual(source, fixture296);
-    const result = patchCompactRequestSource(source);
-    assert.equal(result.patched, 0);
-    assert.equal(result.content, source);
-  }
-});
-
-test("2.1.296: a spread after the helper that is not a custom-header result patches nothing", () => {
+test("2.1.296: a spread after the helper that is not a call result patches nothing", () => {
   const foreign = fixture296.replace("Q={...Ob(),...fe,", "Q={...Ob(),...B2,...fe,").replace("let B=0,", "let B=0,B2={},");
   assert.notEqual(foreign, fixture296);
   for (const apply of [patchActiveTurnPromptIdentity, patchCompactRequestSource]) {
@@ -399,40 +361,18 @@ test("2.1.296: a spread after the helper that is not a custom-header result patc
   }
 });
 
-test("2.1.296: verifier rejects a wrap on a local other than the spread one", () => {
+test("2.1.296: verifier rejects a sanitizer that is not on the spread operand", () => {
   const patched = patchCompactRequestSource(fixture296).content;
   assert.equal(evaluatePatchModule("compact-request-source", patched), null);
-  const mismatched = patched
-    .replace("ie=await em(", "zz=Ylt(),ie=await em(")
-    .replace("...Ob(),...fe,", "...Ob(),...zz,");
-  assert.notEqual(mismatched, patched);
-  assert.match(evaluatePatchModule("compact-request-source", mismatched), /not owned by Zie factory/);
-});
-
-test("2.1.296: a compound assignment to the custom-header local fails compact closed", () => {
-  const compound = fixture296.replace("ie=await em(", "ie=(fe??=Tt(),await em(").replace("{querySource:g}),Q={", "{querySource:g})),Q={");
-  assert.notEqual(compound, fixture296);
-  const result = patchCompactRequestSource(compound);
-  assert.equal(result.patched, 0, "a second writer could bring the unsanitized object back");
-  assert.equal(result.content, compound);
-});
-
-// 2.1.285 ships the hoisted helper with the getter that parses inline rather
-// than iterating a separate parser (measured: `function Ylt(){let e={},r=(…`).
-test("hoisted shape with the 2.1.285 inline-parsing getter patches and verifies", async () => {
-  const inlineGetter = fixture296.replace(
-    /var calicoEnv=\{\};function cHpYlt\(e=calicoEnv\.ANTHROPIC_CUSTOM_HEADERS\?\?""\)\{return\[\]\}function Ylt\(\)\{let e=\{\};for\(let\[n,s\]of cHpYlt\(\)\)e\[n\]=s;return\{\.\.\.e,\.\.\.customHeaders\}\}/,
-    'function Ylt(){let e={},r=(process.env.ANTHROPIC_CUSTOM_HEADERS??"").split(/\\n|\\r\\n/);return{...e,...customHeaders}}'
-  );
-  assert.notEqual(inlineGetter, fixture296);
-  const withActive = patchActiveTurnPromptIdentity(inlineGetter);
-  assert.equal(withActive.patched, 2);
-  const withBoth = patchCompactRequestSource(withActive.content);
-  assert.equal(withBoth.patched, 1);
-  assert.equal(evaluatePatchModule("active-turn-prompt-id", withBoth.content), null);
-  assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
-  const context = runPatched(withBoth.content);
-  context.customHeaders = { "x-calico-request-source": "forged" };
-  const headers = await context.Zie({ source: "repl_main_thread", agentContext: { agentType: "main" } });
-  assert.equal(headers["x-calico-request-source"], undefined);
+  const onDeclaration = patched
+    .replace(
+      SPREAD_WRAP,
+      "...Ob(),...fe,"
+    )
+    .replace(
+      "fe=Ylt(),ie=",
+      'fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),ie='
+    );
+  assert.notEqual(onDeclaration, patched);
+  assert.match(evaluatePatchModule("compact-request-source", onDeclaration), /not owned by Zie factory/);
 });

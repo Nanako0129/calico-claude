@@ -5116,99 +5116,37 @@ function hoistedSessionHeader(content) {
   return { name };
 }
 
-// The custom-headers getter, in the two shapes the hoisted helper ships with
-// (measured on the extracted bundles; 2.1.286 was not available):
-//
-//   2.1.285            function Ylt(){let e={},r=(process.env.ANTHROPIC_CUSTOM_HEADERS??"").split(…
-//   2.1.287 – 2.1.296  function E4e(e=a.ANTHROPIC_CUSTOM_HEADERS??""){…}
-//                      function XRt(){let e={};for(let[n,s]of E4e()){…
-//
-// 2.1.270 – 2.1.284 use the first shape too, and 2.1.250 neither, but those
-// carry the inline session-id entry, whose path does not need the getter.
-// Minified names collide across chunks (2.1.295 also has an unrelated
-// `function XRt(e){…}`), so callers keep only sites in the factory's own Bun
-// module. Kept in lockstep with customHeadersGetterSites in
-// scripts/verify-patched-binary.ts.
-function customHeadersGetterSites(content) {
-  const identifier = "[A-Za-z_$][\\w$]*";
-  const sites = [];
-  for (const getter of content.matchAll(
-    new RegExp(
-      `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\},${identifier}=\\(process\\.env\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\.split\\(`,
-      "g"
-    )
-  )) {
-    sites.push({ name: getter[1], at: getter.index });
-  }
-  for (const parser of content.matchAll(
-    new RegExp(`function (${identifier})\\(${identifier}=${identifier}\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\{`, "g")
-  )) {
-    for (const getter of content.matchAll(
-      new RegExp(
-        `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\};for\\(let\\[${identifier},${identifier}\\]of ${escapeRegExp(parser[1])}\\(\\)\\)`,
-        "g"
-      )
-    )) {
-      sites.push({ name: getter[1], at: getter.index });
-    }
-  }
-  return sites;
-}
-
-// Getter names declared in the same Bun module as the factory at factoryAt.
-function customHeadersGetters(content, factoryAt) {
-  return customHeadersGetterSites(content)
-    .filter((site) => inSameModule(content, site.at, factoryAt))
-    .map((site) => site.name);
-}
-
 // The custom-header local is the one spread right after the helper,
-// `...HELPER(),...EXTRA,`, and bound exactly once before it as
-// `,EXTRA=GETTER(),` where GETTER is the custom-headers getter. Injection goes
-// after that pair and never between the two spreads, so ANTHROPIC_CUSTOM_HEADERS
-// cannot override x-calico headers.
+// `...HELPER(),...EXTRA,`. Injection goes after that pair and never between the
+// two spreads, so ANTHROPIC_CUSTOM_HEADERS cannot override x-calico headers.
+// Two copies of the pair fail closed. The search stops at the factory's Bun
+// module boundary.
 //
-// Through 2.1.295 the binding sat right before the header object
-// (`,J=XRt(),ie={...ml(),...J,`); 2.1.296 put another binding between them
-// (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`). Tying the local to the
-// getter, rather than to its position or its name alone, means a same-named
-// local in a nested scope, or a foreign spread upstream inserts after the
-// helper, is never taken for it. Anything else returns null (fail closed).
-function hoistedHeaderAnchor(segment, helperName, getters) {
+// Through 2.1.295 the local was declared right before the header object
+// (`,J=XRt(),ie={...ml(),...J,`) and found from that declaration. 2.1.296 put
+// another binding between them (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`),
+// so the local is now taken from the spread itself. It must still be bound
+// from a zero-arg call earlier in the factory, as the custom-headers result
+// is, so a literal or other spread inserted after the helper is not taken for
+// it. That check is textual (name, not scope), the same regex-vs-parser
+// limit tracked in issue #47.
+function hoistedHeaderAnchor(segment, helperName) {
   const identifier = "[A-Za-z_$][\\w$]*";
+  const boundary = segment.indexOf(BUN_MODULE_BOUNDARY);
+  const scope = boundary === -1 ? segment : segment.slice(0, boundary);
   const spreads = [
-    ...segment.matchAll(
+    ...scope.matchAll(
       new RegExp(`\\.\\.\\.${escapeRegExp(helperName)}\\(\\),\\.\\.\\.(${identifier}),`, "g")
     ),
   ];
-  if (spreads.length !== 1 || getters.length === 0) {
+  if (spreads.length !== 1) {
     return null;
   }
   const extraLocal = spreads[0][1];
-  const before = segment.slice(0, spreads[0].index);
-  const name = escapeRegExp(extraLocal);
-  const getterAlternatives = getters.map(escapeRegExp).join("|");
-  const bound = [
-    ...before.matchAll(new RegExp(`,${name}=(${getterAlternatives})\\(\\)(?=,)`, "g")),
-  ];
-  if (bound.length !== 1) {
-    return null;
-  }
-  // Plain and compound assignments to that name before the spread (`fe=`,
-  // `fe??=`, `fe||=`, `fe+=`, …), whatever the right-hand side; compact only
-  // rewrites when the getter binding is the only one. Destructuring targets
-  // (`[fe]=x`, `({fe}=x)`) and parameters are not counted.
-  const assignments = [
-    ...before.matchAll(
-      new RegExp(`(?<![\\w$.])${name}(?:\\*\\*|>>>|<<|>>|\\?\\?|&&|\\|\\||[-+*/%&|^])?=(?![=>])`, "g")
-    ),
-  ].length;
-  return {
-    anchor: `...${helperName}(),...${extraLocal},`,
-    extraLocal,
-    assignments,
-    declaration: { at: bound[0].index, text: bound[0][0], factory: bound[0][1] },
-  };
+  const bound = new RegExp(`,${escapeRegExp(extraLocal)}=${identifier}\\(\\)(?=[,;])`).test(
+    scope.slice(0, spreads[0].index)
+  );
+  return bound ? `...${helperName}(),...${extraLocal},` : null;
 }
 
 function insertAfter(text, anchor, insertion) {
@@ -5438,11 +5376,9 @@ function patchActiveTurnPromptIdentity(content) {
     const promptSpread =
       '...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
     // Captured before the sanitizer rewrite. On the hoisted shape the anchor
-    // is `...HELPER(),...EXTRA,`; the prompt spread is inserted after EXTRA,
-    // never between the two spreads. Only the spread is needed here.
-    const anchor = hasSpread
-      ? hoistedHeaderAnchor(segment, hoisted.name, customHeadersGetters(output, start))?.anchor ?? null
-      : null;
+    // is `...HELPER(),...EXTRA,` from `,EXTRA=FN(),HEADER={`; the prompt
+    // spread is inserted after EXTRA, never between the two spreads.
+    const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
     if (hasSpread && anchor === null) {
       continue;
     }
@@ -5540,42 +5476,38 @@ function patchCompactRequestSource(content) {
     // On every remora request, strip any case-variant of the Calico-owned
     // request-source header from custom headers so ANTHROPIC_CUSTOM_HEADERS
     // cannot spoof compact. Re-add the lowercase value only for true compact.
-    // Single let-binding only — reassignment would be a SyntaxError in `let`.
-    // 2.1.238's `credentials:s` rename shifts the extra-header local
-    // (2.1.237 `u=…()` → 2.1.238 `d=…()`), so it is captured, never pinned; the
-    // inline shape also captures the header-object local after it. The IIFE
-    // parameter stays the literal `u` regardless,
+    // Inline session-id shape: the custom-header local is declared right before
+    // the header object, so the declaration is wrapped there. 2.1.238's
+    // `credentials:s` rename shifts the extra-header local and the
+    // header-object local (2.1.237 `u=…(),p={` → 2.1.238 `d=…(),f={`), so both
+    // names are captured. The IIFE parameter stays the literal `u` regardless,
     // because the wrap-needle lookup below matches on `((u)=>…`.
-    // Taken before the omit wrap rewrites EXTRA's declaration. On the hoisted
-    // shape this is `...HELPER(),...EXTRA,`, which active-turn may already have
-    // followed with the prompt spread. Inserting here puts compact between the
-    // custom spread and that prompt spread.
-    const header = hasSpread
-      ? hoistedHeaderAnchor(segment, hoisted.name, customHeadersGetters(output, start))
-      : null;
-    // compact rewrites the binding, so it also needs it to be the only
-    // assignment to that name before the spread.
-    const declaration = header && header.assignments === 1 ? header.declaration : null;
-    if (hasSpread && declaration === null) {
+    //
+    // Hoisted shape: the spread operand itself is wrapped,
+    // `...HELPER(),...EXTRA,` → `...HELPER(),...((u)=>…)(EXTRA),`. That
+    // sanitizes the value spread into this header object, whichever binding or
+    // writer produced it, so no declaration has to be found or proven unique
+    // (2.1.296 no longer declares it next to the header object). active-turn
+    // may already have followed the anchor with the prompt spread; compact goes
+    // between the custom spread and that prompt spread.
+    //
+    // Measured 2026-10-10 on real 2.1.283, 2.1.295 and 2.1.296: a forged
+    // x-calico-request-source in ANTHROPIC_CUSTOM_HEADERS still reaches the
+    // request by another path, with either wrap site. This object is passed as
+    // the client's defaultHeaders; issue #78 tracks the other path.
+    const omitWrap =
+      '((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)';
+    const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
+    if (hasSpread && anchor === null) {
       continue;
     }
-    const anchor = header?.anchor ?? null;
-    const wrapExtra = (extraLocal, factory) =>
-      `,${extraLocal}=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(${factory}())`;
-    let nextSegment;
-    if (hasSpread) {
-      // Spliced at the counted match, not String#replace, so the rewritten
-      // binding is the one that was proven unique.
-      nextSegment =
-        segment.slice(0, declaration.at) +
-        wrapExtra(header.extraLocal, declaration.factory) +
-        segment.slice(declaration.at + declaration.text.length);
-    } else {
-      nextSegment = segment.replace(
-        /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/,
-        (full, extraLocal, factory, headerLocal) => `${wrapExtra(extraLocal, factory)},${headerLocal}={`
-      );
-    }
+    let nextSegment = hasOld
+      ? segment.replace(
+          /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/,
+          (full, extraLocal, factory, headerLocal) =>
+            `,${extraLocal}=${omitWrap}(${factory}()),${headerLocal}={`
+        )
+      : segment;
     // Inject after Session-Id + custom-header spread (...u,), or after the
     // hoisted `...HELPER(),...EXTRA,`. Works with or without a subsequent
     // active-turn __calicoPromptId spread.
@@ -5597,11 +5529,15 @@ function patchCompactRequestSource(content) {
         (_full, headerPrefix) => `${headerPrefix}${compactSpread}`
       );
     } else {
-      const inserted = insertAfter(nextSegment, anchor, compactSpread);
-      if (inserted === null) {
+      const extraLocal = anchor.slice(`...${hoisted.name}(),...`.length, -1);
+      const at = nextSegment.indexOf(anchor);
+      if (at === -1 || nextSegment.indexOf(anchor, at + anchor.length) !== -1) {
         continue;
       }
-      nextSegment = inserted;
+      nextSegment =
+        nextSegment.slice(0, at) +
+        `...${hoisted.name}(),...${omitWrap}(${extraLocal}),${compactSpread}` +
+        nextSegment.slice(at + anchor.length);
     }
     if (nextSegment === segment) {
       continue;

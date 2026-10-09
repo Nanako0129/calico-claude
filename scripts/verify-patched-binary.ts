@@ -120,6 +120,12 @@ const SESSION_ID_HEADER_KEY =
 // broke on 2.1.277's inserted `querySource:h=g` for the same reason the patcher
 // did — and this copy is the reason "both halves fixed" would have been wrong
 // here: the contract lives in five places, three in the patcher and two here.
+// compact-request-source's sanitizer around the custom headers, as a regex.
+// Inline shape wraps the declaration `EXTRA=WRAP(FN())`; hoisted shape wraps
+// the spread operand `...WRAP(EXTRA)`. Both use the literal IIFE parameter `u`.
+const OMIT_HEADER_WRAP_SOURCE =
+  '\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)';
+
 const CLIENT_FACTORY_SOURCE =
   "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
 
@@ -144,37 +150,6 @@ function clientFactoryLocal(fields: string, name: string): string | null {
 // Exactly one zero-arg session-id helper, and exactly one `...NAME(),` spread.
 // A computed key counts only when its single var/let/const initializer is the
 // session-id string. Other overloads and non-spread calls do not qualify.
-// The custom-headers getter, in the two shapes the hoisted helper ships with.
-// Kept in lockstep with customHeadersGetterSites in patch-claude-display.ts.
-//   2.1.285            function Ylt(){let e={},r=(process.env.ANTHROPIC_CUSTOM_HEADERS??"").split(…
-//   2.1.287 – 2.1.296  function E4e(e=a.ANTHROPIC_CUSTOM_HEADERS??""){…}
-//                      function XRt(){let e={};for(let[n,s]of E4e()){…
-function customHeadersGetterSites(content: string): { name: string; at: number }[] {
-  const identifier = "[A-Za-z_$][\\w$]*";
-  const sites: { name: string; at: number }[] = [];
-  for (const getter of content.matchAll(
-    new RegExp(
-      `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\},${identifier}=\\(process\\.env\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\.split\\(`,
-      "g"
-    )
-  )) {
-    sites.push({ name: getter[1], at: getter.index ?? 0 });
-  }
-  for (const parser of content.matchAll(
-    new RegExp(`function (${identifier})\\(${identifier}=${identifier}\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\{`, "g")
-  )) {
-    for (const getter of content.matchAll(
-      new RegExp(
-        `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\};for\\(let\\[${identifier},${identifier}\\]of ${escapeRegExp(parser[1])}\\(\\)\\)`,
-        "g"
-      )
-    )) {
-      sites.push({ name: getter[1], at: getter.index ?? 0 });
-    }
-  }
-  return sites;
-}
-
 function hoistedSessionHeader(content: string): { name: string } | null {
   const identifier = "[A-Za-z_$][\\w$]*";
   const helpers = [
@@ -884,7 +859,8 @@ const CHECKS: Check[] = [
       // 2.1.285 spreads a hoisted helper and then the custom-header local.
       // Calico headers have to follow that custom spread, never sit between
       // `...HELPER(),` and `...EXTRA,`. The helper is the unique session-id
-      // helper above, not an arbitrary call.
+      // helper above, not an arbitrary call. With compact applied, the custom
+      // spread is wrapped in place: `...HELPER(),...((u)=>…)(EXTRA),`.
       const calicoHeaders =
         `(?:\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\\w$]*==="compact"&&\\{"x-calico-request-source":"compact"\\},)?\\.\\.\\.__calicoPromptId&&\\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\\}`;
       const oldOrder = new RegExp(
@@ -893,7 +869,7 @@ const CHECKS: Check[] = [
       const hoisted = hoistedSessionHeader(content);
       const newOrder = hoisted
         ? new RegExp(
-            `\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${calicoHeaders}`
+            `\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.(?:[A-Za-z_$][\\w$]*|${OMIT_HEADER_WRAP_SOURCE}\\([A-Za-z_$][\\w$]*\\)),${calicoHeaders}`
           )
         : null;
       return oldOrder.test(content) || (newOrder !== null && newOrder.test(content))
@@ -934,18 +910,14 @@ const CHECKS: Check[] = [
       // Sanitize + compact header must be live code inside the Zie factory, not
       // merely present as string/comment text elsewhere in the bundle.
       // 2.1.238 appends `,credentials:s` to the factory parameter object and
-      // shifts the extra-header local by one letter (`u=…()` → `d=…()`), so it
-      // is matched generically and tied to its spread by name below. The IIFE
-      // parameter stays the literal `u`.
+      // shifts the extra-header local and header-object local by one letter
+      // (`u=…(),p={` → `d=…(),f={`); the signature tail and both locals are
+      // matched generically. The IIFE parameter stays the literal `u`.
       // Resolve the factory's locals by name first, then assert the injected
       // run against those exact locals — the ownership proof is that the header
       // gate reads the factory's own `source` binding, which a single regex can
       // only express by pinning where that field sits.
-      const getterSites = customHeadersGetterSites(content);
-      const hoisted = hoistedSessionHeader(content);
-      const wrapOf = (call: string) =>
-        `(?<![\\w$])([A-Za-z_$][\\w$]*)=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\(${call}\\(\\)\\),`;
-      const owned = clientFactorySegments(content).some(({ index, fields, segment }) => {
+      const owned = clientFactorySegments(content).some(({ fields, segment }) => {
         const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
         const sourceLocal = clientFactoryLocal(fields, "source");
         if (!fetchOverrideLocal || !sourceLocal) {
@@ -954,32 +926,24 @@ const CHECKS: Check[] = [
         const source = escapeRegExp(sourceLocal);
         const fetchOverride = escapeRegExp(fetchOverrideLocal);
         const head = `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?`;
-        const tail = `,\\.\\.\\.\\1,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`;
-        // In both shapes the wrapped local (group 1) must be the one spread
-        // right after the session anchor (`\\1`), so a spread inserted between
-        // the anchor and the custom headers fails.
-        //
-        // Inline session-id entry (through 2.1.284): the wrap sits right before
-        // the header object, so adjacency ties it; no getter shape is needed,
-        // and 2.1.250's getter matches none of the hoisted-path shapes.
+        const compactHeader = `\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`;
+        // Inline session-id entry: the custom-header declaration right before
+        // the header object is wrapped, and the compact header follows its
+        // `...EXTRA,` spread.
         const inline = new RegExp(
-          `${head}${wrapOf("[A-Za-z_$][\\w$]*")}[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\)${tail}`
+          `${head}[A-Za-z_$][\\w$]*=${OMIT_HEADER_WRAP_SOURCE}\\([A-Za-z_$][\\w$]*\\(\\)\\),[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${compactHeader}`
         );
-        if (inline.test(segment)) {
-          return true;
-        }
-        // Hoisted helper (2.1.285+): 2.1.296 no longer declares the local next
-        // to the header object, so the wrapped call must be a custom-headers
-        // getter declared in this factory's own module, as the patcher requires.
-        const getters = getterSites
-          .filter((getter) => inSameModule(content, getter.at, index))
-          .map((getter) => escapeRegExp(getter.name));
-        if (!hoisted || getters.length === 0) {
-          return false;
-        }
-        return new RegExp(
-          `${head}${wrapOf(`(?:${getters.join("|")})`)}[\\s\\S]*?\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\)${tail}`
-        ).test(segment);
+        // Hoisted helper: the custom-header spread itself is wrapped, so the
+        // sanitized value is exactly the one spread, and the compact header
+        // follows it directly; a spread between the helper and the custom
+        // headers fails.
+        const hoisted = hoistedSessionHeader(content);
+        const hoistedForm = hoisted
+          ? new RegExp(
+              `${head}\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.${OMIT_HEADER_WRAP_SOURCE}\\([A-Za-z_$][\\w$]*\\),${compactHeader}`
+            )
+          : null;
+        return inline.test(segment) || (hoistedForm !== null && hoistedForm.test(segment));
       });
       if (!owned) {
         return "compact request-source sanitize/header inject is not owned by Zie factory";
