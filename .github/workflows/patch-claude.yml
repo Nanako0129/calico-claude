@@ -231,6 +231,15 @@ jobs:
         shell: bash
         run: node tools/local-verify/print-turn.js "work/${{ matrix.patched_asset_name }}"
 
+      # The remora headers as sent, not as the client factory builds them: the
+      # SDK merges ANTHROPIC_CUSTOM_HEADERS back underneath the factory's
+      # headers, and every unit test passed while forged values reached the
+      # request on released builds (issue #78).
+      - name: Remora headers on the wire (all platforms)
+        if: steps.check.outputs.skip != 'true'
+        shell: bash
+        run: node tools/local-verify/remora-headers.js "work/${{ matrix.patched_asset_name }}"
+
       # The PTY path additionally proves the TUI renders the turn, which the
       # non-interactive one cannot. Unix-only, since it drives `expect`.
       - name: Streamed-turn verification (non-Windows)
