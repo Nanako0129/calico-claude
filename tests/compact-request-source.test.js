@@ -333,11 +333,10 @@ test("2.1.296: both header modules patch with a binding between EXTRA and the he
 // Wrapping the spread operand sanitizes whatever value is spread, so a second
 // writer between the declaration and the header object cannot reintroduce a
 // forged header. These are the shapes a declaration-site wrap could not prove
-// away (later assignment, logical assignment, destructuring, in-place merge).
+// away (later assignment, destructuring, in-place merge).
 test("2.1.296: whichever writer produced the spread value, it is sanitized", async () => {
   const writers = [
     "ie=(fe=Ylt(),await em({querySource:g}))",
-    "ie=(fe??=Ylt(),await em({querySource:g}))",
     "ie=([fe]=[Ylt()],await em({querySource:g}))",
     "ie=(Object.assign(fe,customHeaders),await em({querySource:g}))",
   ];

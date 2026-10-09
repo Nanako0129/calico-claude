@@ -120,14 +120,14 @@ const SESSION_ID_HEADER_KEY =
 // broke on 2.1.277's inserted `querySource:h=g` for the same reason the patcher
 // did — and this copy is the reason "both halves fixed" would have been wrong
 // here: the contract lives in five places, three in the patcher and two here.
+const CLIENT_FACTORY_SOURCE =
+  "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
+
 // compact-request-source's sanitizer around the custom headers, as a regex.
 // Inline shape wraps the declaration `EXTRA=WRAP(FN())`; hoisted shape wraps
 // the spread operand `...WRAP(EXTRA)`. Both use the literal IIFE parameter `u`.
 const OMIT_HEADER_WRAP_SOURCE =
   '\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)';
-
-const CLIENT_FACTORY_SOURCE =
-  "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
 
 // Kept in lockstep with maskStringLiterals/clientFactoryLocal in
 // patch-claude-display.ts. Sharing the lookup is what makes the masking matter
@@ -917,6 +917,7 @@ const CHECKS: Check[] = [
       // run against those exact locals — the ownership proof is that the header
       // gate reads the factory's own `source` binding, which a single regex can
       // only express by pinning where that field sits.
+      const hoisted = hoistedSessionHeader(content);
       const owned = clientFactorySegments(content).some(({ fields, segment }) => {
         const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
         const sourceLocal = clientFactoryLocal(fields, "source");
@@ -933,11 +934,10 @@ const CHECKS: Check[] = [
         const inline = new RegExp(
           `${head}[A-Za-z_$][\\w$]*=${OMIT_HEADER_WRAP_SOURCE}\\([A-Za-z_$][\\w$]*\\(\\)\\),[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${compactHeader}`
         );
-        // Hoisted helper: the custom-header spread itself is wrapped, so the
-        // sanitized value is exactly the one spread, and the compact header
-        // follows it directly; a spread between the helper and the custom
-        // headers fails.
-        const hoisted = hoistedSessionHeader(content);
+        // Hoisted helper: the operand spread right after the helper is wrapped
+        // and the compact header follows it directly. Which local that operand
+        // is, the patcher decides (hoistedHeaderAnchor); this only checks the
+        // shape it produced.
         const hoistedForm = hoisted
           ? new RegExp(
               `${head}\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.${OMIT_HEADER_WRAP_SOURCE}\\([A-Za-z_$][\\w$]*\\),${compactHeader}`

@@ -5376,8 +5376,9 @@ function patchActiveTurnPromptIdentity(content) {
     const promptSpread =
       '...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
     // Captured before the sanitizer rewrite. On the hoisted shape the anchor
-    // is `...HELPER(),...EXTRA,` from `,EXTRA=FN(),HEADER={`; the prompt
-    // spread is inserted after EXTRA, never between the two spreads.
+    // is the custom-header spread `...HELPER(),...EXTRA,` (see
+    // hoistedHeaderAnchor); the prompt spread is inserted after EXTRA, never
+    // between the two spreads.
     const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
     if (hasSpread && anchor === null) {
       continue;
@@ -5450,6 +5451,11 @@ function patchCompactRequestSource(content) {
   const omitHelper = String.raw`function __calicoOmitHeader(e,t){if(!e||typeof e!=="object"||Array.isArray(e))return e;let r={},n=String(t).toLowerCase();for(let o of Object.keys(e))if(String(o).toLowerCase()!==n)r[o]=e[o];return r}
 `;
 
+  // The sanitizer IIFE, emitted around the custom headers and searched for
+  // after the loop. Its parameter stays the literal `u`.
+  const omitWrap =
+    '((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)';
+
   // Same Zie-shaped client factory active-turn targets: owns source + agentContext.
   const hoisted = hoistedSessionHeader(output);
   const clientStartPattern = clientFactoryPattern();
@@ -5474,14 +5480,15 @@ function patchCompactRequestSource(content) {
 
     candidates += 1;
     // On every remora request, strip any case-variant of the Calico-owned
-    // request-source header from custom headers so ANTHROPIC_CUSTOM_HEADERS
-    // cannot spoof compact. Re-add the lowercase value only for true compact.
+    // request-source header from the custom headers spread into this object,
+    // and add the lowercase value only for true compact. Measured below: that
+    // does not stop a forged value reaching the request (issue #78).
     // Inline session-id shape: the custom-header local is declared right before
     // the header object, so the declaration is wrapped there. 2.1.238's
     // `credentials:s` rename shifts the extra-header local and the
     // header-object local (2.1.237 `u=…(),p={` → 2.1.238 `d=…(),f={`), so both
     // names are captured. The IIFE parameter stays the literal `u` regardless,
-    // because the wrap-needle lookup below matches on `((u)=>…`.
+    // because the omitWrap lookup after the loop matches on `((u)=>…`.
     //
     // Hoisted shape: the spread operand itself is wrapped,
     // `...HELPER(),...EXTRA,` → `...HELPER(),...((u)=>…)(EXTRA),`. That
@@ -5493,10 +5500,9 @@ function patchCompactRequestSource(content) {
     //
     // Measured 2026-10-10 on real 2.1.283, 2.1.295 and 2.1.296: a forged
     // x-calico-request-source in ANTHROPIC_CUSTOM_HEADERS still reaches the
-    // request by another path, with either wrap site. This object is passed as
-    // the client's defaultHeaders; issue #78 tracks the other path.
-    const omitWrap =
-      '((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)';
+    // request, with either wrap site. This object becomes the SDK client's
+    // defaultHeaders, and the bundled SDK merges ANTHROPIC_CUSTOM_HEADERS back
+    // underneath it, so a deleted key returns; issue #78.
     const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
     if (hasSpread && anchor === null) {
       continue;
@@ -5552,9 +5558,7 @@ function patchCompactRequestSource(content) {
     return { content: original, candidates, patched: 0 };
   }
 
-  const wrapNeedle =
-    '((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)';
-  const wrapIndex = output.indexOf(wrapNeedle);
+  const wrapIndex = output.indexOf(omitWrap);
   if (wrapIndex === -1) {
     return { content: original, candidates, patched: 0 };
   }
