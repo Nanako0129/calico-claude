@@ -22,7 +22,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const binary = process.argv[2];
+// Absolute, because every run uses the fresh work directory as its cwd.
+const binary = process.argv[2] && path.resolve(process.argv[2]);
 if (!binary || !fs.existsSync(binary)) {
   console.error("usage: node tools/local-verify/remora-headers.js <claude-binary> [--disable <ids>]");
   process.exit(2);
@@ -82,15 +83,22 @@ const waitForPort = async () => {
   }
 };
 
-// No ANTHROPIC_* or CLAUDE_CODE_* variable is inherited. A developer shell can
-// select another provider, gateway or auth path, turn off transcripts (which
-// breaks the --resume run), or, inside a Claude Code session, carry that
-// session's markers into the binary under test; CI sets none of them. The one
-// exception, CLAUDE_CODE_GIT_BASH_PATH, only locates Git Bash on Windows.
+// Only an allow-list of process-startup variables is inherited, and every run
+// uses the fresh work directory as its cwd, so neither a developer shell nor
+// a .claude/settings.json in the directory it is run from can change the
+// client branch, turn off transcripts or compaction, or pass a parent Claude
+// Code session's markers to the binary under test. Matched case-insensitively
+// for Windows, where the names vary in case.
+const INHERIT = new Set(
+  [
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TEMP", "TMP",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+    "PROGRAMFILES", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+    "CLAUDE_CODE_GIT_BASH_PATH",
+  ]
+);
 const inherited = Object.fromEntries(
-  Object.entries(process.env).filter(
-    ([name]) => !/^(ANTHROPIC_|CLAUDE_CODE_)/i.test(name) || /^CLAUDE_CODE_GIT_BASH_PATH$/i.test(name)
-  )
+  Object.entries(process.env).filter(([name]) => INHERIT.has(name.toUpperCase()))
 );
 
 // The x-calico-* headers of each request the mock received during one run.
@@ -107,6 +115,7 @@ const run = (port, env, args) =>
         NO_PROXY: "127.0.0.1,localhost",
         ...env,
       },
+      cwd: workDir,
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";

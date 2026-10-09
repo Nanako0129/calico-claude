@@ -15,6 +15,10 @@ async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agent
 async function Next(){}
 `;
 
+// compact-request-source's spread inside the fixture's header object.
+const CALICO_SPREAD =
+  '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}';
+
 function load(content, env = { REMORA_ACTIVE: "1" }) {
   const context = { process: { env: { ...env } }, Headers, Request };
   vm.createContext(context);
@@ -146,10 +150,7 @@ test("patches the hoisted session-id shape and only the anchored factory", async
 });
 
 test("with both header modules disabled the patch still verifies", () => {
-  const bare = fixture.replace(
-    '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}',
-    '"x-other":"1"'
-  );
+  const bare = fixture.replace(CALICO_SPREAD, '"x-other":"1"');
   assert.notEqual(bare, fixture);
   const result = patchCalicoHeaderWire(bare);
   assert.equal(result.patched, 1);
@@ -176,9 +177,6 @@ function wrapperOn(factoryBody, rest = fixture) {
   );
 }
 
-const CALICO_SPREAD =
-  '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}';
-
 test("the verifier rejects a wrapper on a factory without the session-id anchor", () => {
   // It carries a Calico key, so only the anchor check can reject it.
   const content = wrapperOn('"x-calico-request-source":null');
@@ -195,16 +193,24 @@ test("the verifier rejects a wrapper on an anchored factory without the Calico k
 test("with both header modules disabled, the verifier still rejects an unanchored wrapper", () => {
   // No Calico key anywhere, so the anchor check is the only gate.
   const content = wrapperOn('"x-a":1', fixture.replace(CALICO_SPREAD, '"x-other":"1"'));
-  assert.equal(content.includes('"x-calico-request-source":'), false);
+  assert.doesNotMatch(content, /"x-calico-(?:request-source|prompt-id)":/);
   assert.match(evaluatePatchModule("calico-header-wire", content), /not on the client factory's own fetch/);
 });
 
-test("with only active-turn's key in the bundle, the verifier still requires it", () => {
-  const promptOnly = fixture.replace(
-    CALICO_SPREAD,
-    '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-prompt-id":null,"x-calico-active-turn-version":null}'
-  );
+// active-turn on, compact-request-source off.
+const promptOnly = fixture.replace(
+  CALICO_SPREAD,
+  '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-prompt-id":null,"x-calico-active-turn-version":null}'
+);
+
+test("with only active-turn's key in the bundle, the wrapper on its factory verifies", () => {
   assert.notEqual(promptOnly, fixture);
+  const result = patchCalicoHeaderWire(promptOnly);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("calico-header-wire", result.content), null);
+});
+
+test("with only active-turn's key in the bundle, the verifier still requires it", () => {
   const content = wrapperOn('"X-Claude-Code-Session-Id":xt(),...customHeaders,"x-a":1', promptOnly);
   assert.match(evaluatePatchModule("calico-header-wire", content), /not on the client factory's own fetch/);
 });
