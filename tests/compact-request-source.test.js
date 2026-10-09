@@ -16,7 +16,7 @@ function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
 function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
 function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:xt()}}
 function $pe(e){return e.agentType==="main"}
-var calicoEnv={};function cHpkAi(e=calicoEnv.ANTHROPIC_CUSTOM_HEADERS??""){return[]}function kAi(){let e={};for(let[n,s]of cHpkAi())e[n]=s;return{...e,...customHeaders}}
+function kAi(){return customHeaders}
 var customHeaders={};
 function bs(){return false}
 function dfe(){return"fixture"}
@@ -407,4 +407,32 @@ test("2.1.296: verifier rejects a wrap on a local other than the spread one", ()
     .replace("...Ob(),...fe,", "...Ob(),...zz,");
   assert.notEqual(mismatched, patched);
   assert.match(evaluatePatchModule("compact-request-source", mismatched), /not owned by Zie factory/);
+});
+
+test("2.1.296: a compound assignment to the custom-header local fails compact closed", () => {
+  const compound = fixture296.replace("ie=await em(", "ie=(fe??=Tt(),await em(").replace("{querySource:g}),Q={", "{querySource:g})),Q={");
+  assert.notEqual(compound, fixture296);
+  const result = patchCompactRequestSource(compound);
+  assert.equal(result.patched, 0, "a second writer could bring the unsanitized object back");
+  assert.equal(result.content, compound);
+});
+
+// 2.1.285 ships the hoisted helper with the getter that parses inline rather
+// than iterating a separate parser (measured: `function Ylt(){let e={},r=(…`).
+test("hoisted shape with the 2.1.285 inline-parsing getter patches and verifies", async () => {
+  const inlineGetter = fixture296.replace(
+    /var calicoEnv=\{\};function cHpYlt\(e=calicoEnv\.ANTHROPIC_CUSTOM_HEADERS\?\?""\)\{return\[\]\}function Ylt\(\)\{let e=\{\};for\(let\[n,s\]of cHpYlt\(\)\)e\[n\]=s;return\{\.\.\.e,\.\.\.customHeaders\}\}/,
+    'function Ylt(){let e={},r=(process.env.ANTHROPIC_CUSTOM_HEADERS??"").split(/\\n|\\r\\n/);return{...e,...customHeaders}}'
+  );
+  assert.notEqual(inlineGetter, fixture296);
+  const withActive = patchActiveTurnPromptIdentity(inlineGetter);
+  assert.equal(withActive.patched, 2);
+  const withBoth = patchCompactRequestSource(withActive.content);
+  assert.equal(withBoth.patched, 1);
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", withBoth.content), null);
+  assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
+  const context = runPatched(withBoth.content);
+  context.customHeaders = { "x-calico-request-source": "forged" };
+  const headers = await context.Zie({ source: "repl_main_thread", agentContext: { agentType: "main" } });
+  assert.equal(headers["x-calico-request-source"], undefined);
 });

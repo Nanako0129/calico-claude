@@ -13,7 +13,7 @@ const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 // Returns headers plus the (possibly wrapped) fetch for body-rewrite assertions.
 const fixture = `
 function xt(){return"session-a"}
-var calicoEnv={};function cHpkAi(e=calicoEnv.ANTHROPIC_CUSTOM_HEADERS??""){return[]}function kAi(){let e={};for(let[n,s]of cHpkAi())e[n]=s;return e}
+function kAi(){return{}}
 async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i}){let s=process.env.CLAUDE_CODE_CONTAINER_ID,a=process.env.CLAUDE_CODE_REMOTE_SESSION_ID,l=process.env.CLAUDE_AGENT_SDK_CLIENT_APP,c=i,u=kAi(),p={"x-app":"cli","User-Agent":"fixture","X-Claude-Code-Session-Id":xt(),...u,...s&&{"x-claude-remote-container-id":s},...a&&{"x-claude-remote-session-id":a},...l&&{"x-client-app":l}};return{headers:p,fetch:n}}
 async function Next(){}
 `;

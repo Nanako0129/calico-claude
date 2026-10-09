@@ -5116,32 +5116,29 @@ function hoistedSessionHeader(content) {
   return { name };
 }
 
-// The custom-headers getter: a zero-arg function that iterates the parser
-// whose parameter defaults to ANTHROPIC_CUSTOM_HEADERS. Measured on 2.1.295
-// and 2.1.296 (darwin-arm64, linux-arm64):
+// The custom-headers getter, in the two shapes the hoisted helper ships with
+// (measured on the extracted bundles; 2.1.286 was not available):
 //
-//   function E4e(e=a.ANTHROPIC_CUSTOM_HEADERS??""){…}
-//   function XRt(){let e={};for(let[n,s]of E4e()){…
+//   2.1.285            function Ylt(){let e={},r=(process.env.ANTHROPIC_CUSTOM_HEADERS??"").split(…
+//   2.1.287 – 2.1.296  function E4e(e=a.ANTHROPIC_CUSTOM_HEADERS??""){…}
+//                      function XRt(){let e={};for(let[n,s]of E4e()){…
 //
-// Earlier releases parse inline instead (measured on 2.1.283):
-//
-//   function wit(){let e={},r=(process.env.ANTHROPIC_CUSTOM_HEADERS??"").split(…
-//
+// 2.1.270 – 2.1.284 use the first shape too, and 2.1.250 neither, but those
+// carry the inline session-id entry, whose path does not need the getter.
 // Minified names collide across chunks (2.1.295 also has an unrelated
-// `function XRt(e){…}`), so only getters declared in the factory's own Bun
-// module are returned for it.
-function customHeadersGetters(content, factoryAt) {
+// `function XRt(e){…}`), so callers keep only sites in the factory's own Bun
+// module. Kept in lockstep with customHeadersGetterSites in
+// scripts/verify-patched-binary.ts.
+function customHeadersGetterSites(content) {
   const identifier = "[A-Za-z_$][\\w$]*";
-  const getters = [];
+  const sites = [];
   for (const getter of content.matchAll(
     new RegExp(
       `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\},${identifier}=\\(process\\.env\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\.split\\(`,
       "g"
     )
   )) {
-    if (inSameModule(content, getter.index, factoryAt)) {
-      getters.push(getter[1]);
-    }
+    sites.push({ name: getter[1], at: getter.index });
   }
   for (const parser of content.matchAll(
     new RegExp(`function (${identifier})\\(${identifier}=${identifier}\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\{`, "g")
@@ -5152,12 +5149,17 @@ function customHeadersGetters(content, factoryAt) {
         "g"
       )
     )) {
-      if (inSameModule(content, getter.index, factoryAt)) {
-        getters.push(getter[1]);
-      }
+      sites.push({ name: getter[1], at: getter.index });
     }
   }
-  return getters;
+  return sites;
+}
+
+// Getter names declared in the same Bun module as the factory at factoryAt.
+function customHeadersGetters(content, factoryAt) {
+  return customHeadersGetterSites(content)
+    .filter((site) => inSameModule(content, site.at, factoryAt))
+    .map((site) => site.name);
 }
 
 // The custom-header local is the one spread right after the helper,
@@ -5192,9 +5194,15 @@ function hoistedHeaderAnchor(segment, helperName, getters) {
   if (bound.length !== 1) {
     return null;
   }
-  // Every assignment to that name before the spread, whatever its right-hand
-  // side; compact only rewrites when the getter binding is the only one.
-  const assignments = [...before.matchAll(new RegExp(`(?<![\\w$.])${name}=(?![=>])`, "g"))].length;
+  // Plain and compound assignments to that name before the spread (`fe=`,
+  // `fe??=`, `fe||=`, `fe+=`, …), whatever the right-hand side; compact only
+  // rewrites when the getter binding is the only one. Destructuring targets
+  // (`[fe]=x`, `({fe}=x)`) and parameters are not counted.
+  const assignments = [
+    ...before.matchAll(
+      new RegExp(`(?<![\\w$.])${name}(?:\\*\\*|>>>|<<|>>|\\?\\?|&&|\\|\\||[-+*/%&|^])?=(?![=>])`, "g")
+    ),
+  ].length;
   return {
     anchor: `...${helperName}(),...${extraLocal},`,
     extraLocal,

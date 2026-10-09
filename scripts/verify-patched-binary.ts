@@ -144,6 +144,37 @@ function clientFactoryLocal(fields: string, name: string): string | null {
 // Exactly one zero-arg session-id helper, and exactly one `...NAME(),` spread.
 // A computed key counts only when its single var/let/const initializer is the
 // session-id string. Other overloads and non-spread calls do not qualify.
+// The custom-headers getter, in the two shapes the hoisted helper ships with.
+// Kept in lockstep with customHeadersGetterSites in patch-claude-display.ts.
+//   2.1.285            function Ylt(){let e={},r=(process.env.ANTHROPIC_CUSTOM_HEADERS??"").split(…
+//   2.1.287 – 2.1.296  function E4e(e=a.ANTHROPIC_CUSTOM_HEADERS??""){…}
+//                      function XRt(){let e={};for(let[n,s]of E4e()){…
+function customHeadersGetterSites(content: string): { name: string; at: number }[] {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const sites: { name: string; at: number }[] = [];
+  for (const getter of content.matchAll(
+    new RegExp(
+      `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\},${identifier}=\\(process\\.env\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\.split\\(`,
+      "g"
+    )
+  )) {
+    sites.push({ name: getter[1], at: getter.index ?? 0 });
+  }
+  for (const parser of content.matchAll(
+    new RegExp(`function (${identifier})\\(${identifier}=${identifier}\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\{`, "g")
+  )) {
+    for (const getter of content.matchAll(
+      new RegExp(
+        `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\};for\\(let\\[${identifier},${identifier}\\]of ${escapeRegExp(parser[1])}\\(\\)\\)`,
+        "g"
+      )
+    )) {
+      sites.push({ name: getter[1], at: getter.index ?? 0 });
+    }
+  }
+  return sites;
+}
+
 function hoistedSessionHeader(content: string): { name: string } | null {
   const identifier = "[A-Za-z_$][\\w$]*";
   const helpers = [
@@ -910,30 +941,11 @@ const CHECKS: Check[] = [
       // run against those exact locals — the ownership proof is that the header
       // gate reads the factory's own `source` binding, which a single regex can
       // only express by pinning where that field sits.
-      // The wrapped call must be the custom-headers getter: a zero-arg function
-      // iterating the parser whose parameter defaults to ANTHROPIC_CUSTOM_HEADERS.
-      // Mirrors customHeadersGetters in patch-claude-display.ts, without its
-      // same-module filter: a name only needs to be a getter somewhere here.
-      const getterNames = [
-        ...content.matchAll(
-          /function ([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.ANTHROPIC_CUSTOM_HEADERS\?\?""\)\{/g
-        ),
-      ].flatMap((parser) => [
-        ...content.matchAll(
-          new RegExp(
-            `function ([A-Za-z_$][\\w$]*)\\(\\)\\{let [A-Za-z_$][\\w$]*=\\{\\};for\\(let\\[[A-Za-z_$][\\w$]*,[A-Za-z_$][\\w$]*\\]of ${escapeRegExp(parser[1])}\\(\\)\\)`,
-            "g"
-          )
-        ),
-      ].map((getter) => getter[1]));
-      // The inline-parsing getter of earlier releases (2.1.283).
-      for (const getter of content.matchAll(
-        /function ([A-Za-z_$][\w$]*)\(\)\{let [A-Za-z_$][\w$]*=\{\},[A-Za-z_$][\w$]*=\(process\.env\.ANTHROPIC_CUSTOM_HEADERS\?\?""\)\.split\(/g
-      )) {
-        getterNames.push(getter[1]);
-      }
-      const getterCall = getterNames.length > 0 ? `(?:${getterNames.map(escapeRegExp).join("|")})` : "(?!)";
-      const owned = clientFactorySegments(content).some(({ fields, segment }) => {
+      const getterSites = customHeadersGetterSites(content);
+      const hoisted = hoistedSessionHeader(content);
+      const wrapOf = (call: string) =>
+        `(?<![\\w$])([A-Za-z_$][\\w$]*)=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\(${call}\\(\\)\\),`;
+      const owned = clientFactorySegments(content).some(({ index, fields, segment }) => {
         const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
         const sourceLocal = clientFactoryLocal(fields, "source");
         if (!fetchOverrideLocal || !sourceLocal) {
@@ -941,18 +953,32 @@ const CHECKS: Check[] = [
         }
         const source = escapeRegExp(sourceLocal);
         const fetchOverride = escapeRegExp(fetchOverrideLocal);
-        // Old inline session-id entry, or the unique hoisted helper spread.
-        // Either way the compact header has to follow `...EXTRA,`, so a
-        // spread inserted between the helper and the custom headers fails.
-        const hoisted = hoistedSessionHeader(content);
-        const sessionAnchor = hoisted
-          ? `(?:${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\)|\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\))`
-          : `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\)`;
-        // The wrapped local (group 1) must be the one spread right after the
-        // session anchor (`\\1`). 2.1.296 no longer declares it next to the
-        // header object, so the two are tied by name instead of adjacency.
+        const head = `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?`;
+        const tail = `,\\.\\.\\.\\1,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`;
+        // In both shapes the wrapped local (group 1) must be the one spread
+        // right after the session anchor (`\\1`), so a spread inserted between
+        // the anchor and the custom headers fails.
+        //
+        // Inline session-id entry (through 2.1.284): the wrap sits right before
+        // the header object, so adjacency ties it; no getter shape is needed,
+        // and 2.1.250's getter matches none of the hoisted-path shapes.
+        const inline = new RegExp(
+          `${head}${wrapOf("[A-Za-z_$][\\w$]*")}[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\)${tail}`
+        );
+        if (inline.test(segment)) {
+          return true;
+        }
+        // Hoisted helper (2.1.285+): 2.1.296 no longer declares the local next
+        // to the header object, so the wrapped call must be a custom-headers
+        // getter declared in this factory's own module, as the patcher requires.
+        const getters = getterSites
+          .filter((getter) => inSameModule(content, getter.at, index))
+          .map((getter) => escapeRegExp(getter.name));
+        if (!hoisted || getters.length === 0) {
+          return false;
+        }
         return new RegExp(
-          `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?(?<![\\w$])([A-Za-z_$][\\w$]*)=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\(${getterCall}\\(\\)\\),[\\s\\S]*?${sessionAnchor},\\.\\.\\.\\1,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`
+          `${head}${wrapOf(`(?:${getters.join("|")})`)}[\\s\\S]*?\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\)${tail}`
         ).test(segment);
       });
       if (!owned) {
