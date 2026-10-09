@@ -251,7 +251,7 @@ test("hoisted custom spread stays ahead of compact and then the prompt header", 
   assert.equal(withBoth.candidates, 1);
   assert.equal(withBoth.patched, 1);
   const ordered =
-    '...Ob(),...fe,...process.env.REMORA_ACTIVE==="1"&&h==="compact"&&{"x-calico-request-source":"compact"},...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
+    '...Ob(),...((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(fe),...process.env.REMORA_ACTIVE==="1"&&h==="compact"&&{"x-calico-request-source":"compact"},...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
   assert.equal(withBoth.content.includes(ordered), true);
   assert.equal(withBoth.content.includes("...Ob(),...__calicoPromptId"), false);
   assert.equal(withBoth.content.includes("...Ob(),...process.env"), false);
@@ -291,4 +291,87 @@ test("hoisted and inline session-id anchors together patch nothing", () => {
   const result = patchCompactRequestSource(bothShapes);
   assert.equal(result.patched, 0);
   assert.equal(result.content, bothShapes);
+});
+
+// 2.1.296 puts another binding between the custom-header declaration and the
+// header object (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`, read from the
+// extracted 2.1.296 darwin-arm64 bundle). The local is taken from the spread
+// after the helper, and the spread operand itself is wrapped.
+const fixture296 = fixture285
+  .replace("fe=Ylt(),Q={", "fe=Ylt(),ie=await em({querySource:g}),Q={")
+  .replace("async function Next(){}", "async function em(){return 1}async function Next(){}");
+const SPREAD_WRAP =
+  '...Ob(),...((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(fe),';
+
+async function headersFor(source, kind) {
+  const withActive = patchActiveTurnPromptIdentity(source);
+  const withBoth = patchCompactRequestSource(withActive.content);
+  const context = runPatched(withBoth.content);
+  context.customHeaders = { "x-calico-request-source": "forged", "x-calico-prompt-id": "forged" };
+  const headers = await context.Zie({
+    source: kind,
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  return { withActive, withBoth, headers };
+}
+
+test("2.1.296: both header modules patch with a binding between EXTRA and the header object", async () => {
+  assert.notEqual(fixture296, fixture285);
+  const { withActive, withBoth, headers } = await headersFor(fixture296, "repl_main_thread");
+  assert.equal(withActive.patched, 2);
+  assert.equal(withBoth.patched, 1);
+  assert.equal(withBoth.content.includes(SPREAD_WRAP), true);
+  assert.equal(withBoth.content.includes("fe=Ylt(),ie=await em("), true, "the declaration is left alone");
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", withBoth.content), null);
+  assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
+  assert.equal(headers["x-calico-prompt-id"], "turn-a");
+  assert.equal(headers["x-calico-request-source"], undefined);
+  const compact = await headersFor(fixture296, "compact");
+  assert.equal(compact.headers["x-calico-request-source"], "compact");
+});
+
+// Wrapping the spread operand sanitizes whatever value is spread, so a second
+// writer between the declaration and the header object cannot reintroduce a
+// forged header. These are the shapes a declaration-site wrap could not prove
+// away (later assignment, destructuring, in-place merge).
+test("2.1.296: whichever writer produced the spread value, it is sanitized", async () => {
+  const writers = [
+    "ie=(fe=Ylt(),await em({querySource:g}))",
+    "ie=([fe]=[Ylt()],await em({querySource:g}))",
+    "ie=(Object.assign(fe,customHeaders),await em({querySource:g}))",
+  ];
+  for (const writer of writers) {
+    const source = fixture296.replace("ie=await em({querySource:g})", writer);
+    assert.notEqual(source, fixture296);
+    const { withBoth, headers } = await headersFor(source, "repl_main_thread");
+    assert.equal(withBoth.patched, 1, writer);
+    assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null, writer);
+    assert.equal(headers["x-calico-request-source"], undefined, writer);
+  }
+});
+
+test("2.1.296: a spread after the helper that is not a call result patches nothing", () => {
+  const foreign = fixture296.replace("Q={...Ob(),...fe,", "Q={...Ob(),...B2,...fe,").replace("let B=0,", "let B=0,B2={},");
+  assert.notEqual(foreign, fixture296);
+  for (const apply of [patchActiveTurnPromptIdentity, patchCompactRequestSource]) {
+    const result = apply(foreign);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, foreign);
+  }
+});
+
+test("2.1.296: verifier rejects a sanitizer that is not on the spread operand", () => {
+  const patched = patchCompactRequestSource(fixture296).content;
+  assert.equal(evaluatePatchModule("compact-request-source", patched), null);
+  const onDeclaration = patched
+    .replace(
+      SPREAD_WRAP,
+      "...Ob(),...fe,"
+    )
+    .replace(
+      "fe=Ylt(),ie=",
+      'fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),ie='
+    );
+  assert.notEqual(onDeclaration, patched);
+  assert.match(evaluatePatchModule("compact-request-source", onDeclaration), /not owned by Zie factory/);
 });
