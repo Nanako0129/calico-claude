@@ -5064,8 +5064,9 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
 const SESSION_ID_HEADER_KEY =
   '(?:"X-Claude-Code-Session-Id"|\\[[A-Za-z_$][\\w$]*\\])';
 
-// `<session-id key>:<fn>(),...<custom headers>,` — the entry every one of the
-// three modules keys off, and the position each of them injects after.
+// `<session-id key>:<fn>(),...<custom headers>,` — the inline-shape entry the
+// four client-factory modules use to recognise the factory. The two header
+// modules also inject after it; calico-header-wire only selects by it.
 const SESSION_ID_HEADER_ENTRY = new RegExp(
   `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,`
 );
@@ -5561,11 +5562,14 @@ function patchCalicoHeaderWire(content) {
       output.slice(start, nextAsyncFunction === -1 ? output.length : nextAsyncFunction)
     );
     const end = start + segment.length;
-    // The factory the two header modules write into: same session-id anchors.
-    if (
-      !SESSION_ID_HEADER_ENTRY.test(segment) &&
-      !(hoisted !== null && segment.includes(`...${hoisted.name}(),`))
-    ) {
+    // The factory the two header modules write into: same session-id anchors,
+    // and like them the whole module drops when one factory carries both.
+    const hasOld = SESSION_ID_HEADER_ENTRY.test(segment);
+    const hasSpread = hoisted !== null && segment.includes(`...${hoisted.name}(),`);
+    if (hasOld && hasSpread) {
+      return { content: original, candidates: 0, patched: 0 };
+    }
+    if (!hasOld && !hasSpread) {
       continue;
     }
     const headerObjects = [

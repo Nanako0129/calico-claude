@@ -113,17 +113,54 @@ test("the verifier rejects a wrapper reading a different object than defaultHead
   assert.match(evaluatePatchModule("calico-header-wire", other), /not on the client factory's own fetch/);
 });
 
-test("the verifier rejects a wrapper in a factory that carries no Calico key", () => {
-  const { content } = patchCalicoHeaderWire(fixture);
-  const spread = ',...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}';
-  const bare = content.replace(spread, "");
-  assert.notEqual(bare, content);
-  assert.match(evaluatePatchModule("calico-header-wire", bare), /not on the client factory's own fetch/);
-});
-
 test("skips a factory without the session-id anchor the header modules use", () => {
   const other = fixture.replace('"X-Claude-Code-Session-Id":xt(),', "");
   const result = patchCalicoHeaderWire(other);
   assert.equal(result.candidates, 0);
   assert.equal(result.patched, 0);
 });
+
+// 2.1.285+ shape: the session-id header comes from a hoisted helper spread
+// once, not from an inline entry.
+const hoistedFixture = fixture
+  .replace(
+    'function xt(){return"session-a"}',
+    'function xt(){return"session-a"}function Tt(){return false}function FI(){return"f"}var Vpt="X-Claude-Code-Session-Id";function Ob(){return{"x-app":Tt()?"cli-bg":"cli","User-Agent":FI(),[Vpt]:xt()}}'
+  )
+  .replace('p={"x-app":"cli","X-Claude-Code-Session-Id":xt(),...customHeaders,', "p={...Ob(),...customHeaders,");
+
+test("patches the hoisted session-id shape and only the anchored factory", async () => {
+  assert.notEqual(hoistedFixture, fixture);
+  // A second fetchOverride factory without the session-id anchor, ahead of it.
+  const other =
+    "async function Aux({apiKey:e,fetchOverride:n,source:o}){let p={},q={defaultHeaders:p,...n&&{fetch:n}};return q}\n";
+  const result = patchCalicoHeaderWire(other + hoistedFixture);
+  assert.equal(result.candidates, 1);
+  assert.equal(result.patched, 1);
+  assert.equal(result.content.startsWith(other), true);
+  assert.equal(evaluatePatchModule("calico-header-wire", result.content), null);
+  const headers = await received(result.content.slice(other.length), "repl_main_thread", {
+    "X-Calico-Request-Source": "compact",
+  });
+  assert.equal(headers["x-calico-request-source"], undefined);
+});
+
+test("with both header modules disabled the patch still verifies", () => {
+  const bare = fixture.replace(
+    '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}',
+    '"x-other":"1"'
+  );
+  assert.notEqual(bare, fixture);
+  const result = patchCalicoHeaderWire(bare);
+  assert.equal(result.patched, 1);
+  assert.equal(evaluatePatchModule("calico-header-wire", result.content), null);
+});
+
+test("a factory carrying both session-id anchors drops the module", () => {
+  const both = hoistedFixture.replace("p={...Ob(),...customHeaders,", 'p={...Ob(),"X-Claude-Code-Session-Id":xt(),...customHeaders,');
+  assert.notEqual(both, hoistedFixture);
+  const result = patchCalicoHeaderWire(both);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, both);
+});
+

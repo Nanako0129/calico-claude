@@ -119,8 +119,9 @@ const SESSION_ID_HEADER_KEY =
 // checks below used to pin the factory's destructured fields in order, which
 // broke on 2.1.277's inserted `querySource:h=g` for the same reason the patcher
 // did — and this copy is the reason "both halves fixed" would have been wrong
-// here: the contract is shared by the patcher's four client-factory modules and
-// the verifier's checks below; grep CLIENT_FACTORY_SOURCE for all of them.
+// here: the contract is shared by the patcher's four client-factory modules
+// (each calls clientFactoryPattern()) and the verifier checks that call
+// clientFactorySegments().
 const CLIENT_FACTORY_SOURCE =
   "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
 
@@ -928,14 +929,19 @@ const CHECKS: Check[] = [
       if (countOccurrences(content, wrapper) !== 1) {
         return "expected exactly one Calico header fetch wrapper";
       }
-      // The wrapper must sit in the factory the header modules write into (it
-      // carries a Calico key), read the header object that factory passes as
-      // defaultHeaders, and wrap the fetch spread of that same client options
-      // object.
+      // The wrapper must sit in the factory the header modules write into,
+      // selected by the same session-id anchors as the patcher, read the header
+      // object that factory passes as defaultHeaders, and wrap the fetch spread
+      // of that same client options object.
+      const hoisted = hoistedSessionHeader(content);
+      const sessionEntry = new RegExp(
+        `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,`
+      );
       const owned = clientFactorySegments(content).some(({ fields, segment }) => {
         if (
           !clientFactoryLocal(fields, "fetchOverride") ||
-          !/"x-calico-(?:request-source|prompt-id)":/.test(segment)
+          (!sessionEntry.test(segment) &&
+            !(hoisted !== null && segment.includes(`...${hoisted.name}(),`)))
         ) {
           return false;
         }

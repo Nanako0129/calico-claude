@@ -82,25 +82,25 @@ const waitForPort = async () => {
   }
 };
 
+// A developer shell may select another provider, gateway or auth path through
+// ANTHROPIC_* / CLAUDE_CODE_* variables, which would test a different client
+// branch than CI does, so none of them are inherited.
+const inherited = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) => !/^(ANTHROPIC_|CLAUDE_CODE_)/i.test(name))
+);
+
 // The x-calico-* headers of each request the mock received during one run.
 const run = (port, env, args) =>
   new Promise((resolve) => {
     const before = mockLog.length;
     const child = spawn(binary, args, {
       env: {
-        ...process.env,
+        ...inherited,
         ANTHROPIC_AUTH_TOKEN: "credential-free-test-token",
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         CLAUDE_CONFIG_DIR: configDir,
         NO_PROXY: "127.0.0.1,localhost",
-        // A developer shell may select another provider or auth path, which
-        // would test a different client branch than CI does.
-        ANTHROPIC_API_KEY: "",
-        CLAUDE_CODE_OAUTH_TOKEN: "",
-        CLAUDE_CODE_USE_BEDROCK: "",
-        CLAUDE_CODE_USE_VERTEX: "",
-        CLAUDE_CODE_USE_FOUNDRY: "",
         ...env,
       },
       stdio: ["ignore", "ignore", "pipe"],
@@ -119,7 +119,8 @@ const run = (port, env, args) =>
       // arrive after the child's close. Wait until the log stops growing, for
       // at most 5 s.
       const drainUntil = Date.now() + 5_000;
-      for (let seen = -1; seen !== mockLog.length && Date.now() < drainUntil; ) {
+      for (let seen = -1; seen !== mockLog.length; ) {
+        if (Date.now() > drainUntil) finish(1, "the mock log did not settle after the run");
         seen = mockLog.length;
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
