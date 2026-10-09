@@ -5116,52 +5116,91 @@ function hoistedSessionHeader(content) {
   return { name };
 }
 
+// The custom-headers getter: a zero-arg function that iterates the parser
+// whose parameter defaults to ANTHROPIC_CUSTOM_HEADERS. Measured on 2.1.295
+// and 2.1.296 (darwin-arm64, linux-arm64):
+//
+//   function E4e(e=a.ANTHROPIC_CUSTOM_HEADERS??""){…}
+//   function XRt(){let e={};for(let[n,s]of E4e()){…
+//
+// Earlier releases parse inline instead (measured on 2.1.283):
+//
+//   function wit(){let e={},r=(process.env.ANTHROPIC_CUSTOM_HEADERS??"").split(…
+//
+// Minified names collide across chunks (2.1.295 also has an unrelated
+// `function XRt(e){…}`), so only getters declared in the factory's own Bun
+// module are returned for it.
+function customHeadersGetters(content, factoryAt) {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const getters = [];
+  for (const getter of content.matchAll(
+    new RegExp(
+      `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\},${identifier}=\\(process\\.env\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\.split\\(`,
+      "g"
+    )
+  )) {
+    if (inSameModule(content, getter.index, factoryAt)) {
+      getters.push(getter[1]);
+    }
+  }
+  for (const parser of content.matchAll(
+    new RegExp(`function (${identifier})\\(${identifier}=${identifier}\\.ANTHROPIC_CUSTOM_HEADERS\\?\\?""\\)\\{`, "g")
+  )) {
+    for (const getter of content.matchAll(
+      new RegExp(
+        `function (${identifier})\\(\\)\\{let ${identifier}=\\{\\};for\\(let\\[${identifier},${identifier}\\]of ${escapeRegExp(parser[1])}\\(\\)\\)`,
+        "g"
+      )
+    )) {
+      if (inSameModule(content, getter.index, factoryAt)) {
+        getters.push(getter[1]);
+      }
+    }
+  }
+  return getters;
+}
+
 // The custom-header local is the one spread right after the helper,
-// `...HELPER(),...EXTRA,`. Injection goes after that pair and never between
-// the two spreads, so ANTHROPIC_CUSTOM_HEADERS cannot override x-calico
-// headers. A second copy of the pair fails closed.
-function hoistedHeaderAnchor(segment, helperName) {
+// `...HELPER(),...EXTRA,`, and bound exactly once before it as
+// `,EXTRA=GETTER(),` where GETTER is the custom-headers getter. Injection goes
+// after that pair and never between the two spreads, so ANTHROPIC_CUSTOM_HEADERS
+// cannot override x-calico headers.
+//
+// Through 2.1.295 the binding sat right before the header object
+// (`,J=XRt(),ie={...ml(),...J,`); 2.1.296 put another binding between them
+// (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`). Tying the local to the
+// getter, rather than to its position or its name alone, means a same-named
+// local in a nested scope, or a foreign spread upstream inserts after the
+// helper, is never taken for it. Anything else returns null (fail closed).
+function hoistedHeaderAnchor(segment, helperName, getters) {
   const identifier = "[A-Za-z_$][\\w$]*";
   const spreads = [
     ...segment.matchAll(
       new RegExp(`\\.\\.\\.${escapeRegExp(helperName)}\\(\\),\\.\\.\\.(${identifier}),`, "g")
     ),
   ];
-  if (spreads.length !== 1) {
+  if (spreads.length !== 1 || getters.length === 0) {
     return null;
   }
   const extraLocal = spreads[0][1];
-  const header = { anchor: `...${helperName}(),...${extraLocal},`, at: spreads[0].index, extraLocal };
-  // The local after the helper must be bound from a zero-arg call, as the
-  // custom-header local is, not some other spread upstream inserts there;
-  // otherwise a header placed after it could still be overridden by the
-  // custom headers that follow. compact reuses this result.
-  header.declarations = hoistedExtraDeclarations(segment, header);
-  return header.declarations.all > 0 ? header : null;
-}
-
-// Bindings of EXTRA as `=FN()` before the header spread. The declaration
-// precedes its use, so later text is not searched.
-//
-// Through 2.1.295 it sat right before the header object
-// (`,J=XRt(),ie={...ml(),...J,`); 2.1.296 put another binding between them
-// (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`), so it is found by name.
-//
-// Two counts on purpose. `all` takes any prefix and any terminator, so a
-// same-named binding anywhere earlier (a nested scope, a `;`-ended statement)
-// is seen. `rewritable` is only the measured shape, `,EXTRA=FN(),`, which is
-// also the only shape the verifier accepts after the wrap. compact rewrites
-// only when both counts are 1, so it never wraps a guess and never produces a
-// patch the verifier rejects; anything else fails closed.
-function hoistedExtraDeclarations(segment, header) {
-  const identifier = "[A-Za-z_$][\\w$]*";
-  const before = segment.slice(0, header.at);
-  const name = escapeRegExp(header.extraLocal);
-  const all = [...before.matchAll(new RegExp(`(?<![\\w$.])${name}=${identifier}\\(\\)(?=[,;])`, "g"))];
-  const rewritable = [...before.matchAll(new RegExp(`,${name}=(${identifier})\\(\\)(?=,)`, "g"))].map(
-    (match) => ({ at: match.index, text: match[0], factory: match[1] })
-  );
-  return { all: all.length, rewritable };
+  const before = segment.slice(0, spreads[0].index);
+  const name = escapeRegExp(extraLocal);
+  const getterAlternatives = getters.map(escapeRegExp).join("|");
+  const bound = [
+    ...before.matchAll(new RegExp(`,${name}=(${getterAlternatives})\\(\\)(?=,)`, "g")),
+  ];
+  if (bound.length !== 1) {
+    return null;
+  }
+  // Every assignment to that name before the spread, whatever its right-hand
+  // side; compact only rewrites when the getter binding is the only one.
+  const assignments = [...before.matchAll(new RegExp(`(?<![\\w$.])${name}=(?![=>])`, "g"))].length;
+  return {
+    anchor: `...${helperName}(),...${extraLocal},`,
+    extraLocal,
+    assignments,
+    declaration: { at: bound[0].index, text: bound[0][0], factory: bound[0][1] },
+  };
 }
 
 function insertAfter(text, anchor, insertion) {
@@ -5393,7 +5432,9 @@ function patchActiveTurnPromptIdentity(content) {
     // Captured before the sanitizer rewrite. On the hoisted shape the anchor
     // is `...HELPER(),...EXTRA,`; the prompt spread is inserted after EXTRA,
     // never between the two spreads. Only the spread is needed here.
-    const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name)?.anchor ?? null : null;
+    const anchor = hasSpread
+      ? hoistedHeaderAnchor(segment, hoisted.name, customHeadersGetters(output, start))?.anchor ?? null
+      : null;
     if (hasSpread && anchor === null) {
       continue;
     }
@@ -5501,11 +5542,12 @@ function patchCompactRequestSource(content) {
     // shape this is `...HELPER(),...EXTRA,`, which active-turn may already have
     // followed with the prompt spread. Inserting here puts compact between the
     // custom spread and that prompt spread.
-    const header = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
-    const declaration =
-      header && header.declarations.all === 1 && header.declarations.rewritable.length === 1
-        ? header.declarations.rewritable[0]
-        : null;
+    const header = hasSpread
+      ? hoistedHeaderAnchor(segment, hoisted.name, customHeadersGetters(output, start))
+      : null;
+    // compact rewrites the binding, so it also needs it to be the only
+    // assignment to that name before the spread.
+    const declaration = header && header.assignments === 1 ? header.declaration : null;
     if (hasSpread && declaration === null) {
       continue;
     }

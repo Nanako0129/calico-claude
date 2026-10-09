@@ -910,6 +910,29 @@ const CHECKS: Check[] = [
       // run against those exact locals — the ownership proof is that the header
       // gate reads the factory's own `source` binding, which a single regex can
       // only express by pinning where that field sits.
+      // The wrapped call must be the custom-headers getter: a zero-arg function
+      // iterating the parser whose parameter defaults to ANTHROPIC_CUSTOM_HEADERS.
+      // Mirrors customHeadersGetters in patch-claude-display.ts, without its
+      // same-module filter: a name only needs to be a getter somewhere here.
+      const getterNames = [
+        ...content.matchAll(
+          /function ([A-Za-z_$][\w$]*)\([A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.ANTHROPIC_CUSTOM_HEADERS\?\?""\)\{/g
+        ),
+      ].flatMap((parser) => [
+        ...content.matchAll(
+          new RegExp(
+            `function ([A-Za-z_$][\\w$]*)\\(\\)\\{let [A-Za-z_$][\\w$]*=\\{\\};for\\(let\\[[A-Za-z_$][\\w$]*,[A-Za-z_$][\\w$]*\\]of ${escapeRegExp(parser[1])}\\(\\)\\)`,
+            "g"
+          )
+        ),
+      ].map((getter) => getter[1]));
+      // The inline-parsing getter of earlier releases (2.1.283).
+      for (const getter of content.matchAll(
+        /function ([A-Za-z_$][\w$]*)\(\)\{let [A-Za-z_$][\w$]*=\{\},[A-Za-z_$][\w$]*=\(process\.env\.ANTHROPIC_CUSTOM_HEADERS\?\?""\)\.split\(/g
+      )) {
+        getterNames.push(getter[1]);
+      }
+      const getterCall = getterNames.length > 0 ? `(?:${getterNames.map(escapeRegExp).join("|")})` : "(?!)";
       const owned = clientFactorySegments(content).some(({ fields, segment }) => {
         const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
         const sourceLocal = clientFactoryLocal(fields, "source");
@@ -929,7 +952,7 @@ const CHECKS: Check[] = [
         // session anchor (`\\1`). 2.1.296 no longer declares it next to the
         // header object, so the two are tied by name instead of adjacency.
         return new RegExp(
-          `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?(?<![\\w$])([A-Za-z_$][\\w$]*)=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\([A-Za-z_$][\\w$]*\\(\\)\\),[\\s\\S]*?${sessionAnchor},\\.\\.\\.\\1,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`
+          `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?(?<![\\w$])([A-Za-z_$][\\w$]*)=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\(${getterCall}\\(\\)\\),[\\s\\S]*?${sessionAnchor},\\.\\.\\.\\1,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`
         ).test(segment);
       });
       if (!owned) {

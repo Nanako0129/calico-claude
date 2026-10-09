@@ -13,7 +13,7 @@ const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 // Returns headers plus the (possibly wrapped) fetch for body-rewrite assertions.
 const fixture = `
 function xt(){return"session-a"}
-function kAi(){return{}}
+var calicoEnv={};function cHpkAi(e=calicoEnv.ANTHROPIC_CUSTOM_HEADERS??""){return[]}function kAi(){let e={};for(let[n,s]of cHpkAi())e[n]=s;return e}
 async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i}){let s=process.env.CLAUDE_CODE_CONTAINER_ID,a=process.env.CLAUDE_CODE_REMOTE_SESSION_ID,l=process.env.CLAUDE_AGENT_SDK_CLIENT_APP,c=i,u=kAi(),p={"x-app":"cli","User-Agent":"fixture","X-Claude-Code-Session-Id":xt(),...u,...s&&{"x-claude-remote-container-id":s},...a&&{"x-claude-remote-session-id":a},...l&&{"x-client-app":l}};return{headers:p,fetch:n}}
 async function Next(){}
 `;
@@ -422,7 +422,7 @@ function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
 function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
 function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:z()}}
 function lf(e){return e.agentType==="main"}
-function Ylt(){return {}}
+var calicoEnv={};function cHpYlt(e=calicoEnv.ANTHROPIC_CUSTOM_HEADERS??""){return[]}function Ylt(){let e={};for(let[n,s]of cHpYlt())e[n]=s;return e}
 function Tt(){return false}
 function FI(){return"fixture"}
 function z(){return"session-a"}

@@ -16,7 +16,7 @@ function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
 function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
 function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:xt()}}
 function $pe(e){return e.agentType==="main"}
-function kAi(){return customHeaders}
+var calicoEnv={};function cHpkAi(e=calicoEnv.ANTHROPIC_CUSTOM_HEADERS??""){return[]}function kAi(){let e={};for(let[n,s]of cHpkAi())e[n]=s;return{...e,...customHeaders}}
 var customHeaders={};
 function bs(){return false}
 function dfe(){return"fixture"}
@@ -230,7 +230,7 @@ function xht(){return Pt.promptId}function $$t(e){Pt.promptId=e}
 function TN(e){if(e===void 0)return;if(e.startsWith("repl_main_thread")||e==="sdk")return"main";if(e.startsWith("agent:")||e==="hook_agent")return"subagent";return"auxiliary"}
 function iK(e,t){return Pkr.run(e,t)}function c_(){return{agentType:"main",agentId:z()}}
 function lf(e){return e.agentType==="main"}
-function Ylt(){return customHeaders}
+var calicoEnv={};function cHpYlt(e=calicoEnv.ANTHROPIC_CUSTOM_HEADERS??""){return[]}function Ylt(){let e={};for(let[n,s]of cHpYlt())e[n]=s;return{...e,...customHeaders}}
 var customHeaders={};
 function Tt(){return false}
 function FI(){return"fixture"}
@@ -336,8 +336,31 @@ test("2.1.296: a shadowing declaration in an earlier nested scope fails compact 
   const compact = patchCompactRequestSource(shadowed);
   assert.equal(compact.patched, 0, "two candidate declarations: do not guess");
   assert.equal(compact.content, shadowed);
-  // active-turn only needs the spread, which is still unique.
-  assert.equal(patchActiveTurnPromptIdentity(shadowed).patched, 2);
+  // Two getter bindings of that name: active-turn cannot tell which one is
+  // spread either, so it fails closed too.
+  assert.equal(patchActiveTurnPromptIdentity(shadowed).patched, 0);
+});
+
+// The review's probes: the real binding in a shape the anchor does not take
+// (`fe=Ylt(g)`) next to a nested same-named binding, and a foreign spread after
+// the helper whose name a nested binding happens to share. A name-only lookup
+// wrapped or anchored on the nested binding; tied to the getter, neither is
+// taken for the custom-header local.
+test("2.1.296: same-named nested bindings never stand in for the custom-header local", () => {
+  const realHasArgs = fixture296
+    .replace("fe=Ylt(),ie=await em(", "fe=Ylt(g),ie=await em(")
+    .replace("let B=0,", "let q=()=>{let z=0,fe=Tt(),w=1;return w},B=0,");
+  const foreignShadowed = fixture296
+    .replace("Q={...Ob(),...fe,", "Q={...Ob(),...B2,...fe,")
+    .replace("let B=0,", "let B2={},q=()=>{let B2=Tt();return B2},B=0,");
+  for (const source of [realHasArgs, foreignShadowed]) {
+    assert.notEqual(source, fixture296);
+    for (const apply of [patchActiveTurnPromptIdentity, patchCompactRequestSource]) {
+      const result = apply(source);
+      assert.equal(result.patched, 0);
+      assert.equal(result.content, source);
+    }
+  }
 });
 
 test("2.1.296: any same-named binding before the header spread fails compact closed", () => {
