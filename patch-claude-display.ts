@@ -5117,15 +5117,10 @@ function hoistedSessionHeader(content) {
 }
 
 // The custom-header local is the one spread right after the helper,
-// `...HELPER(),...EXTRA,`, and declared once as `,EXTRA=FN(),`. Injection goes
-// after that pair and never between the two spreads, so ANTHROPIC_CUSTOM_HEADERS
-// cannot override x-calico headers. Two copies of either fail closed.
-//
-// Through 2.1.295 the declaration sat right before the header object
-// (`,J=XRt(),ie={...ml(),...J,`). 2.1.296 put another binding between them
-// (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`), so EXTRA is now taken from
-// the spread and its declaration looked up by name, not by adjacency.
-function hoistedExtraHeader(segment, helperName) {
+// `...HELPER(),...EXTRA,`. Injection goes after that pair and never between
+// the two spreads, so ANTHROPIC_CUSTOM_HEADERS cannot override x-calico
+// headers. A second copy of the pair fails closed.
+function hoistedHeaderAnchor(segment, helperName) {
   const identifier = "[A-Za-z_$][\\w$]*";
   const spreads = [
     ...segment.matchAll(
@@ -5136,23 +5131,28 @@ function hoistedExtraHeader(segment, helperName) {
     return null;
   }
   const extraLocal = spreads[0][1];
+  return { anchor: `...${helperName}(),...${extraLocal},`, at: spreads[0].index, extraLocal };
+}
+
+// compact-request-source also rewrites EXTRA's declaration, `,EXTRA=FN()`.
+// Through 2.1.295 it sat right before the header object
+// (`,J=XRt(),ie={...ml(),...J,`); 2.1.296 put another binding between them
+// (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`), so it is looked up by name.
+// Only the text before the header spread is searched, since the declaration
+// precedes its use, and exactly one match is required: a shadowing copy in an
+// earlier nested scope fails closed instead of being guessed at. The trailing
+// comma is a lookahead so back-to-back declarations both count.
+function hoistedExtraDeclaration(segment, header) {
+  const identifier = "[A-Za-z_$][\\w$]*";
   const declarations = [
-    // The trailing comma is a lookahead so back-to-back declarations both count.
-    ...segment.matchAll(new RegExp(`,${escapeRegExp(extraLocal)}=(${identifier})\\(\\)(?=,)`, "g")),
+    ...segment
+      .slice(0, header.at)
+      .matchAll(new RegExp(`,${escapeRegExp(header.extraLocal)}=(${identifier})\\(\\)(?=,)`, "g")),
   ];
   if (declarations.length !== 1) {
     return null;
   }
-  return {
-    anchor: `...${helperName}(),...${extraLocal},`,
-    declaration: declarations[0][0],
-    extraLocal,
-    factory: declarations[0][1],
-  };
-}
-
-function hoistedHeaderAnchor(segment, helperName) {
-  return hoistedExtraHeader(segment, helperName)?.anchor ?? null;
+  return { at: declarations[0].index, text: declarations[0][0], factory: declarations[0][1] };
 }
 
 function insertAfter(text, anchor, insertion) {
@@ -5382,9 +5382,9 @@ function patchActiveTurnPromptIdentity(content) {
     const promptSpread =
       '...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},';
     // Captured before the sanitizer rewrite. On the hoisted shape the anchor
-    // is `...HELPER(),...EXTRA,` from `,EXTRA=FN(),HEADER={`; the prompt
-    // spread is inserted after EXTRA, never between the two spreads.
-    const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
+    // is `...HELPER(),...EXTRA,`; the prompt spread is inserted after EXTRA,
+    // never between the two spreads. Only the spread is needed here.
+    const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name)?.anchor ?? null : null;
     if (hasSpread && anchor === null) {
       continue;
     }
@@ -5487,24 +5487,26 @@ function patchCompactRequestSource(content) {
     // header-object local (2.1.237 `u=…(),p={` → 2.1.238 `d=…(),f={`), so both
     // names are captured. The IIFE parameter stays the literal `u` regardless,
     // because the wrap-needle lookup below matches on `((u)=>…`.
-    // Taken before the omit wrap rewrites `,EXTRA=FN(),HEADER={`. On the
-    // hoisted shape this is `...HELPER(),...EXTRA,`, which active-turn may
-    // already have followed with the prompt spread. Inserting here puts
-    // compact between the custom spread and that prompt spread.
-    const anchor = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
-    if (hasSpread && anchor === null) {
+    // Taken before the omit wrap rewrites EXTRA's declaration. On the hoisted
+    // shape this is `...HELPER(),...EXTRA,`, which active-turn may already have
+    // followed with the prompt spread. Inserting here puts compact between the
+    // custom spread and that prompt spread.
+    const header = hasSpread ? hoistedHeaderAnchor(segment, hoisted.name) : null;
+    const declaration = header ? hoistedExtraDeclaration(segment, header) : null;
+    if (hasSpread && declaration === null) {
       continue;
     }
+    const anchor = header?.anchor ?? null;
     const wrapExtra = (extraLocal, factory) =>
       `,${extraLocal}=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(${factory}())`;
     let nextSegment;
     if (hasSpread) {
-      // Non-null: the anchor above came from the same lookup, which also
-      // proved the declaration occurs exactly once in this segment.
-      const extra = hoistedExtraHeader(segment, hoisted.name);
-      nextSegment = segment.replace(extra.declaration, () =>
-        wrapExtra(extra.extraLocal, extra.factory)
-      );
+      // Spliced at the counted match, not String#replace: a `,EXTRA=FN()` not
+      // followed by a comma is not counted and must not be the one rewritten.
+      nextSegment =
+        segment.slice(0, declaration.at) +
+        wrapExtra(header.extraLocal, declaration.factory) +
+        segment.slice(declaration.at + declaration.text.length);
     } else {
       nextSegment = segment.replace(
         /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/,

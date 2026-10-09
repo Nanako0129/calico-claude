@@ -918,9 +918,6 @@ const CHECKS: Check[] = [
         }
         const source = escapeRegExp(sourceLocal);
         const fetchOverride = escapeRegExp(fetchOverrideLocal);
-        // The wrapped custom-header local must be the one spread after the
-        // session anchor; 2.1.296 no longer declares it right before the header
-        // object, so the two are tied by name instead of adjacency.
         // Old inline session-id entry, or the unique hoisted helper spread.
         // Either way the compact header has to follow `...EXTRA,`, so a
         // spread inserted between the helper and the custom headers fails.
@@ -928,8 +925,11 @@ const CHECKS: Check[] = [
         const sessionAnchor = hoisted
           ? `(?:${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\)|\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\))`
           : `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\)`;
+        // The wrapped local (group 1) must be the one spread right after the
+        // session anchor (`\\1`). 2.1.296 no longer declares it next to the
+        // header object, so the two are tied by name instead of adjacency.
         return new RegExp(
-          `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?([A-Za-z_$][\\w$]*)=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\([A-Za-z_$][\\w$]*\\(\\)\\),[\\s\\S]*?${sessionAnchor},\\.\\.\\.\\1,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`
+          `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?(?<![\\w$])([A-Za-z_$][\\w$]*)=\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)\\([A-Za-z_$][\\w$]*\\(\\)\\),[\\s\\S]*?${sessionAnchor},\\.\\.\\.\\1,\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`
         ).test(segment);
       });
       if (!owned) {

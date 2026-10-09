@@ -327,12 +327,43 @@ test("2.1.296: both header modules patch with a binding between EXTRA and the he
   assert.equal(mainHeaders["x-calico-request-source"], undefined);
 });
 
-test("2.1.296: a second declaration of the custom-header local fails closed", () => {
-  const twice = fixture296.replace("ie=await em(", "fe=Ylt(),ie=await em(");
-  assert.notEqual(twice, fixture296);
-  for (const apply of [patchActiveTurnPromptIdentity, patchCompactRequestSource]) {
-    const result = apply(twice);
-    assert.equal(result.patched, 0);
-    assert.equal(result.content, twice);
-  }
+test("2.1.296: a shadowing declaration in an earlier nested scope fails compact closed", () => {
+  const shadowed = fixture296.replace(
+    "let B=0,",
+    "let q=()=>{let z=0,fe=Ylt(),w=1;return w},B=0,"
+  );
+  assert.notEqual(shadowed, fixture296);
+  const compact = patchCompactRequestSource(shadowed);
+  assert.equal(compact.patched, 0, "two candidate declarations: do not guess");
+  assert.equal(compact.content, shadowed);
+  // active-turn only needs the spread, which is still unique.
+  assert.equal(patchActiveTurnPromptIdentity(shadowed).patched, 2);
+});
+
+test("2.1.296: an uncounted look-alike before the declaration is not the one wrapped", async () => {
+  const lookalike = fixture296.replace("let B=0,", "let q=()=>{let z=0,fe=Ylt();return z},B=0,");
+  assert.notEqual(lookalike, fixture296);
+  const result = patchCompactRequestSource(lookalike);
+  assert.equal(result.patched, 1);
+  assert.equal(result.content.includes("let z=0,fe=Ylt();return z"), true, "look-alike untouched");
+  assert.equal(
+    result.content.includes(
+      'fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),ie=await em('
+    ),
+    true
+  );
+  const context = runPatched(result.content);
+  context.customHeaders = { "x-calico-request-source": "forged" };
+  const headers = await context.Zie({ source: "repl_main_thread", agentContext: { agentType: "main" } });
+  assert.equal(headers["x-calico-request-source"], undefined, "the spread local is the sanitized one");
+});
+
+test("2.1.296: verifier rejects a wrap on a local other than the spread one", () => {
+  const patched = patchCompactRequestSource(fixture296).content;
+  assert.equal(evaluatePatchModule("compact-request-source", patched), null);
+  const mismatched = patched
+    .replace("ie=await em(", "zz=Ylt(),ie=await em(")
+    .replace("...Ob(),...fe,", "...Ob(),...zz,");
+  assert.notEqual(mismatched, patched);
+  assert.match(evaluatePatchModule("compact-request-source", mismatched), /not owned by Zie factory/);
 });
