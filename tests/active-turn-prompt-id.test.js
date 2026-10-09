@@ -78,16 +78,19 @@ test("excludes auxiliary calls and protects Calico-owned headers", async () => {
   vm.createContext(context);
   vm.runInContext(result.content, context);
 
-  for (const source of ["quota_check", "count_tokens", "side_query", "compact", undefined]) {
-    const headers = await context.Zie({ source, agentContext: { agentType: "main" } });
-    assert.equal(headers["x-calico-prompt-id"], undefined, source);
-    assert.equal(headers["x-calico-active-turn-version"], undefined, source);
-  }
-
+  // Explicit nulls, not missing keys: the SDK merges ANTHROPIC_CUSTOM_HEADERS
+  // back underneath this object, and only null keeps a forged value out of
+  // the request (issue #78).
   context.customHeaders = {
     "x-calico-prompt-id": "forged",
     "x-calico-active-turn-version": "999",
   };
+  for (const source of ["quota_check", "count_tokens", "side_query", "compact", undefined]) {
+    const headers = await context.Zie({ source, agentContext: { agentType: "main" } });
+    assert.equal(headers["x-calico-prompt-id"], null, source);
+    assert.equal(headers["x-calico-active-turn-version"], null, source);
+  }
+
   const headers = await context.Zie({
     source: "repl_main_thread",
     agentContext: { agentType: "main" },
@@ -143,7 +146,7 @@ test("emits the prompt id on the 2.1.238 credentials/shifted-local shape", async
     source: "quota_check",
     agentContext: { agentType: "main" },
   });
-  assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
+  assert.equal(auxHeaders["x-calico-prompt-id"], null);
 });
 
 // 2.1.277 inserted `querySource:h=g` between `source` and `agentContext`. The
@@ -179,7 +182,7 @@ test("emits the prompt id through the 2.1.277 inserted querySource field", async
     source: "quota_check",
     agentContext: { agentType: "main" },
   });
-  assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
+  assert.equal(auxHeaders["x-calico-prompt-id"], null);
 });
 
 // What the `(?:^|,)` boundary in clientFactoryLocal actually guards — measured
@@ -212,7 +215,7 @@ test("the field lookup ignores a field whose name ends in the one it wants", asy
     source: "quota_check",
     agentContext: { agentType: "main" },
   });
-  assert.equal(auxHeaders["x-calico-prompt-id"], undefined);
+  assert.equal(auxHeaders["x-calico-prompt-id"], null);
 });
 
 // Upstream could drop or rename `source` outright. The lookup returns null and
@@ -390,12 +393,12 @@ test("emits the prompt header after the hoisted custom-header spread", async () 
   assert.equal(
     result.content.startsWith(
       anchor +
-        '...__calicoPromptId&&{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"},',
+        '...process.env.REMORA_ACTIVE==="1"&&{"x-calico-prompt-id":__calicoPromptId||null,"x-calico-active-turn-version":__calicoPromptId?"1":null},',
       at
     ),
     true
   );
-  assert.equal(result.content.includes("...Ob(),...__calicoPromptId"), false);
+  assert.equal(result.content.includes("...Ob(),...process.env"), false);
   assert.equal(result.content.split("return Ob()").length - 1, 1);
   assert.equal(result.content.includes("function Ob(r,o,t){return t}"), true);
 

@@ -123,12 +123,6 @@ const SESSION_ID_HEADER_KEY =
 const CLIENT_FACTORY_SOURCE =
   "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
 
-// compact-request-source's sanitizer around the custom headers, as a regex.
-// Inline shape wraps the declaration `EXTRA=WRAP(FN())`; hoisted shape wraps
-// the spread operand `...WRAP(EXTRA)`. Both use the literal IIFE parameter `u`.
-const OMIT_HEADER_WRAP_SOURCE =
-  '\\(\\(u\\)=>process\\.env\\.REMORA_ACTIVE==="1"\\?__calicoOmitHeader\\(u,"x-calico-request-source"\\):u\\)';
-
 // Kept in lockstep with maskStringLiterals/clientFactoryLocal in
 // patch-claude-display.ts. Sharing the lookup is what makes the masking matter
 // here: an unmasked quoted default would resolve the same fake local in both,
@@ -834,7 +828,7 @@ const CHECKS: Check[] = [
       const requiredStrings = [
         '"calico-active-turn-adapter:v1"',
         '"x-calico-prompt-id"',
-        '"x-calico-active-turn-version":"1"',
+        '"x-calico-active-turn-version":__calicoPromptId?"1":null',
       ];
       const missing = requiredStrings.filter((marker) => !content.includes(marker));
       if (missing.length > 0) {
@@ -859,17 +853,18 @@ const CHECKS: Check[] = [
       // 2.1.285 spreads a hoisted helper and then the custom-header local.
       // Calico headers have to follow that custom spread, never sit between
       // `...HELPER(),` and `...EXTRA,`. The helper is the unique session-id
-      // helper above, not an arbitrary call. With compact applied, the custom
-      // spread is wrapped in place: `...HELPER(),...((u)=>…)(EXTRA),`.
+      // helper above, not an arbitrary call. Under REMORA_ACTIVE both keys are
+      // written, null when there is no prompt id, because the SDK merges
+      // ANTHROPIC_CUSTOM_HEADERS back underneath and only null removes it.
       const calicoHeaders =
-        `(?:\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\\w$]*==="compact"&&\\{"x-calico-request-source":"compact"\\},)?\\.\\.\\.__calicoPromptId&&\\{"x-calico-prompt-id":__calicoPromptId,"x-calico-active-turn-version":"1"\\}`;
+        `(?:\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-request-source":[A-Za-z_$][\\w$]*==="compact"\\?"compact":null\\},)?\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-prompt-id":__calicoPromptId\\|\\|null,"x-calico-active-turn-version":__calicoPromptId\\?"1":null\\}`;
       const oldOrder = new RegExp(
         `${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${calicoHeaders}`
       );
       const hoisted = hoistedSessionHeader(content);
       const newOrder = hoisted
         ? new RegExp(
-            `\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.(?:[A-Za-z_$][\\w$]*|${OMIT_HEADER_WRAP_SOURCE}\\([A-Za-z_$][\\w$]*\\)),${calicoHeaders}`
+            `\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${calicoHeaders}`
           )
         : null;
       return oldOrder.test(content) || (newOrder !== null && newOrder.test(content))
@@ -882,41 +877,12 @@ const CHECKS: Check[] = [
     kind: "custom",
     describe: "remora-scoped compact request source header for gateway guards",
     run: (content: string): string | null => {
-      const omitHelper =
-        'function __calicoOmitHeader(e,t){if(!e||typeof e!=="object"||Array.isArray(e))return e;let r={},n=String(t).toLowerCase();for(let o of Object.keys(e))if(String(o).toLowerCase()!==n)r[o]=e[o];return r}';
-      if (countOccurrences(content, "function __calicoOmitHeader") !== 1) {
-        return "expected exactly one __calicoOmitHeader declaration";
-      }
-      const omitIndex = content.indexOf(omitHelper);
-      if (omitIndex === -1) {
-        return "missing exact __calicoOmitHeader helper body";
-      }
-      const omitPrefix = content.slice(Math.max(0, omitIndex - 2), omitIndex);
-      if (omitPrefix === "/*" || omitPrefix.endsWith("//")) {
-        return "__calicoOmitHeader helper appears commented out";
-      }
-      // Omit helper must sit immediately before the Zie factory, or before the
-      // compact body-policy helper block that itself sits before that factory.
-      // Injected helpers include a trailing newline after the function body.
-      const afterOmit = content
-        .slice(omitIndex + omitHelper.length)
-        .replace(/^\n/, "");
-      if (
-        !afterOmit.startsWith("async function ") &&
-        !afterOmit.startsWith("function __calicoCompactPolicy")
-      ) {
-        return "__calicoOmitHeader is not adjacent to Zie factory or compact helpers";
-      }
-      // Sanitize + compact header must be live code inside the Zie factory, not
-      // merely present as string/comment text elsewhere in the bundle.
-      // 2.1.238 appends `,credentials:s` to the factory parameter object and
-      // shifts the extra-header local and header-object local by one letter
-      // (`u=…(),p={` → `d=…(),f={`); the signature tail and both locals are
-      // matched generically. The IIFE parameter stays the literal `u`.
-      // Resolve the factory's locals by name first, then assert the injected
-      // run against those exact locals — the ownership proof is that the header
-      // gate reads the factory's own `source` binding, which a single regex can
-      // only express by pinning where that field sits.
+      // The header must be live code inside the Zie factory, after the custom
+      // spread, not merely present as string/comment text elsewhere in the
+      // bundle. Resolve the factory's locals by name first, then assert the
+      // injected spread against those exact locals: the ownership proof is that
+      // the header reads the factory's own `source` binding, which a single
+      // regex can only express by pinning where that field sits.
       const hoisted = hoistedSessionHeader(content);
       const owned = clientFactorySegments(content).some(({ fields, segment }) => {
         const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
@@ -927,26 +893,27 @@ const CHECKS: Check[] = [
         const source = escapeRegExp(sourceLocal);
         const fetchOverride = escapeRegExp(fetchOverrideLocal);
         const head = `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?`;
-        const compactHeader = `\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"&&\\{"x-calico-request-source":"compact"\\}`;
-        // Inline session-id entry: the custom-header declaration right before
-        // the header object is wrapped, and the compact header follows its
-        // `...EXTRA,` spread.
+        // Written on every remora request, null unless compact: the SDK
+        // merges ANTHROPIC_CUSTOM_HEADERS back underneath, and only null
+        // removes a forged value (issue #78).
+        const compactHeader = `\\.\\.\\.process\\.env\\.REMORA_ACTIVE==="1"&&\\{"x-calico-request-source":${source}==="compact"\\?"compact":null\\}`;
+        // Inline session-id entry: the compact header follows its `...EXTRA,`
+        // spread.
         const inline = new RegExp(
-          `${head}[A-Za-z_$][\\w$]*=${OMIT_HEADER_WRAP_SOURCE}\\([A-Za-z_$][\\w$]*\\(\\)\\),[A-Za-z_$][\\w$]*=\\{[\\s\\S]*?${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${compactHeader}`
+          `${head}${SESSION_ID_HEADER_KEY}:[A-Za-z_$][\\w$]*\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${compactHeader}`
         );
-        // Hoisted helper: the operand spread right after the helper is wrapped
-        // and the compact header follows it directly. Which local that operand
-        // is, the patcher decides (hoistedHeaderAnchor); this only checks the
-        // shape it produced.
+        // Hoisted helper: the compact header follows the operand spread right
+        // after the helper. Which local that operand is, the patcher decides
+        // (hoistedHeaderAnchor); this only checks the shape it produced.
         const hoistedForm = hoisted
           ? new RegExp(
-              `${head}\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.${OMIT_HEADER_WRAP_SOURCE}\\([A-Za-z_$][\\w$]*\\),${compactHeader}`
+              `${head}\\.\\.\\.${escapeRegExp(hoisted.name)}\\(\\),\\.\\.\\.[A-Za-z_$][\\w$]*,${compactHeader}`
             )
           : null;
         return inline.test(segment) || (hoistedForm !== null && hoistedForm.test(segment));
       });
       if (!owned) {
-        return "compact request-source sanitize/header inject is not owned by Zie factory";
+        return "compact request-source header inject is not owned by Zie factory";
       }
       return null;
     },

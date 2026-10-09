@@ -93,7 +93,7 @@ for (const [shape, fixture] of [
       source: "repl_main_thread",
       agentContext: { agentType: "main" },
     });
-    assert.equal(other["x-calico-request-source"], undefined);
+    assert.equal(other["x-calico-request-source"], null);
   });
 
   test(`compact-body-policy patches a client factory with a ${shape}`, () => {
