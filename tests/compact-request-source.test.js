@@ -292,3 +292,47 @@ test("hoisted and inline session-id anchors together patch nothing", () => {
   assert.equal(result.patched, 0);
   assert.equal(result.content, bothShapes);
 });
+
+// 2.1.296 puts another binding between the custom-header declaration and the
+// header object (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`). The custom
+// local is now found from the spread after the helper, not by adjacency.
+const fixture296 = fixture285
+  .replace("fe=Ylt(),Q={", "fe=Ylt(),ie=await em({querySource:g}),Q={")
+  .replace("async function Next(){}", "async function em(){return 1}async function Next(){}");
+
+test("2.1.296: both header modules patch with a binding between EXTRA and the header object", async () => {
+  assert.notEqual(fixture296, fixture285);
+  const withActive = patchActiveTurnPromptIdentity(fixture296);
+  assert.equal(withActive.patched, 2);
+  const withBoth = patchCompactRequestSource(withActive.content);
+  assert.equal(withBoth.patched, 1);
+  assert.equal(
+    withBoth.content.includes(
+      'fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),ie=await em('
+    ),
+    true
+  );
+  assert.equal(evaluatePatchModule("active-turn-prompt-id", withBoth.content), null);
+  assert.equal(evaluatePatchModule("compact-request-source", withBoth.content), null);
+
+  const context = runPatched(withBoth.content);
+  context.customHeaders = { "x-calico-request-source": "forged", "x-calico-prompt-id": "forged" };
+  const compactHeaders = await context.Zie({ source: "compact", agentContext: { agentType: "main" } });
+  assert.equal(compactHeaders["x-calico-request-source"], "compact");
+  const mainHeaders = await context.Zie({
+    source: "repl_main_thread",
+    agentContext: { agentType: "main", agentId: "session-a" },
+  });
+  assert.equal(mainHeaders["x-calico-prompt-id"], "turn-a");
+  assert.equal(mainHeaders["x-calico-request-source"], undefined);
+});
+
+test("2.1.296: a second declaration of the custom-header local fails closed", () => {
+  const twice = fixture296.replace("ie=await em(", "fe=Ylt(),ie=await em(");
+  assert.notEqual(twice, fixture296);
+  for (const apply of [patchActiveTurnPromptIdentity, patchCompactRequestSource]) {
+    const result = apply(twice);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, twice);
+  }
+});

@@ -5116,23 +5116,43 @@ function hoistedSessionHeader(content) {
   return { name };
 }
 
-// The custom-header local is the `,EXTRA=FN(),HEADER={` binding. Injection
-// goes after `...HELPER(),...EXTRA,` and never between the two spreads, so
-// ANTHROPIC_CUSTOM_HEADERS cannot override x-calico headers. Two copies of
-// that anchor fail closed rather than guessing.
+// The custom-header local is the one spread right after the helper,
+// `...HELPER(),...EXTRA,`, and declared once as `,EXTRA=FN(),`. Injection goes
+// after that pair and never between the two spreads, so ANTHROPIC_CUSTOM_HEADERS
+// cannot override x-calico headers. Two copies of either fail closed.
+//
+// Through 2.1.295 the declaration sat right before the header object
+// (`,J=XRt(),ie={...ml(),...J,`). 2.1.296 put another binding between them
+// (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`), so EXTRA is now taken from
+// the spread and its declaration looked up by name, not by adjacency.
+function hoistedExtraHeader(segment, helperName) {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const spreads = [
+    ...segment.matchAll(
+      new RegExp(`\\.\\.\\.${escapeRegExp(helperName)}\\(\\),\\.\\.\\.(${identifier}),`, "g")
+    ),
+  ];
+  if (spreads.length !== 1) {
+    return null;
+  }
+  const extraLocal = spreads[0][1];
+  const declarations = [
+    // The trailing comma is a lookahead so back-to-back declarations both count.
+    ...segment.matchAll(new RegExp(`,${escapeRegExp(extraLocal)}=(${identifier})\\(\\)(?=,)`, "g")),
+  ];
+  if (declarations.length !== 1) {
+    return null;
+  }
+  return {
+    anchor: `...${helperName}(),...${extraLocal},`,
+    declaration: declarations[0][0],
+    extraLocal,
+    factory: declarations[0][1],
+  };
+}
+
 function hoistedHeaderAnchor(segment, helperName) {
-  const declaration = segment.match(
-    /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/
-  );
-  if (!declaration) {
-    return null;
-  }
-  const anchor = `...${helperName}(),...${declaration[1]},`;
-  const at = segment.indexOf(anchor);
-  if (at === -1 || segment.indexOf(anchor, at + anchor.length) !== -1) {
-    return null;
-  }
-  return anchor;
+  return hoistedExtraHeader(segment, helperName)?.anchor ?? null;
 }
 
 function insertAfter(text, anchor, insertion) {
@@ -5475,11 +5495,22 @@ function patchCompactRequestSource(content) {
     if (hasSpread && anchor === null) {
       continue;
     }
-    let nextSegment = segment.replace(
-      /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/,
-      (full, extraLocal, factory, headerLocal) =>
-        `,${extraLocal}=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(${factory}()),${headerLocal}={`
-    );
+    const wrapExtra = (extraLocal, factory) =>
+      `,${extraLocal}=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(${factory}())`;
+    let nextSegment;
+    if (hasSpread) {
+      // Non-null: the anchor above came from the same lookup, which also
+      // proved the declaration occurs exactly once in this segment.
+      const extra = hoistedExtraHeader(segment, hoisted.name);
+      nextSegment = segment.replace(extra.declaration, () =>
+        wrapExtra(extra.extraLocal, extra.factory)
+      );
+    } else {
+      nextSegment = segment.replace(
+        /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=\{/,
+        (full, extraLocal, factory, headerLocal) => `${wrapExtra(extraLocal, factory)},${headerLocal}={`
+      );
+    }
     // Inject after Session-Id + custom-header spread (...u,), or after the
     // hoisted `...HELPER(),...EXTRA,`. Works with or without a subsequent
     // active-turn __calicoPromptId spread.
