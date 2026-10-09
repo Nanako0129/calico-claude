@@ -5328,7 +5328,7 @@ function patchActiveTurnPromptIdentity(content) {
     if (
       (!hasOld && !hasSpread) ||
       !segment.includes('"x-claude-code-agent-id"') ||
-      segment.includes('"x-calico-active-turn-version"')
+      segment.includes('"x-calico-active-turn-version":')
     ) {
       continue;
     }
@@ -5414,7 +5414,7 @@ function patchActiveTurnPromptIdentity(content) {
     // localsPattern matched, so comparing against the original segment could
     // only ever prove the first half ran; assert on the header entry, which is
     // the half that can silently fail to land.
-    if (!nextSegment.includes('"x-calico-prompt-id"')) {
+    if (!nextSegment.includes('"x-calico-prompt-id":')) {
       continue;
     }
 
@@ -5464,7 +5464,7 @@ function patchCompactRequestSource(content) {
     if (hasOld && hasSpread) {
       return { content: original, candidates: 0, patched: 0 };
     }
-    if ((!hasOld && !hasSpread) || segment.includes('"x-calico-request-source"')) {
+    if ((!hasOld && !hasSpread) || segment.includes('"x-calico-request-source":')) {
       continue;
     }
 
@@ -5537,11 +5537,13 @@ function patchCompactRequestSource(content) {
 // object, whose names are case-insensitive. Under REMORA_ACTIVE it is wrapped
 // to set each Calico name from the header object's own all-lowercase key, or
 // delete it when that key is null. A name the header object does not carry
-// (its module disabled) is left alone. Every bundle from 2.1.250 to 2.1.296
-// declares exactly one `X={defaultHeaders:H,` and one fetch spread in the
-// factory, and H's object literal holds both modules' spreads.
+// (its module disabled) is left alone. Each extracted bundle measured (2.1.250,
+// 2.1.270-276, 2.1.280-285, 2.1.287, 2.1.288, 2.1.295, 2.1.296; darwin-arm64
+// and some linux-arm64) declares exactly one `X={defaultHeaders:H,` and one
+// fetch spread in the factory, and H's object literal holds both modules'
+// spreads. A Request passed as the input keeps its own headers.
 const CALICO_HEADER_FETCH =
-  '((f,o)=>(u,i)=>{let h=new Headers(i?.headers);for(let k of["x-calico-request-source","x-calico-prompt-id","x-calico-active-turn-version"])if(k in o)o[k]==null?h.delete(k):h.set(k,o[k]);return f(u,{...i,headers:h})})';
+  '((f,o)=>(u,i)=>{let h=new Headers(i?.headers??(u instanceof Request?u.headers:void 0));for(let k of["x-calico-request-source","x-calico-prompt-id","x-calico-active-turn-version"])if(k in o)o[k]==null?h.delete(k):h.set(k,o[k]);return f(u,{...i,headers:h})})';
 
 function patchCalicoHeaderWire(content) {
   const original = content;
@@ -5559,12 +5561,10 @@ function patchCalicoHeaderWire(content) {
       "async function ",
       start + clientStartMatch[0].length
     );
-    const boundary = output.indexOf(BUN_MODULE_BOUNDARY, start);
-    let end = nextAsyncFunction === -1 ? output.length : nextAsyncFunction;
-    if (boundary !== -1 && boundary < end) {
-      end = boundary;
-    }
-    const segment = output.slice(start, end);
+    const segment = boundedToModule(
+      output.slice(start, nextAsyncFunction === -1 ? output.length : nextAsyncFunction)
+    );
+    const end = start + segment.length;
     const headerObjects = [
       ...segment.matchAll(/[,{]([A-Za-z_$][\w$]*)=\{defaultHeaders:([A-Za-z_$][\w$]*),/g),
     ];

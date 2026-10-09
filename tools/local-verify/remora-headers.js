@@ -7,8 +7,9 @@
 // The unit tests check the header object the client factory returns. That
 // object becomes the SDK client's defaultHeaders, and the bundled SDK merges
 // ANTHROPIC_CUSTOM_HEADERS back in underneath it, so a forged value the object
-// no longer carried still reached the request on every released build until
-// issue #78. Only the request the binary actually sends shows that.
+// no longer carried still reached the request (measured on released 2.1.283
+// and 2.1.295, issue #78). Only the request the binary actually sends shows
+// that.
 //
 //   node tools/local-verify/remora-headers.js <claude-binary> [--disable <ids>]
 //
@@ -41,11 +42,18 @@ const NAMES = ["x-calico-request-source", "x-calico-prompt-id", "x-calico-active
 // Calico's own key in the factory's header object, so it catches Calico's
 // value sitting ahead of the custom headers. The Title-Case line is a separate
 // key that comes after Calico's in the SDK's merged object and wins there, so
-// it catches a missing calico-header-wire (measured on real 2.1.296).
-const FORGED = NAMES.flatMap((name) => [
-  `${name}: forged`,
-  `${name.replace(/(^|-)([a-z])/g, (_m, dash, c) => dash + c.toUpperCase())}: forged`,
-]).join("\n");
+// it catches a missing calico-header-wire (measured on real 2.1.296). The
+// canary is not a Calico name and must arrive, which shows the custom headers
+// reached the request at all; without it, a build that stopped applying
+// ANTHROPIC_CUSTOM_HEADERS would pass with nothing forged to block.
+const CANARY = "x-calico-canary";
+const FORGED = [
+  ...NAMES.flatMap((name) => [
+    `${name}: forged`,
+    `${name.replace(/(^|-)([a-z])/g, (_m, dash, c) => dash + c.toUpperCase())}: forged`,
+  ]),
+  `${CANARY}: present`,
+].join("\n");
 
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "calico-remora-headers-"));
 const configDir = path.join(workDir, "config");
@@ -97,9 +105,15 @@ const run = (port, env, args) =>
       finish(1, `${args.join(" ")} did not finish within ${TURN_TIMEOUT_MS / 1000}s`);
     }, TURN_TIMEOUT_MS);
     child.on("error", (error) => finish(1, `could not run the binary: ${error.message}`));
-    child.on("close", (code) => {
+    child.on("close", async (code) => {
       clearTimeout(timer);
       if (code !== 0) finish(1, `${args.join(" ")} exited ${code}: ${stderr.trim().slice(0, 200)}`);
+      // The mock's stderr is read asynchronously, so its last REQUEST line can
+      // arrive after the child's close. Wait until the log stops growing.
+      for (let seen = -1; seen !== mockLog.length; ) {
+        seen = mockLog.length;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
       const requests = [...mockLog.slice(before).matchAll(/^REQUEST .* calico=(\{.*\})$/gm)].map(
         (match) => JSON.parse(match[1])
       );
@@ -125,6 +139,9 @@ const run = (port, env, args) =>
     Object.values(h).some((value) => value.includes("forged"))
   );
   if (forgedSent.length > 0) finish(1, "a forged ANTHROPIC_CUSTOM_HEADERS value reached the request");
+  if (![...main, ...compact].every((h) => h[CANARY] === "present")) {
+    finish(1, `${CANARY} did not arrive: ANTHROPIC_CUSTOM_HEADERS never reached the request`);
+  }
   if (main.some((h) => "x-calico-request-source" in h)) {
     finish(1, "the main turn carries x-calico-request-source");
   }

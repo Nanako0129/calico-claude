@@ -15,7 +15,7 @@ async function Next(){}
 `;
 
 function load(content, env = { REMORA_ACTIVE: "1" }) {
-  const context = { process: { env: { ...env } }, Headers };
+  const context = { process: { env: { ...env } }, Headers, Request };
   vm.createContext(context);
   vm.runInContext(content, context);
   return context;
@@ -57,6 +57,25 @@ test("another casing of a Calico name is replaced on the request as sent", async
   assert.equal(main["x-keep"], "1");
   const compact = await received(content, "compact", { "X-Calico-Request-Source": "forged" });
   assert.equal(compact["x-calico-request-source"], "compact");
+});
+
+test("a Request input keeps its own headers", async () => {
+  const { content } = patchCalicoHeaderWire(fixture);
+  const context = load(content);
+  let seen;
+  const client = await context.Zie({
+    maxRetries: 0,
+    fetchOverride: (_url, init) => {
+      seen = Object.fromEntries(new Headers(init.headers).entries());
+    },
+    source: "repl_main_thread",
+  });
+  const request = new Request("http://gateway/v1/messages", {
+    headers: { authorization: "Bearer t", "X-Calico-Request-Source": "compact" },
+  });
+  await client.fetch(request);
+  assert.equal(seen.authorization, "Bearer t");
+  assert.equal(seen["x-calico-request-source"], undefined);
 });
 
 test("a Calico name the header object does not carry is left alone", async () => {

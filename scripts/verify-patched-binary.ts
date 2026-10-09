@@ -919,10 +919,11 @@ const CHECKS: Check[] = [
     id: "calico-header-wire",
     kind: "custom",
     describe: "remora x-calico-* headers set or deleted case-insensitively on the fetch the SDK uses",
+    disabledMarker: "(f,o)=>(u,i)=>{let h=new Headers(i?.headers",
     run: (content: string): string | null => {
       // Kept in lockstep with CALICO_HEADER_FETCH in patch-claude-display.ts.
       const wrapper =
-        '((f,o)=>(u,i)=>{let h=new Headers(i?.headers);for(let k of["x-calico-request-source","x-calico-prompt-id","x-calico-active-turn-version"])if(k in o)o[k]==null?h.delete(k):h.set(k,o[k]);return f(u,{...i,headers:h})})';
+        '((f,o)=>(u,i)=>{let h=new Headers(i?.headers??(u instanceof Request?u.headers:void 0));for(let k of["x-calico-request-source","x-calico-prompt-id","x-calico-active-turn-version"])if(k in o)o[k]==null?h.delete(k):h.set(k,o[k]);return f(u,{...i,headers:h})})';
       if (countOccurrences(content, wrapper) !== 1) {
         return "expected exactly one Calico header fetch wrapper";
       }

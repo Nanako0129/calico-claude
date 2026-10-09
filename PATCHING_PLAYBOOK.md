@@ -362,10 +362,12 @@ Likely break signs:
 - a later agent turn retains the previous turn's input total instead of the latest one
 - the module reports `0` candidates or the verifier reports a missing refresh seam
 
-### remora client factory (`active-turn-prompt-id`, `compact-request-source`, `compact-body-policy`)
+### remora client factory (`active-turn-prompt-id`, `compact-request-source`, `calico-header-wire`, `compact-body-policy`)
 
-These three remora adapters share one anchor: the async Anthropic client factory ("Zie") whose
-destructured parameter object owns `source` and `agentContext`. Each keys its rewrite on that factory
+These remora adapters share one anchor: the async Anthropic client factory ("Zie") whose
+destructured parameter object owns `source` and `agentContext`. Inside it, the two header modules
+key on the session-id header entry or hoisted helper; `calico-header-wire` keys on the client
+options object (`X={defaultHeaders:H,` and `...F&&{fetch:F}`) with its own fail-closed count. Each keys its rewrite on that factory
 so quota checks, token counts, and side queries stay outside the compact/active-turn namespace.
 
 Old bundle shapes we match:
@@ -392,7 +394,8 @@ What we widened for 2.1.238:
 - `scripts/verify-patched-binary.ts` mirrors both widenings in its `compact-request-source` and
   `compact-body-policy` structural checks so a patched 2.1.238 binary verifies
 
-Calico-owned header values are written, never deleted. The factory's header object becomes the SDK
+In the factory's header object, Calico-owned keys are written (null for "no value"), never deleted
+from the custom headers. The factory's header object becomes the SDK
 client's `defaultHeaders`, and the bundled SDK re-reads `ANTHROPIC_CUSTOM_HEADERS` and merges it
 underneath (`defaultHeaders={...custom,...defaultHeaders}`), so a key removed from the object comes
 back from the environment. Under `REMORA_ACTIVE=1` both header modules write their keys after the
