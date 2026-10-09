@@ -340,22 +340,44 @@ test("2.1.296: a shadowing declaration in an earlier nested scope fails compact 
   assert.equal(patchActiveTurnPromptIdentity(shadowed).patched, 2);
 });
 
-test("2.1.296: an uncounted look-alike before the declaration is not the one wrapped", async () => {
+test("2.1.296: any same-named binding before the header spread fails compact closed", () => {
+  // A look-alike ending in `;`, and the review's case: a nested `,fe=Ylt(),`
+  // while the real declaration is the last binding of its statement.
   const lookalike = fixture296.replace("let B=0,", "let q=()=>{let z=0,fe=Ylt();return z},B=0,");
-  assert.notEqual(lookalike, fixture296);
-  const result = patchCompactRequestSource(lookalike);
+  const realEndsInSemicolon = fixture296
+    .replace("let B=0,", "let q=()=>{let z=0,fe=Ylt(),w=1;return w},B=0,")
+    .replace("fe=Ylt(),ie=await em({querySource:g}),Q={", "fe=Ylt();let ie=await em({querySource:g}),Q={");
+  for (const source of [lookalike, realEndsInSemicolon]) {
+    assert.notEqual(source, fixture296);
+    const result = patchCompactRequestSource(source);
+    assert.equal(result.patched, 0, "two bindings named like EXTRA: do not guess which to wrap");
+    assert.equal(result.content, source);
+  }
+});
+
+test("2.1.296: a declaration that opens its statement is wrapped in place", async () => {
+  const letFirst = fixture296.replace("let B=0,Y=lf(b)?void 0:b,fe=Ylt(),", "let B=0,Y=lf(b)?void 0:b;let fe=Ylt(),");
+  assert.notEqual(letFirst, fixture296);
+  const result = patchCompactRequestSource(letFirst);
   assert.equal(result.patched, 1);
-  assert.equal(result.content.includes("let z=0,fe=Ylt();return z"), true, "look-alike untouched");
   assert.equal(
-    result.content.includes(
-      'fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),ie=await em('
-    ),
+    result.content.includes('let fe=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(Ylt()),'),
     true
   );
   const context = runPatched(result.content);
   context.customHeaders = { "x-calico-request-source": "forged" };
   const headers = await context.Zie({ source: "repl_main_thread", agentContext: { agentType: "main" } });
-  assert.equal(headers["x-calico-request-source"], undefined, "the spread local is the sanitized one");
+  assert.equal(headers["x-calico-request-source"], undefined);
+});
+
+test("2.1.296: a spread after the helper that is not a custom-header result patches nothing", () => {
+  const foreign = fixture296.replace("Q={...Ob(),...fe,", "Q={...Ob(),...B2,...fe,").replace("let B=0,", "let B=0,B2={},");
+  assert.notEqual(foreign, fixture296);
+  for (const apply of [patchActiveTurnPromptIdentity, patchCompactRequestSource]) {
+    const result = apply(foreign);
+    assert.equal(result.patched, 0);
+    assert.equal(result.content, foreign);
+  }
 });
 
 test("2.1.296: verifier rejects a wrap on a local other than the spread one", () => {

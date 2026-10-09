@@ -5131,28 +5131,45 @@ function hoistedHeaderAnchor(segment, helperName) {
     return null;
   }
   const extraLocal = spreads[0][1];
-  return { anchor: `...${helperName}(),...${extraLocal},`, at: spreads[0].index, extraLocal };
+  const header = { anchor: `...${helperName}(),...${extraLocal},`, at: spreads[0].index, extraLocal };
+  // The local after the helper must be a custom-header result (`EXTRA=FN()`),
+  // not some other spread upstream inserts there; otherwise a header placed
+  // after it could still be overridden by the custom headers that follow.
+  return hoistedExtraDeclarations(segment, header).length > 0 ? header : null;
 }
 
-// compact-request-source also rewrites EXTRA's declaration, `,EXTRA=FN()`.
+// Every binding of EXTRA as `=FN()` before the header spread, whether it opens
+// its statement (`let Q=Qxt(),`) or follows a comma, and whether a comma or a
+// semicolon ends it. The declaration precedes its use, so later text is not
+// searched.
+//
 // Through 2.1.295 it sat right before the header object
 // (`,J=XRt(),ie={...ml(),...J,`); 2.1.296 put another binding between them
-// (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`), so it is looked up by name.
-// Only the text before the header spread is searched, since the declaration
-// precedes its use, and exactly one match is required: a shadowing copy in an
-// earlier nested scope fails closed instead of being guessed at. The trailing
-// comma is a lookahead so back-to-back declarations both count.
-function hoistedExtraDeclaration(segment, header) {
+// (`,Q=Qxt(),ie=await em({…}),re={...Ml(),...Q,`), so it is found by name.
+function hoistedExtraDeclarations(segment, header) {
   const identifier = "[A-Za-z_$][\\w$]*";
-  const declarations = [
+  return [
     ...segment
       .slice(0, header.at)
-      .matchAll(new RegExp(`,${escapeRegExp(header.extraLocal)}=(${identifier})\\(\\)(?=,)`, "g")),
-  ];
-  if (declarations.length !== 1) {
-    return null;
-  }
-  return { at: declarations[0].index, text: declarations[0][0], factory: declarations[0][1] };
+      .matchAll(
+        new RegExp(
+          `(,|(?:let|const|var) )${escapeRegExp(header.extraLocal)}=(${identifier})\\(\\)(?=[,;])`,
+          "g"
+        )
+      ),
+  ].map((match) => ({
+    at: match.index + match[1].length,
+    text: match[0].slice(match[1].length),
+    factory: match[2],
+  }));
+}
+
+// compact rewrites the declaration, so it needs exactly one: a same-named
+// binding in an earlier nested scope makes the target ambiguous and fails
+// closed instead of risking a wrap on the wrong local.
+function hoistedExtraDeclaration(segment, header) {
+  const declarations = hoistedExtraDeclarations(segment, header);
+  return declarations.length === 1 ? declarations[0] : null;
 }
 
 function insertAfter(text, anchor, insertion) {
@@ -5501,11 +5518,12 @@ function patchCompactRequestSource(content) {
       `,${extraLocal}=((u)=>process.env.REMORA_ACTIVE==="1"?__calicoOmitHeader(u,"x-calico-request-source"):u)(${factory}())`;
     let nextSegment;
     if (hasSpread) {
-      // Spliced at the counted match, not String#replace: a `,EXTRA=FN()` not
-      // followed by a comma is not counted and must not be the one rewritten.
+      // Spliced at the counted match, not String#replace, so the rewritten
+      // binding is the one that was proven unique. wrapExtra's leading comma
+      // is dropped: the match starts after its `,` or `let ` prefix.
       nextSegment =
         segment.slice(0, declaration.at) +
-        wrapExtra(header.extraLocal, declaration.factory) +
+        wrapExtra(header.extraLocal, declaration.factory).slice(1) +
         segment.slice(declaration.at + declaration.text.length);
     } else {
       nextSegment = segment.replace(
