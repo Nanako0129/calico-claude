@@ -10,7 +10,8 @@ const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 // object that passes it as defaultHeaders next to the fetch spread.
 const fixture = `
 var customHeaders={};
-async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i}){let p={"x-app":"cli",...customHeaders,...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}},q={defaultHeaders:p,maxRetries:t,...n&&{fetch:n}};return q}
+function xt(){return"session-a"}
+async function Zie({apiKey:e,maxRetries:t,model:r,fetchOverride:n,source:o,agentContext:i}){let p={"x-app":"cli","X-Claude-Code-Session-Id":xt(),...customHeaders,...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}},q={defaultHeaders:p,maxRetries:t,...n&&{fetch:n}};return q}
 async function Next(){}
 `;
 
@@ -110,4 +111,19 @@ test("the verifier rejects a wrapper reading a different object than defaultHead
   const other = content.replace("})(n,p):n}", "})(n,x):n}");
   assert.notEqual(other, content);
   assert.match(evaluatePatchModule("calico-header-wire", other), /not on the client factory's own fetch/);
+});
+
+test("the verifier rejects a wrapper in a factory that carries no Calico key", () => {
+  const { content } = patchCalicoHeaderWire(fixture);
+  const spread = ',...process.env.REMORA_ACTIVE==="1"&&{"x-calico-request-source":o==="compact"?"compact":null}';
+  const bare = content.replace(spread, "");
+  assert.notEqual(bare, content);
+  assert.match(evaluatePatchModule("calico-header-wire", bare), /not on the client factory's own fetch/);
+});
+
+test("skips a factory without the session-id anchor the header modules use", () => {
+  const other = fixture.replace('"X-Claude-Code-Session-Id":xt(),', "");
+  const result = patchCalicoHeaderWire(other);
+  assert.equal(result.candidates, 0);
+  assert.equal(result.patched, 0);
 });

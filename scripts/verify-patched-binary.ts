@@ -119,7 +119,8 @@ const SESSION_ID_HEADER_KEY =
 // checks below used to pin the factory's destructured fields in order, which
 // broke on 2.1.277's inserted `querySource:h=g` for the same reason the patcher
 // did — and this copy is the reason "both halves fixed" would have been wrong
-// here: the contract lives in five places, three in the patcher and two here.
+// here: the contract is shared by the patcher's four client-factory modules and
+// the verifier's checks below; grep CLIENT_FACTORY_SOURCE for all of them.
 const CLIENT_FACTORY_SOURCE =
   "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
 
@@ -927,11 +928,15 @@ const CHECKS: Check[] = [
       if (countOccurrences(content, wrapper) !== 1) {
         return "expected exactly one Calico header fetch wrapper";
       }
-      // The wrapper must read the header object this factory passes as
+      // The wrapper must sit in the factory the header modules write into (it
+      // carries a Calico key), read the header object that factory passes as
       // defaultHeaders, and wrap the fetch spread of that same client options
       // object.
       const owned = clientFactorySegments(content).some(({ fields, segment }) => {
-        if (!clientFactoryLocal(fields, "fetchOverride")) {
+        if (
+          !clientFactoryLocal(fields, "fetchOverride") ||
+          !/"x-calico-(?:request-source|prompt-id)":/.test(segment)
+        ) {
           return false;
         }
         return new RegExp(

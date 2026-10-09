@@ -5051,8 +5051,9 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
   return { content: output, candidates, patched: 6 };
 }
 // The Anthropic client factory is the shared anchor for active-turn identity,
-// compact-request-source and compact-body-policy. All three recognise it by the
-// session-id entry in the header object it builds.
+// compact-request-source, calico-header-wire and compact-body-policy. All four
+// recognise it by the session-id entry (or the hoisted session-id helper) in
+// the header object it builds.
 //
 // 2.1.248 hoisted that header's name into a module-level constant, so the key
 // went from the literal `"X-Claude-Code-Session-Id":` to a computed `[DDe]:`.
@@ -5160,7 +5161,7 @@ function insertAfter(text, anchor, insertion) {
   return text.slice(0, cut) + insertion + text.slice(cut);
 }
 
-// The client factory those same three modules open on. Its destructured
+// The client factory those same four modules open on. Its destructured
 // parameter list was pinned field by field, in order, and that broke twice for
 // the same reason: 2.1.238 appended `credentials:s`, absorbed only because a
 // trailing `(?:,name:local)*` had been added for it, and 2.1.277 inserted
@@ -5410,13 +5411,6 @@ function patchActiveTurnPromptIdentity(content) {
       }
       nextSegment = inserted;
     }
-    // Both injections or neither. The declaration replace always fires once
-    // localsPattern matched, so comparing against the original segment could
-    // only ever prove the first half ran; assert on the header entry, which is
-    // the half that can silently fail to land.
-    if (!nextSegment.includes('"x-calico-prompt-id":')) {
-      continue;
-    }
 
     clientCandidates += 1;
     clientPatched += 1;
@@ -5541,7 +5535,8 @@ function patchCompactRequestSource(content) {
 // 2.1.270-276, 2.1.280-285, 2.1.287, 2.1.288, 2.1.295, 2.1.296; darwin-arm64
 // and some linux-arm64) declares exactly one `X={defaultHeaders:H,` and one
 // fetch spread in the factory, and H's object literal holds both modules'
-// spreads. A Request passed as the input keeps its own headers.
+// spreads. With a Request as the input and no init headers, the Request's own
+// headers are kept (unit-tested; the SDK passes a URL string).
 const CALICO_HEADER_FETCH =
   '((f,o)=>(u,i)=>{let h=new Headers(i?.headers??(u instanceof Request?u.headers:void 0));for(let k of["x-calico-request-source","x-calico-prompt-id","x-calico-active-turn-version"])if(k in o)o[k]==null?h.delete(k):h.set(k,o[k]);return f(u,{...i,headers:h})})';
 
@@ -5550,6 +5545,7 @@ function patchCalicoHeaderWire(content) {
   let candidates = 0;
   let patched = 0;
   let output = content;
+  const hoisted = hoistedSessionHeader(output);
   const clientStartPattern = clientFactoryPattern();
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
@@ -5565,6 +5561,13 @@ function patchCalicoHeaderWire(content) {
       output.slice(start, nextAsyncFunction === -1 ? output.length : nextAsyncFunction)
     );
     const end = start + segment.length;
+    // The factory the two header modules write into: same session-id anchors.
+    if (
+      !SESSION_ID_HEADER_ENTRY.test(segment) &&
+      !(hoisted !== null && segment.includes(`...${hoisted.name}(),`))
+    ) {
+      continue;
+    }
     const headerObjects = [
       ...segment.matchAll(/[,{]([A-Za-z_$][\w$]*)=\{defaultHeaders:([A-Za-z_$][\w$]*),/g),
     ];

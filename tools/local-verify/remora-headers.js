@@ -94,6 +94,13 @@ const run = (port, env, args) =>
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         CLAUDE_CONFIG_DIR: configDir,
         NO_PROXY: "127.0.0.1,localhost",
+        // A developer shell may select another provider or auth path, which
+        // would test a different client branch than CI does.
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_CODE_OAUTH_TOKEN: "",
+        CLAUDE_CODE_USE_BEDROCK: "",
+        CLAUDE_CODE_USE_VERTEX: "",
+        CLAUDE_CODE_USE_FOUNDRY: "",
         ...env,
       },
       stdio: ["ignore", "ignore", "pipe"],
@@ -109,8 +116,10 @@ const run = (port, env, args) =>
       clearTimeout(timer);
       if (code !== 0) finish(1, `${args.join(" ")} exited ${code}: ${stderr.trim().slice(0, 200)}`);
       // The mock's stderr is read asynchronously, so its last REQUEST line can
-      // arrive after the child's close. Wait until the log stops growing.
-      for (let seen = -1; seen !== mockLog.length; ) {
+      // arrive after the child's close. Wait until the log stops growing, for
+      // at most 5 s.
+      const drainUntil = Date.now() + 5_000;
+      for (let seen = -1; seen !== mockLog.length && Date.now() < drainUntil; ) {
         seen = mockLog.length;
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
@@ -140,7 +149,10 @@ const run = (port, env, args) =>
   );
   if (forgedSent.length > 0) finish(1, "a forged ANTHROPIC_CUSTOM_HEADERS value reached the request");
   if (![...main, ...compact].every((h) => h[CANARY] === "present")) {
-    finish(1, `${CANARY} did not arrive: ANTHROPIC_CUSTOM_HEADERS never reached the request`);
+    finish(
+      1,
+      `${CANARY} missing on a request: ANTHROPIC_CUSTOM_HEADERS was not applied, or a request bypassed the model client`
+    );
   }
   if (main.some((h) => "x-calico-request-source" in h)) {
     finish(1, "the main turn carries x-calico-request-source");
