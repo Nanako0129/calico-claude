@@ -3224,10 +3224,6 @@ function patchWelcomePatchedBadge(content) {
 }
 
 function patchCustomContextWindows(content) {
-  let candidates = 0;
-  let patched = 0;
-  let output = content;
-
   // Claude Code normally assigns unknown custom model ids a 200K context
   // window. Calico keeps that default unless a launcher supplies an exact,
   // validated model-to-window map. Exact matching is intentional: a typo must
@@ -3238,61 +3234,50 @@ function patchCustomContextWindows(content) {
   // --assert-all, since it only fails at zero — a silent loss of coverage.
   // Capture both and emit the captures.
   //
-  // 2.1.260 stopped reading the headers parameter directly and passes it
-  // through a helper first:
-  //
-  //   2.1.259  function wL(e,n){if(ou(e))return 1e6;if(n?.includes(vx.header)…
-  //   2.1.260  function tU(e,n){if(Vc(e))return 1e6;if(RYe(n)?.includes(rP.header)…
-  //
-  // Pinning `\3?.includes(` took this module from 4 candidates to 3 — the
-  // resolver site, and with it both injected markers. --assert-all still
-  // passed, so the loss was silent again; the verifier is what failed the
-  // build. Accept the parameter bare or wrapped in one call.
-  //
-  // 2.1.295 folded both 1M checks into one helper taking both parameters:
-  //
-  //   2.1.289  function vv(e,n){if(Kd(e))return 1e6;if(Hbt(n)?.includes(YU.header)&&X2(e))return 1e6;let r=I5r(e);…
-  //   2.1.295  function Qv(e,n){if(RUn(e,n))return 1e6;let r=Lyo(e);…
-  //
-  // Same silent loss as 2.1.260 (4 candidates to 3, verifier caught it), so
-  // that spelling is accepted as a second form of the opening body. The helper
-  // call alone says nothing about headers, so the form is also pinned to the
-  // override lookup that follows it (`let r=…(e);if(r!==void 0)return`).
-  //
-  // 2.1.301 moved that lookup out into a single-parameter helper, leaving the
-  // two-parameter function as a thin wrapper around it:
-  //
-  //   2.1.300  function hv(e,n){if(hVn(e,n))return 1e6;let r=BRo(e);if(r!==void 0)return _Vn(e)??r.believed;…}
-  //   2.1.301  function Mv(e,n){if(RKn(e,n))return 1e6;let r=RU(e);return Zc(e)&&Man(e)===null?Math.min(r,CXe):r}
-  //            function RU(e){let n=MHr(e);if(n!==void 0)return Man(e)??n.believed;…}
-  //
-  // Same silent loss a third time (4 to 3, verifier caught it). On 2.1.301 the
-  // helper is called only from the wrapper and is not exported from its chunk,
-  // so injecting at the wrapper's head still covers every caller. The wrapper
-  // is also the only two-parameter function in that bundle whose first
-  // statement is a two-parameter `return 1e6` check, so `let r=…(e);return` is
-  // accepted after it.
-  const resolverPattern =
-    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\(|if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);(?:if\(\6!==void 0\)return |return ))/g;
-
-  output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
-    const functionStart = `${functionOpen}${modelParam},${headersParam}${brace}`;
-    candidates += 1;
-    const helpers =
-      'function __calico_context_window(e){try{let t=process.env.CALICO_MODEL_CONTEXT_WINDOWS;if(!t)return null;let r=JSON.parse(t);if(!r||typeof r!=="object"||Array.isArray(r)||!Object.hasOwn(r,e))return null;let n=r[e];if(!Number.isInteger(n)||n<100000||n>1000000)return null;return n}catch{return null}}' +
-      // __calico_display_window is declared here but called from the status-line
-      // site below, which upstream 2.1.242+ places in a different Bun chunk.
-      // Chunks are separate ES module scopes, so this one helper has to live on
-      // globalThis; a bare declaration resolves at patch time and is undefined
-      // at runtime. __calico_context_window stays local because it is only
-      // called from the resolver body injected immediately after it.
-      'globalThis.__calico_display_window=function(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)};';
-    const replacement =
-      `${helpers}${functionStart}let __calico_window=__calico_context_window(${modelParam});` +
-      `if(__calico_window!==null)return __calico_window;${originalBody}`;
-    patched += 1;
-    return replacement;
-  });
+  // Upstream has since reshaped the resolver three more times. Each known
+  // shape is a separate pattern below; all share the same head and the same
+  // injection, which goes at the head of the function that takes both the
+  // model and the headers parameter, before any upstream rule. That placement
+  // is deliberate: an explicit mapping wins over every stock rule, including
+  // the 1M checks and, from 2.1.301, the 200K cap on models that reach 1M only
+  // through the beta header.
+  const resolverHead = String.raw`(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)`;
+  const resolverShapes = [
+    // 2.1.260 stopped reading the headers parameter directly and passes it
+    // through a helper first:
+    //
+    //   2.1.259  function wL(e,n){if(ou(e))return 1e6;if(n?.includes(vx.header)…
+    //   2.1.260  function tU(e,n){if(Vc(e))return 1e6;if(RYe(n)?.includes(rP.header)…
+    //
+    // Pinning `\3?.includes(` lost the resolver site (4 candidates to 3), and
+    // with it both injected markers; the verifier is what failed the build.
+    // Accept the parameter bare or wrapped in one call.
+    String.raw`(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\()`,
+    // 2.1.295 folded both 1M checks into one helper taking both parameters:
+    //
+    //   2.1.289  function vv(e,n){if(Kd(e))return 1e6;if(Hbt(n)?.includes(YU.header)&&X2(e))return 1e6;let r=I5r(e);…
+    //   2.1.295  function Qv(e,n){if(RUn(e,n))return 1e6;let r=Lyo(e);…
+    //
+    // The helper call alone says nothing about headers, so this shape is also
+    // pinned to the override lookup that follows it
+    // (`let r=…(e);if(r!==void 0)return`).
+    String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==void 0\)return )`,
+    // 2.1.301 moved that lookup out into a one-parameter helper and left the
+    // two-parameter function as a thin wrapper around it:
+    //
+    //   2.1.300  function hv(e,n){if(hVn(e,n))return 1e6;let r=BRo(e);if(r!==void 0)return _Vn(e)??r.believed;…}
+    //   2.1.301  function Mv(e,n){if(RKn(e,n))return 1e6;let r=RU(e);return Zc(e)&&Man(e)===null?Math.min(r,CXe):r}
+    //            function RU(e){let n=MHr(e);if(n!==void 0)return Man(e)??n.believed;…}
+    //
+    // The lookup is no longer in this function, so the shape is pinned instead
+    // to the wrapper returning the helper's result, optionally through one
+    // ternary (`return …:r}` or `return r}`). Injecting at the wrapper's head
+    // covers every caller only while the helper has no other caller; on all
+    // five 2.1.301 platform bundles it is called only from the wrapper and is
+    // not exported from its chunk, and the wrapper's opening is unique in the
+    // bundle. Nothing here enforces that for later versions.
+    String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);return (?:[^;{}]*:)?\6\})`,
+  ].map((body) => new RegExp(resolverHead + body, "g"));
 
   // Claude's stock pipeline subtracts an output reserve and may precompute at
   // a separate buffer fraction. In opt-in Calico mode, use the raw mapped
@@ -3307,36 +3292,80 @@ function patchCustomContextWindows(content) {
   // `Math.min(e.maxOutputTokens,…)`; that form is accepted as a third spelling.
   const effectiveWindowPattern =
     /(function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{let ([A-Za-z_$][\w$]*)=Math\.min\((?:[A-Za-z_$][\w$]*\(\2(?:\.model)?\)|\2\.maxOutputTokens),[A-Za-z_$][\w$]*\),([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\)\?\3:void 0,\{window:([A-Za-z_$][\w$]*)\}=[A-Za-z_$][\w$]*\(\2,\5\);return )(\6-\4)(\})/g;
-  output = output.replace(
-    effectiveWindowPattern,
-    (full, prefix, modelParam, headersParam, reserveLocal, ctxLocal, windowLocal, originalReturn, suffix) => {
-      candidates += 1;
-      patched += 1;
-      return `${prefix}process.env.CALICO_MODEL_CONTEXT_WINDOWS?${windowLocal}:${originalReturn}${suffix}`;
-    }
-  );
 
   // Same pinned-parameter bug as the resolver above: 2.1.257 renamed them.
   const precomputePattern =
     /(function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{)(return Math\.min\(\2-Math\.round\(\2\*\3\.precomputeBufferFraction\),([A-Za-z_$][\w$]*)\(\2,\3\)\)\})/g;
-  output = output.replace(
-    precomputePattern,
-    (full, functionStart, modelParam, headersParam, originalBody, percentFn) => {
-      candidates += 1;
-      patched += 1;
-      return `${functionStart}if(process.env.CALICO_MODEL_CONTEXT_WINDOWS)return ${percentFn}(${modelParam},${headersParam});${originalBody}`;
-    }
-  );
 
   // Status-line consumers (including TokenBar) receive an effective display
   // window while the internal model/compact logic continues to use the raw
   // provider window. This mirrors Codex's raw-vs-usable distinction.
   const statuslinePattern =
     /context_window:([A-Za-z_$][\w$]*)\(([^,{}]+),([A-Za-z_$][\w$]*)\),exceeds_200k_tokens:/g;
+
+  // All four sites or none, each exactly once. Applied independently, a
+  // reshaped resolver left the other three rewrites in place: 4 candidates
+  // became 3, --assert-all passed (it only fails at zero), and the status-line
+  // site called globalThis.__calico_display_window, which only the resolver
+  // injection defines. That happened on 2.1.260, 2.1.295 and 2.1.301; the
+  // effective-window site was lost the same way on 2.1.281 and 2.1.287. Only
+  // the verifier caught them, and `npm run patch:native` does not run it.
+  // Reporting zero patched with non-zero candidates is the loud form: it fails
+  // --assert-all and names this module. A second match is refused too, since
+  // the resolver injection would declare its helper twice in one scope.
+  const counts = [
+    resolverShapes.reduce((total, pattern) => total + [...content.matchAll(pattern)].length, 0),
+    [...content.matchAll(effectiveWindowPattern)].length,
+    [...content.matchAll(precomputePattern)].length,
+    [...content.matchAll(statuslinePattern)].length,
+  ];
+  const candidates = counts.reduce((total, count) => total + count, 0);
+  if (counts.some((count) => count !== 1)) {
+    return { content, candidates, patched: 0 };
+  }
+
+  let patched = 0;
+  let output = content;
+
+  for (const resolverPattern of resolverShapes) {
+    output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
+      const functionStart = `${functionOpen}${modelParam},${headersParam}${brace}`;
+      const helpers =
+        'function __calico_context_window(e){try{let t=process.env.CALICO_MODEL_CONTEXT_WINDOWS;if(!t)return null;let r=JSON.parse(t);if(!r||typeof r!=="object"||Array.isArray(r)||!Object.hasOwn(r,e))return null;let n=r[e];if(!Number.isInteger(n)||n<100000||n>1000000)return null;return n}catch{return null}}' +
+        // __calico_display_window is declared here but called from the status-line
+        // site below, which upstream 2.1.242+ places in a different Bun chunk.
+        // Chunks are separate ES module scopes, so this one helper has to live on
+        // globalThis; a bare declaration resolves at patch time and is undefined
+        // at runtime. __calico_context_window stays local because it is only
+        // called from the resolver body injected immediately after it.
+        'globalThis.__calico_display_window=function(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)};';
+      patched += 1;
+      return (
+        `${helpers}${functionStart}let __calico_window=__calico_context_window(${modelParam});` +
+        `if(__calico_window!==null)return __calico_window;${originalBody}`
+      );
+    });
+  }
+
+  output = output.replace(
+    effectiveWindowPattern,
+    (full, prefix, modelParam, headersParam, reserveLocal, ctxLocal, windowLocal, originalReturn, suffix) => {
+      patched += 1;
+      return `${prefix}process.env.CALICO_MODEL_CONTEXT_WINDOWS?${windowLocal}:${originalReturn}${suffix}`;
+    }
+  );
+
+  output = output.replace(
+    precomputePattern,
+    (full, functionStart, modelParam, headersParam, originalBody, percentFn) => {
+      patched += 1;
+      return `${functionStart}if(process.env.CALICO_MODEL_CONTEXT_WINDOWS)return ${percentFn}(${modelParam},${headersParam});${originalBody}`;
+    }
+  );
+
   output = output.replace(
     statuslinePattern,
     (full, contextFn, usage, windowValue) => {
-      candidates += 1;
       patched += 1;
       return `context_window:${contextFn}(${usage},globalThis.__calico_display_window(${windowValue})),exceeds_200k_tokens:`;
     }
