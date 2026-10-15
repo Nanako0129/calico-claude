@@ -52,22 +52,28 @@ for (const [name, resolver] of [
     // Both markers the verifier checks come from the resolver site.
     assert.ok(result.content.includes("__calico_context_window"));
     assert.ok(result.content.includes("CALICO_CONTEXT_DISPLAY_PERCENT"));
-    // Exactly one injection, reading the model parameter, ahead of the
-    // original body.
+    // Exactly one injection, reading the model parameter, followed by the
+    // whole original body unchanged.
     assert.equal(result.content.split("function __calico_context_window(").length, 2);
-    assert.match(result.content, /let __calico_window=__calico_context_window\(e\);if\(__calico_window!==null\)return __calico_window;if\(/);
+    const originalBody = resolver.slice(resolver.indexOf("){") + 2);
+    assert.ok(
+      result.content.includes(
+        "let __calico_window=__calico_context_window(e);if(__calico_window!==null)return __calico_window;" + originalBody
+      )
+    );
   });
 }
 
-// 2.1.301's injection goes into the wrapper, not the helper, and the wrapper's
-// own tail (the new 200K cap) must keep working when no mapping applies.
-// Executed rather than matched as text.
-test("2.1.301 wrapper returns the mapped window and otherwise keeps its cap", () => {
+// 2.1.301's injection goes into the wrapper, not the helper. A mapping must win
+// over every upstream rule, and with no mapping the wrapper must behave exactly
+// as shipped: its 1M early return and its new 200K cap. Executed rather than
+// matched as text.
+test("2.1.301 wrapper returns the mapped window and otherwise behaves as shipped", () => {
   const { content } = patchCustomContextWindows(split + otherSites);
-  // Stub the upstream helpers: no header 1M, no override, the model takes the
-  // capped path (Zc true, Man null), and the cap is lower than RU's default so
-  // its effect is visible.
-  const run = (env) => {
+  // Stub the upstream helpers. By default: no header 1M, no override, and the
+  // model takes the capped path (Zc true, Man null), with the cap lower than
+  // RU's default so its effect is visible.
+  const run = (env, stubs = {}) => {
     const context = {
       process: { env },
       RKn: () => false,
@@ -76,15 +82,25 @@ test("2.1.301 wrapper returns the mapped window and otherwise keeps its cap", ()
       Man: () => null,
       Zc: () => true,
       CXe: 150000,
+      ...stubs,
     };
     vm.createContext(context);
     vm.runInContext(content, context);
     return context;
   };
   const mapped = { CALICO_MODEL_CONTEXT_WINDOWS: JSON.stringify({ "gpt-5.6-sol": 372000 }) };
+  const header1m = { RKn: () => true };
+  const uncapped = { Zc: () => false };
+
+  // A mapping wins, including over the header 1M check and the cap.
   assert.equal(run(mapped).Mv("gpt-5.6-sol", []), 372000);
-  assert.equal(run(mapped).Mv("other-model", []), 150000);
-  assert.equal(run({}).Mv("gpt-5.6-sol", []), 150000);
+  assert.equal(run(mapped, header1m).Mv("gpt-5.6-sol", []), 372000);
+  // No mapping applies: the wrapper's own rules, unchanged.
+  for (const env of [mapped, {}]) {
+    assert.equal(run(env).Mv("other-model", []), 150000);
+    assert.equal(run(env, header1m).Mv("other-model", []), 1e6);
+    assert.equal(run(env, uncapped).Mv("other-model", []), 200000);
+  }
   // The helper itself is untouched.
   assert.equal(run(mapped).RU("gpt-5.6-sol"), 200000);
 });

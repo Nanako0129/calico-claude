@@ -3270,8 +3270,10 @@ function patchCustomContextWindows(content) {
     //            function RU(e){let n=MHr(e);if(n!==void 0)return Man(e)??n.believed;…}
     //
     // The lookup is no longer in this function, so the shape is pinned instead
-    // to the wrapper returning the helper's result, optionally through one
-    // ternary (`return …:r}` or `return r}`). Injecting at the wrapper's head
+    // to the wrapper's single return statement ending in the helper's result:
+    // `return r}`, or `return …:r}` where `…` is any expression free of `;`,
+    // `{` and `}` (one ternary as shipped, but nested ternaries pass too, as
+    // does a then-branch that ignores `r`). Injecting at the wrapper's head
     // covers every caller only while the helper has no other caller; on all
     // five 2.1.301 platform bundles it is called only from the wrapper and is
     // not exported from its chunk, and the wrapper's opening is unique in the
@@ -3324,24 +3326,25 @@ function patchCustomContextWindows(content) {
     return { content, candidates, patched: 0 };
   }
 
+  const helpers =
+    'function __calico_context_window(e){try{let t=process.env.CALICO_MODEL_CONTEXT_WINDOWS;if(!t)return null;let r=JSON.parse(t);if(!r||typeof r!=="object"||Array.isArray(r)||!Object.hasOwn(r,e))return null;let n=r[e];if(!Number.isInteger(n)||n<100000||n>1000000)return null;return n}catch{return null}}' +
+    // __calico_display_window is declared here but called from the status-line
+    // site below, which upstream 2.1.242+ places in a different Bun chunk.
+    // Chunks are separate ES module scopes, so this one helper has to live on
+    // globalThis; a bare declaration resolves at patch time and is undefined
+    // at runtime. __calico_context_window stays local because it is only
+    // called from the resolver body injected immediately after it.
+    'globalThis.__calico_display_window=function(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)};';
+
   let patched = 0;
   let output = content;
 
   for (const resolverPattern of resolverShapes) {
     output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
-      const functionStart = `${functionOpen}${modelParam},${headersParam}${brace}`;
-      const helpers =
-        'function __calico_context_window(e){try{let t=process.env.CALICO_MODEL_CONTEXT_WINDOWS;if(!t)return null;let r=JSON.parse(t);if(!r||typeof r!=="object"||Array.isArray(r)||!Object.hasOwn(r,e))return null;let n=r[e];if(!Number.isInteger(n)||n<100000||n>1000000)return null;return n}catch{return null}}' +
-        // __calico_display_window is declared here but called from the status-line
-        // site below, which upstream 2.1.242+ places in a different Bun chunk.
-        // Chunks are separate ES module scopes, so this one helper has to live on
-        // globalThis; a bare declaration resolves at patch time and is undefined
-        // at runtime. __calico_context_window stays local because it is only
-        // called from the resolver body injected immediately after it.
-        'globalThis.__calico_display_window=function(e){let t=Number(process.env.CALICO_CONTEXT_DISPLAY_PERCENT??100);if(!Number.isFinite(t)||t<1||t>100)return e;return Math.floor(e*t/100)};';
       patched += 1;
       return (
-        `${helpers}${functionStart}let __calico_window=__calico_context_window(${modelParam});` +
+        `${helpers}${functionOpen}${modelParam},${headersParam}${brace}` +
+        `let __calico_window=__calico_context_window(${modelParam});` +
         `if(__calico_window!==null)return __calico_window;${originalBody}`
       );
     });
@@ -3371,6 +3374,12 @@ function patchCustomContextWindows(content) {
     }
   );
 
+  // The counts above are taken on the input; hold the same contract on the
+  // output, in case an earlier rewrite here ever changes text a later pattern
+  // needs.
+  if (patched !== candidates) {
+    return { content, candidates, patched: 0 };
+  }
   return { content: output, candidates, patched };
 }
 
