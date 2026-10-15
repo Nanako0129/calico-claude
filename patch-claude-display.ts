@@ -3258,8 +3258,22 @@ function patchCustomContextWindows(content) {
   // that spelling is accepted as a second form of the opening body. The helper
   // call alone says nothing about headers, so the form is also pinned to the
   // override lookup that follows it (`let r=…(e);if(r!==void 0)return`).
+  //
+  // 2.1.301 moved that lookup out into a single-parameter helper, leaving the
+  // two-parameter function as a thin wrapper around it:
+  //
+  //   2.1.300  function hv(e,n){if(hVn(e,n))return 1e6;let r=BRo(e);if(r!==void 0)return _Vn(e)??r.believed;…}
+  //   2.1.301  function Mv(e,n){if(RKn(e,n))return 1e6;let r=RU(e);return Zc(e)&&Man(e)===null?Math.min(r,CXe):r}
+  //            function RU(e){let n=MHr(e);if(n!==void 0)return Man(e)??n.believed;…}
+  //
+  // Same silent loss a third time (4 to 3, verifier caught it). On 2.1.301 the
+  // helper is called only from the wrapper and is not exported from its chunk,
+  // so injecting at the wrapper's head still covers every caller. The wrapper
+  // is also the only two-parameter function in that bundle whose first
+  // statement is a two-parameter `return 1e6` check, so `let r=…(e);return` is
+  // accepted after it.
   const resolverPattern =
-    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\(|if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==void 0\)return )/g;
+    /(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\(|if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);(?:if\(\6!==void 0\)return |return ))/g;
 
   output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
     const functionStart = `${functionOpen}${modelParam},${headersParam}${brace}`;

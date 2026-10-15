@@ -1,9 +1,10 @@
-// The context-window resolver has been reshaped twice by upstream, and both
-// times the module kept applying with fewer candidates instead of failing:
-// 2.1.257 renamed the second parameter (4 -> 1), and 2.1.260 stopped reading it
-// directly, wrapping it in a helper call (4 -> 3). `--assert-all` only fails at
-// zero, so neither loss was visible there; on 2.1.260 the verifier caught it,
-// because the resolver site is what injects both markers.
+// The context-window resolver keeps being reshaped by upstream, and each time
+// the module kept applying with fewer candidates instead of failing: 2.1.257
+// renamed the second parameter (4 -> 1); 2.1.260 stopped reading it directly,
+// wrapping it in a helper call (4 -> 3); 2.1.295 and 2.1.301 did the same again.
+// `--assert-all` only fails at zero, so none of these losses was visible there;
+// from 2.1.260 on the verifier caught them, because the resolver site is what
+// injects both markers.
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
@@ -23,10 +24,18 @@ const folded =
   "function Qv(e,n){if(RUn(e,n))return 1e6;let r=Lyo(e);if(r!==void 0)return xUn(e)??r.believed;" +
   "if(wE(e))return 1e6;return 200000}";
 
+// 2.1.301 moves the override lookup into a one-parameter helper and leaves the
+// two-parameter function as a wrapper (4 -> 3 a third time). The helper takes
+// only the model, so it must not be patched as a second resolver.
+const split =
+  "function Mv(e,n){if(RKn(e,n))return 1e6;let r=RU(e);return Zc(e)&&Man(e)===null?Math.min(r,CXe):r}" +
+  "function RU(e){let n=MHr(e);if(n!==void 0)return Man(e)??n.believed;if(Bk(e))return 1e6;return 200000}";
+
 for (const [name, fixture] of [
   ["2.1.259 reads the headers parameter directly", bare],
   ["2.1.260 passes it through a helper first", wrapped],
   ["2.1.295 folds both 1M checks into one helper", folded],
+  ["2.1.301 splits the override lookup into a helper", split],
 ]) {
   test(`resolver is patched when ${name}`, () => {
     const result = patchCustomContextWindows(fixture);
@@ -59,6 +68,8 @@ test("a folded-shape function that is not the resolver is left alone", () => {
   for (const decoy of [
     folded.replace("RUn(e,n)", "RUn(n,e)"),
     folded.replace("if(r!==void 0)return", "if(r)return"),
+    split.replace("RKn(e,n)", "RKn(n,e)"),
+    split.replace("let r=RU(e)", "let r=RU(n)"),
   ]) {
     const result = patchCustomContextWindows(decoy);
     assert.equal(result.patched, 0);
