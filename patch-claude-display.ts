@@ -3014,17 +3014,15 @@ function patchDisableOfficialUpdater(content) {
   // The description is matched by its prefix: 2.1.304 appended "; package-
   // manager installs update through the package manager" to it, and the exact
   // match left the command unrewritten while P and `install` still patched,
-  // which --assert-all accepted. The registration-count gate at the end of
-  // this function now turns any such miss into a loud zero.
+  // which --assert-all accepted. The leftover-import check at the end of this
+  // function now turns any such miss into a loud zero.
   const updateCommand = new RegExp(
     `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available(?:[^"\\\\]|\\\\.)*"\\)` +
       `\\.action\\(${identifier}\\(async\\((${identifier})\\)=>)\\{let\\{update:(${identifier})\\}=` +
       `await import\\("[^"]+"\\);await \\3\\(\\2\\)\\}`,
     "g"
   );
-  let updateRewrites = 0;
   output = output.replace(updateCommand, (full, head) => {
-    updateRewrites += 1;
     candidates += 1;
     patched += 1;
     return (
@@ -3049,16 +3047,14 @@ function patchDisableOfficialUpdater(content) {
   // downloaded official binary's `install`, not this one, so upgrading an
   // in-place install that way is unaffected.
   const installCommand = new RegExp(
-    `(\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.[^"]*"\\)` +
+    `(\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.(?:[^"\\\\]|\\\\.)*"\\)` +
       `\\.option\\("--force","Force installation even if already installed"\\)` +
       `\\.action\\(${identifier}\\(async\\((${identifier}),(${identifier}),(${identifier})\\)=>)` +
       `\\{let\\{installHandler:(${identifier})\\}=await import\\("[^"]+"\\);` +
       `await \\5\\(\\3,\\4,\\2\\)\\}`,
     "g"
   );
-  let installRewrites = 0;
   output = output.replace(installCommand, (full, head) => {
-    installRewrites += 1;
     candidates += 1;
     patched += 1;
     return (
@@ -3067,19 +3063,16 @@ function patchDisableOfficialUpdater(content) {
     );
   });
 
-  // Every registered `update` / `install` command must have been rewritten
-  // (one of each in the 2.1.301 and 2.1.304 bundles, measured). A registration
-  // whose shape no longer matches would otherwise drop out of the counts and
-  // leave the official updater reachable, so the whole module is refused.
-  const registered = (head) => content.split(head).length - 1;
-  const updateHeads = registered('.command("update").alias("upgrade")');
-  const installHeads = registered('.command("install [target]")');
-  if (updateRewrites !== updateHeads || installRewrites !== installHeads) {
-    return {
-      content,
-      candidates: candidates - updateRewrites - installRewrites + updateHeads + installHeads,
-      patched: 0,
-    };
+  // No action may still import the updater or the installer. Checked on what
+  // matters rather than on the registration text: whatever part of a
+  // registration drifts (description, alias order, the command name, the
+  // action wrapper), a missed rewrite leaves this import behind. One of each
+  // in the 2.1.301 and 2.1.304 bundles, measured, and no other text matches.
+  // A leftover refuses the whole module, so --assert-all names it.
+  const leftover = (output.match(new RegExp(`\\{let\\{(?:update|installHandler):${identifier}\\}=await import\\(`, "g")) ?? [])
+    .length;
+  if (leftover > 0) {
+    return { content, candidates: candidates + leftover, patched: 0 };
   }
 
   return { content: output, candidates, patched };

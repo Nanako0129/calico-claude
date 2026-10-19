@@ -2553,17 +2553,18 @@ const CHECKS: Check[] = [
       if (rewrittenUpdateCount !== 1) {
         problems.push(`expected exactly 1 rewritten update command, found ${rewrittenUpdateCount}`);
       }
-      // Bounded by braces, not `;`: since 2.1.304 the description contains a
-      // `;`, which the old `[^;]` scan stopped at, so the check never fired.
-      // Chained calls (an `.option(…)` before `.action(`) stay inside the bound.
-      if (/\.command\("update"\)\.alias\("upgrade"\)[^{}]{0,400}\{let\{update:/.test(content)) {
+      // The import itself, not the registration around it: the old scan from
+      // `.alias("upgrade")` over `[^;]` stopped at the `;` that 2.1.304 put in
+      // the description, so it never fired. Exactly one such import exists in
+      // the 2.1.301 and 2.1.304 bundles, measured, as for `installHandler`.
+      if (content.includes("{let{update:")) {
         problems.push("residual update command that still imports the updater");
       }
 
       // `install [target]` would put the official build at the official
       // launcher, over a Calico build installed there; held the same way.
       const rewrittenInstall = new RegExp(
-        `\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.[^"]*"\\)` +
+        `\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.(?:[^"\\\\]|\\\\.)*"\\)` +
           `\\.option\\("--force","Force installation even if already installed"\\)` +
           `\\.action\\(${identifier}\\(async\\(${identifier},${identifier},${identifier}\\)=>` +
           `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build, so \`install\` is disabled[^"]*",r\\)\\);` +

@@ -263,14 +263,17 @@ test("2.1.304: the extended update description is still rewritten and still veri
 });
 
 test("all or nothing: an update or install registration that no longer matches refuses the module", () => {
-  // A registration whose action shape drifted: the command is still there,
-  // so leaving it out of the counts would keep the official updater reachable.
-  const driftedUpdate = updateCommand().replace("await import(", "await importChunk(");
-  const driftedInstall = installCommand().replace("await import(", "await importChunk(");
+  // Registrations that drifted but still import the updater or installer: the
+  // rewrite misses them, so leaving them out of the counts would keep the
+  // official updater reachable. Drift in the head (alias dropped, command
+  // renamed) is covered as well as drift in the description.
+  const update = updateCommand();
+  const install = installCommand();
   for (const [name, input] of [
-    ["update", `${driftedUpdate};${installCommand()}${BOUNDARY}${updaterModule(NAMES)}`],
-    ["install", `${updateCommand()};${driftedInstall}${BOUNDARY}${updaterModule(NAMES)}`],
-  ]) {
+    ["update description", `${update.replace("Check for updates", "Look for updates")};${install}`],
+    ["update alias dropped", `${update.replace('.alias("upgrade")', "")};${install}`],
+    ["install renamed", `${update};${install.replace("install [target]", "install [version]")}`],
+  ].map(([name, commands]) => [name, `${commands}${BOUNDARY}${updaterModule(NAMES)}`])) {
     const result = patchDisableOfficialUpdater(input);
     assert.equal(result.patched, 0, name);
     assert.equal(result.candidates, 3, name);
@@ -283,7 +286,9 @@ test("residual update check still fires with a chained call before the action, o
   const moduleOnly = patchDisableOfficialUpdater(updaterModule(NAMES)).content;
   const chained = updateCommand().replace(".action(", '.option("--force","x; y").action(');
   assert.match(check(`${chained}${BOUNDARY}${moduleOnly}`), /residual update command/);
-  const quoted = updateCommand(undefined, undefined, undefined, undefined, 'Check for updates and install if available; run \\"doctor\\"');
+  // JSON.stringify writes the quote as a single `\"`, as a minifier would.
+  const quoted = updateCommand(undefined, undefined, undefined, undefined, 'Check for updates and install if available; run "doctor"');
+  assert.ok(quoted.includes('run \\"doctor\\"'));
   assert.match(check(`${quoted}${BOUNDARY}${moduleOnly}`), /residual update command/);
   // The patcher accepts the escaped quote as well.
   assert.equal(patchDisableOfficialUpdater(quoted).patched, 1);
