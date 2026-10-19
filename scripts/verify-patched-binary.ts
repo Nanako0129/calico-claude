@@ -2543,7 +2543,7 @@ const CHECKS: Check[] = [
       // description is matched by prefix: 2.1.304 extended it, with a `;` in
       // the new text.
       const rewrittenUpdate = new RegExp(
-        `\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available[^"]*"\\)` +
+        `\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available(?:[^"\\\\]|\\\\.)*"\\)` +
           `\\.action\\(${identifier}\\(async\\(${identifier}\\)=>` +
           `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build\\.[^"]*",r\\)\\);` +
           `process\\.exit\\(1\\)\\}`,
@@ -2553,9 +2553,10 @@ const CHECKS: Check[] = [
       if (rewrittenUpdateCount !== 1) {
         problems.push(`expected exactly 1 rewritten update command, found ${rewrittenUpdateCount}`);
       }
-      // Skips the description as a whole string: since 2.1.304 it contains a
-      // `;`, which a `[^;]` scan stopped at, so the residual check never fired.
-      if (/\.command\("update"\)\.alias\("upgrade"\)\.description\("[^"]*"\)\.action\([^;]{0,100}let\{update:/.test(content)) {
+      // Bounded by braces, not `;`: since 2.1.304 the description contains a
+      // `;`, which the old `[^;]` scan stopped at, so the check never fired.
+      // Chained calls (an `.option(…)` before `.action(`) stay inside the bound.
+      if (/\.command\("update"\)\.alias\("upgrade"\)[^{}]{0,400}\{let\{update:/.test(content)) {
         problems.push("residual update command that still imports the updater");
       }
 

@@ -3001,8 +3001,9 @@ function patchDisableOfficialUpdater(content) {
   // launcher -- and so did the binary carrying the three rewrites above. Run as
   // calico-claude it would update the official install, not this one. Its
   // action lazily imports the update chunk, so replacing that body means
-  // nothing installs; the registration is identical in 2.1.276 through 2.1.280
-  // apart from locals and the chunk's hashed name, which are captured.
+  // nothing installs; the registration was measured identical in 2.1.276
+  // through 2.1.280 apart from locals and the chunk's hashed name, which are
+  // captured. 2.1.304 then extended its description (below).
   //
   // It must end the process itself. The update function it replaces calls
   // process.exit when done; setting process.exitCode and returning instead left
@@ -3012,14 +3013,18 @@ function patchDisableOfficialUpdater(content) {
   //
   // The description is matched by its prefix: 2.1.304 appended "; package-
   // manager installs update through the package manager" to it, and the exact
-  // match left the command unrewritten while P and `install` still patched.
+  // match left the command unrewritten while P and `install` still patched,
+  // which --assert-all accepted. The registration-count gate at the end of
+  // this function now turns any such miss into a loud zero.
   const updateCommand = new RegExp(
-    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available[^"]*"\\)` +
+    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available(?:[^"\\\\]|\\\\.)*"\\)` +
       `\\.action\\(${identifier}\\(async\\((${identifier})\\)=>)\\{let\\{update:(${identifier})\\}=` +
       `await import\\("[^"]+"\\);await \\3\\(\\2\\)\\}`,
     "g"
   );
+  let updateRewrites = 0;
   output = output.replace(updateCommand, (full, head) => {
+    updateRewrites += 1;
     candidates += 1;
     patched += 1;
     return (
@@ -3051,7 +3056,9 @@ function patchDisableOfficialUpdater(content) {
       `await \\5\\(\\3,\\4,\\2\\)\\}`,
     "g"
   );
+  let installRewrites = 0;
   output = output.replace(installCommand, (full, head) => {
+    installRewrites += 1;
     candidates += 1;
     patched += 1;
     return (
@@ -3059,6 +3066,21 @@ function patchDisableOfficialUpdater(content) {
       `process.exit(1)}`
     );
   });
+
+  // Every registered `update` / `install` command must have been rewritten
+  // (one of each in the 2.1.301 and 2.1.304 bundles, measured). A registration
+  // whose shape no longer matches would otherwise drop out of the counts and
+  // leave the official updater reachable, so the whole module is refused.
+  const registered = (head) => content.split(head).length - 1;
+  const updateHeads = registered('.command("update").alias("upgrade")');
+  const installHeads = registered('.command("install [target]")');
+  if (updateRewrites !== updateHeads || installRewrites !== installHeads) {
+    return {
+      content,
+      candidates: candidates - updateRewrites - installRewrites + updateHeads + installHeads,
+      patched: 0,
+    };
+  }
 
   return { content: output, candidates, patched };
 }

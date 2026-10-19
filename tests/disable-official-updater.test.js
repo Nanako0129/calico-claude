@@ -68,9 +68,10 @@ function behaviour(source, n, env = {}) {
   return sandbox.out;
 }
 
-// The CLI registration of `update` (alias `upgrade`), as it ships in 2.1.276
-// through 2.1.303 apart from locals and the chunk's hashed name. 2.1.304
-// extended the description; UPDATE_DESCRIPTION_304 is its text verbatim.
+// The CLI registration of `update` (alias `upgrade`), as measured in 2.1.276
+// through 2.1.280 and 2.1.299 through 2.1.301 apart from locals and the chunk's
+// hashed name. 2.1.304 extended the description; UPDATE_DESCRIPTION_304 is its
+// text verbatim.
 const UPDATE_DESCRIPTION = "Check for updates and install if available";
 const UPDATE_DESCRIPTION_304 =
   "Check for updates and install if available; package-manager installs update through the package manager";
@@ -254,9 +255,38 @@ test("2.1.304: the extended update description is still rewritten and still veri
   assert.equal(result.patched, 3);
   assert.equal(check(result.content), null);
   const [registrations] = result.content.split(BOUNDARY);
-  const calls = await runUpdateCommand(registrations.slice(0, registrations.indexOf(';P.command("install [target]")')));
+  const cut = registrations.indexOf(';P.command("install [target]")');
+  assert.ok(cut > 0, "the install registration follows the update one");
+  const calls = await runUpdateCommand(registrations.slice(0, cut));
   assert.equal(calls.imported, false);
   assert.equal(calls.exitCode, 1);
+});
+
+test("all or nothing: an update or install registration that no longer matches refuses the module", () => {
+  // A registration whose action shape drifted: the command is still there,
+  // so leaving it out of the counts would keep the official updater reachable.
+  const driftedUpdate = updateCommand().replace("await import(", "await importChunk(");
+  const driftedInstall = installCommand().replace("await import(", "await importChunk(");
+  for (const [name, input] of [
+    ["update", `${driftedUpdate};${installCommand()}${BOUNDARY}${updaterModule(NAMES)}`],
+    ["install", `${updateCommand()};${driftedInstall}${BOUNDARY}${updaterModule(NAMES)}`],
+  ]) {
+    const result = patchDisableOfficialUpdater(input);
+    assert.equal(result.patched, 0, name);
+    assert.equal(result.candidates, 3, name);
+    assert.equal(result.content, input, name);
+  }
+});
+
+test("residual update check still fires with a chained call before the action, or an escaped quote", () => {
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  const moduleOnly = patchDisableOfficialUpdater(updaterModule(NAMES)).content;
+  const chained = updateCommand().replace(".action(", '.option("--force","x; y").action(');
+  assert.match(check(`${chained}${BOUNDARY}${moduleOnly}`), /residual update command/);
+  const quoted = updateCommand(undefined, undefined, undefined, undefined, 'Check for updates and install if available; run \\"doctor\\"');
+  assert.match(check(`${quoted}${BOUNDARY}${moduleOnly}`), /residual update command/);
+  // The patcher accepts the escaped quote as well.
+  assert.equal(patchDisableOfficialUpdater(quoted).patched, 1);
 });
 
 test("verifier rejects a build whose update command still imports the updater", () => {
