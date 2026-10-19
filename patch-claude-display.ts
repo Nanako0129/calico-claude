@@ -3009,8 +3009,12 @@ function patchDisableOfficialUpdater(content) {
   // the real binary running, measured: still alive after ten minutes because
   // other handles keep the event loop open. The write is awaited first so the
   // message is flushed on a pipe before exiting.
+  //
+  // The description is matched by its prefix: 2.1.304 appended "; package-
+  // manager installs update through the package manager" to it, and the exact
+  // match left the command unrewritten while P and `install` still patched.
   const updateCommand = new RegExp(
-    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available"\\)` +
+    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available[^"]*"\\)` +
       `\\.action\\(${identifier}\\(async\\((${identifier})\\)=>)\\{let\\{update:(${identifier})\\}=` +
       `await import\\("[^"]+"\\);await \\3\\(\\2\\)\\}`,
     "g"

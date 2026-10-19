@@ -2539,11 +2539,12 @@ const CHECKS: Check[] = [
       }
 
       // The explicit `update` subcommand bypasses P, so it is held separately:
-      // its action must print instead of importing the update chunk.
-      const updateHead =
-        '.command("update").alias("upgrade").description("Check for updates and install if available").action(';
+      // its action must print instead of importing the update chunk. The
+      // description is matched by prefix: 2.1.304 extended it, with a `;` in
+      // the new text.
       const rewrittenUpdate = new RegExp(
-        `${updateHead.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${identifier}\\(async\\(${identifier}\\)=>` +
+        `\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available[^"]*"\\)` +
+          `\\.action\\(${identifier}\\(async\\(${identifier}\\)=>` +
           `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build\\.[^"]*",r\\)\\);` +
           `process\\.exit\\(1\\)\\}`,
         "g"
@@ -2552,7 +2553,9 @@ const CHECKS: Check[] = [
       if (rewrittenUpdateCount !== 1) {
         problems.push(`expected exactly 1 rewritten update command, found ${rewrittenUpdateCount}`);
       }
-      if (/\.command\("update"\)\.alias\("upgrade"\)[^;]{0,200}let\{update:/.test(content)) {
+      // Skips the description as a whole string: since 2.1.304 it contains a
+      // `;`, which a `[^;]` scan stopped at, so the residual check never fired.
+      if (/\.command\("update"\)\.alias\("upgrade"\)\.description\("[^"]*"\)\.action\([^;]{0,100}let\{update:/.test(content)) {
         problems.push("residual update command that still imports the updater");
       }
 
