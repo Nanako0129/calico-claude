@@ -3001,16 +3001,23 @@ function patchDisableOfficialUpdater(content) {
   // launcher -- and so did the binary carrying the three rewrites above. Run as
   // calico-claude it would update the official install, not this one. Its
   // action lazily imports the update chunk, so replacing that body means
-  // nothing installs; the registration is identical in 2.1.276 through 2.1.280
-  // apart from locals and the chunk's hashed name, which are captured.
+  // nothing installs; the registration was measured identical in 2.1.276
+  // through 2.1.280 apart from locals and the chunk's hashed name, which are
+  // captured. 2.1.304 then extended its description (below).
   //
   // It must end the process itself. The update function it replaces calls
   // process.exit when done; setting process.exitCode and returning instead left
   // the real binary running, measured: still alive after ten minutes because
   // other handles keep the event loop open. The write is awaited first so the
   // message is flushed on a pipe before exiting.
+  //
+  // The description is matched by its prefix: 2.1.304 appended "; package-
+  // manager installs update through the package manager" to it, and the exact
+  // match left the command unrewritten while P and `install` still patched,
+  // which --assert-all accepted. The leftover-import check at the end of this
+  // function now turns any such miss into a loud zero.
   const updateCommand = new RegExp(
-    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available"\\)` +
+    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available(?:[^"\\\\]|\\\\.)*"\\)` +
       `\\.action\\(${identifier}\\(async\\((${identifier})\\)=>)\\{let\\{update:(${identifier})\\}=` +
       `await import\\("[^"]+"\\);await \\3\\(\\2\\)\\}`,
     "g"
@@ -3040,7 +3047,7 @@ function patchDisableOfficialUpdater(content) {
   // downloaded official binary's `install`, not this one, so upgrading an
   // in-place install that way is unaffected.
   const installCommand = new RegExp(
-    `(\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.[^"]*"\\)` +
+    `(\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.(?:[^"\\\\]|\\\\.)*"\\)` +
       `\\.option\\("--force","Force installation even if already installed"\\)` +
       `\\.action\\(${identifier}\\(async\\((${identifier}),(${identifier}),(${identifier})\\)=>)` +
       `\\{let\\{installHandler:(${identifier})\\}=await import\\("[^"]+"\\);` +
@@ -3055,6 +3062,18 @@ function patchDisableOfficialUpdater(content) {
       `process.exit(1)}`
     );
   });
+
+  // No action may still import the updater or the installer. Checked on what
+  // matters rather than on the registration text: whatever part of a
+  // registration drifts (description, alias order, the command name, the
+  // action wrapper), a missed rewrite leaves this import behind. One of each
+  // in the 2.1.301 and 2.1.304 bundles, measured, and no other text matches.
+  // A leftover refuses the whole module, so --assert-all names it.
+  const leftover = (output.match(new RegExp(`\\{let\\{(?:update|installHandler):${identifier}\\}=await import\\(`, "g")) ?? [])
+    .length;
+  if (leftover > 0) {
+    return { content, candidates: candidates + leftover, patched: 0 };
+  }
 
   return { content: output, candidates, patched };
 }

@@ -68,11 +68,16 @@ function behaviour(source, n, env = {}) {
   return sandbox.out;
 }
 
-// The CLI registration of `update` (alias `upgrade`), as it ships in 2.1.276
-// through 2.1.280 apart from locals and the chunk's hashed name.
-function updateCommand(action = "R", arg = "j", fn = "q", chunk = "/$bunfs/root/chunk-b7tb8zam.js") {
+// The CLI registration of `update` (alias `upgrade`), as measured in 2.1.276
+// through 2.1.280 and 2.1.299 through 2.1.301 apart from locals and the chunk's
+// hashed name. 2.1.304 extended the description; UPDATE_DESCRIPTION_304 is its
+// text verbatim.
+const UPDATE_DESCRIPTION = "Check for updates and install if available";
+const UPDATE_DESCRIPTION_304 =
+  "Check for updates and install if available; package-manager installs update through the package manager";
+function updateCommand(action = "R", arg = "j", fn = "q", chunk = "/$bunfs/root/chunk-b7tb8zam.js", description = UPDATE_DESCRIPTION) {
   return (
-    `P.command("update").alias("upgrade").description("Check for updates and install if available")` +
+    `P.command("update").alias("upgrade").description(${JSON.stringify(description)})` +
     `.action(${action}(async(${arg})=>{let{update:${fn}}=await import("${chunk}");await ${fn}(${arg})}))`
   );
 }
@@ -242,10 +247,62 @@ test("update command rewrite survives $ in locals and a different chunk name", a
   assert.equal(result.content.includes("let{update:"), false);
 });
 
+test("2.1.304: the extended update description is still rewritten and still verified", async () => {
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  const registration = updateCommand("R", "w", "y", "/$bunfs/root/chunk-kabbe4d5.js", UPDATE_DESCRIPTION_304);
+  const result = patchDisableOfficialUpdater(`${registration};${installCommand()}${BOUNDARY}${updaterModule(NAMES)}`);
+  assert.equal(result.candidates, 3);
+  assert.equal(result.patched, 3);
+  assert.equal(check(result.content), null);
+  const [registrations] = result.content.split(BOUNDARY);
+  const cut = registrations.indexOf(';P.command("install [target]")');
+  assert.ok(cut > 0, "the install registration follows the update one");
+  const calls = await runUpdateCommand(registrations.slice(0, cut));
+  assert.equal(calls.imported, false);
+  assert.equal(calls.exitCode, 1);
+});
+
+test("all or nothing: an update or install registration that no longer matches refuses the module", () => {
+  // Registrations that drifted but still import the updater or installer: the
+  // rewrite misses them, so leaving them out of the counts would keep the
+  // official updater reachable. Drift in the head (alias dropped, command
+  // renamed) is covered as well as drift in the description.
+  const update = updateCommand();
+  const install = installCommand();
+  for (const [name, input] of [
+    ["update description", `${update.replace("Check for updates", "Look for updates")};${install}`],
+    ["update alias dropped", `${update.replace('.alias("upgrade")', "")};${install}`],
+    ["install renamed", `${update};${install.replace("install [target]", "install [version]")}`],
+  ].map(([name, commands]) => [name, `${commands}${BOUNDARY}${updaterModule(NAMES)}`])) {
+    const result = patchDisableOfficialUpdater(input);
+    assert.equal(result.patched, 0, name);
+    assert.equal(result.candidates, 3, name);
+    assert.equal(result.content, input, name);
+  }
+});
+
+test("residual update check still fires with a chained call before the action, or an escaped quote", () => {
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  const moduleOnly = patchDisableOfficialUpdater(updaterModule(NAMES)).content;
+  const chained = updateCommand().replace(".action(", '.option("--force","x; y").action(');
+  assert.match(check(`${chained}${BOUNDARY}${moduleOnly}`), /residual update command/);
+  // JSON.stringify writes the quote as a single `\"`, as a minifier would.
+  const quoted = updateCommand(undefined, undefined, undefined, undefined, 'Check for updates and install if available; run "doctor"');
+  assert.ok(quoted.includes('run \\"doctor\\"'));
+  assert.match(check(`${quoted}${BOUNDARY}${moduleOnly}`), /residual update command/);
+  // The patcher accepts the escaped quote as well.
+  assert.equal(patchDisableOfficialUpdater(quoted).patched, 1);
+});
+
 test("verifier rejects a build whose update command still imports the updater", () => {
   const check = (content) => evaluatePatchModule("disable-official-updater", content);
   const moduleOnly = patchDisableOfficialUpdater(updaterModule(NAMES)).content;
-  assert.match(check(`${updateCommand()}${BOUNDARY}${moduleOnly}`), /residual update command/);
+  // The 2.1.304 description contains a `;`, which a semicolon-bounded scan
+  // would stop at and so never see the residual import.
+  for (const description of [UPDATE_DESCRIPTION, UPDATE_DESCRIPTION_304]) {
+    const registration = updateCommand(undefined, undefined, undefined, undefined, description);
+    assert.match(check(`${registration}${BOUNDARY}${moduleOnly}`), /residual update command/, description);
+  }
 });
 
 test("control: unpatched, the install command loads the installer", async () => {

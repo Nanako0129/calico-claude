@@ -2539,11 +2539,12 @@ const CHECKS: Check[] = [
       }
 
       // The explicit `update` subcommand bypasses P, so it is held separately:
-      // its action must print instead of importing the update chunk.
-      const updateHead =
-        '.command("update").alias("upgrade").description("Check for updates and install if available").action(';
+      // its action must print instead of importing the update chunk. The
+      // description is matched by prefix: 2.1.304 extended it, with a `;` in
+      // the new text.
       const rewrittenUpdate = new RegExp(
-        `${updateHead.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${identifier}\\(async\\(${identifier}\\)=>` +
+        `\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available(?:[^"\\\\]|\\\\.)*"\\)` +
+          `\\.action\\(${identifier}\\(async\\(${identifier}\\)=>` +
           `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build\\.[^"]*",r\\)\\);` +
           `process\\.exit\\(1\\)\\}`,
         "g"
@@ -2552,14 +2553,18 @@ const CHECKS: Check[] = [
       if (rewrittenUpdateCount !== 1) {
         problems.push(`expected exactly 1 rewritten update command, found ${rewrittenUpdateCount}`);
       }
-      if (/\.command\("update"\)\.alias\("upgrade"\)[^;]{0,200}let\{update:/.test(content)) {
+      // The import itself, not the registration around it: the old scan from
+      // `.alias("upgrade")` over `[^;]` stopped at the `;` that 2.1.304 put in
+      // the description, so it never fired. Exactly one such import exists in
+      // the 2.1.301 and 2.1.304 bundles, measured, as for `installHandler`.
+      if (content.includes("{let{update:")) {
         problems.push("residual update command that still imports the updater");
       }
 
       // `install [target]` would put the official build at the official
       // launcher, over a Calico build installed there; held the same way.
       const rewrittenInstall = new RegExp(
-        `\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.[^"]*"\\)` +
+        `\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.(?:[^"\\\\]|\\\\.)*"\\)` +
           `\\.option\\("--force","Force installation even if already installed"\\)` +
           `\\.action\\(${identifier}\\(async\\(${identifier},${identifier},${identifier}\\)=>` +
           `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build, so \`install\` is disabled[^"]*",r\\)\\);` +
