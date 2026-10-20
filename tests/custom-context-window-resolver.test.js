@@ -7,7 +7,8 @@
 // `--assert-all` only fails at zero, so none of these losses was visible there;
 // from 2.1.260 on the verifier caught them, because the resolver site is what
 // injects both markers. The module is now all-or-nothing, so the next reshape
-// reports zero patched and fails --assert-all instead.
+// reports zero patched and fails --assert-all instead: 2.1.305 (a block for the
+// 1M check, a second lookup) did exactly that, 3 candidates and 0 patched.
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const vm = require("node:vm");
@@ -38,12 +39,20 @@ const folded =
 const split =
   "function Mv(e,n){if(RKn(e,n))return 1e6;let r=RU(e);return Zc(e)&&Man(e)===null?Math.min(r,CXe):r}" +
   "function RU(e){let n=MHr(e);if(n!==void 0)return Man(e)??n.believed;if(Bk(e))return 1e6;return 200000}";
+// 2.1.305: the 1M check is a block returning the catalog window, and a second
+// one-parameter lookup runs before the helper. The wrapper as shipped; the
+// helper bodies are shortened.
+const blocked =
+  "function pE(e,n){if(mXn(e,n)){let h=Xa(qe(Mt(e)))?.context;return Math.max(h?.maximum_window??h?.window??0,n0)}" +
+  "let r=s5s(e);if(r!==null)return r;let s=o0(e);return kf(e)&&X_t(e)===null?Math.min(s,MCe):s}" +
+  "function o0(e){return 200000}";
 
 for (const [name, resolver] of [
   ["2.1.259 reads the headers parameter directly", bare],
   ["2.1.260 passes it through a helper first", wrapped],
   ["2.1.295 folds both 1M checks into one helper", folded],
   ["2.1.301 splits the override lookup into a helper", split],
+  ["2.1.305 blocks the 1M check and adds a second lookup", blocked],
 ]) {
   test(`resolver is patched when ${name}`, () => {
     const result = patchCustomContextWindows(resolver + otherSites);
@@ -105,6 +114,43 @@ test("2.1.301 wrapper returns the mapped window and otherwise behaves as shipped
   assert.equal(run(mapped).RU("gpt-5.6-sol"), 200000);
 });
 
+// The same contract on 2.1.305: a mapping wins over the 1M block and the new
+// lookup; without one, each upstream rule behaves as shipped.
+test("2.1.305 wrapper returns the mapped window and otherwise behaves as shipped", () => {
+  const { content } = patchCustomContextWindows(blocked + otherSites);
+  const run = (env, stubs = {}) => {
+    const context = {
+      process: { env },
+      mXn: () => false,
+      Xa: () => ({ context: { window: 1000000 } }),
+      qe: (x) => x,
+      Mt: (x) => x,
+      n0: 0,
+      s5s: () => null,
+      kf: () => true,
+      X_t: () => null,
+      MCe: 150000,
+      ...stubs,
+    };
+    vm.createContext(context);
+    vm.runInContext(content, context);
+    return context.pE;
+  };
+  const mapped = { CALICO_MODEL_CONTEXT_WINDOWS: JSON.stringify({ "gpt-5.6-sol": 372000 }) };
+  const oneMillion = { mXn: () => true };
+  const looked = { s5s: () => 512000 };
+
+  assert.equal(run(mapped)("gpt-5.6-sol", []), 372000);
+  assert.equal(run(mapped, oneMillion)("gpt-5.6-sol", []), 372000);
+  assert.equal(run(mapped, looked)("gpt-5.6-sol", []), 372000);
+  for (const env of [mapped, {}]) {
+    assert.equal(run(env)("other-model", []), 150000, "capped helper result");
+    assert.equal(run(env, oneMillion)("other-model", []), 1000000, "catalog window from the block");
+    assert.equal(run(env, looked)("other-model", []), 512000, "the new lookup");
+    assert.equal(run(env, { kf: () => false })("other-model", []), 200000, "uncapped helper result");
+  }
+});
+
 // Missing or duplicated resolver: nothing is rewritten, so the status-line site
 // never calls a __calico_display_window that no injection defines.
 test("the module is all-or-nothing", () => {
@@ -112,6 +158,7 @@ test("the module is all-or-nothing", () => {
     ["no resolver", otherSites, 3],
     ["unrecognised resolver", "function Mv(e,n){return 200000}" + otherSites, 3],
     ["two resolvers", folded + split + otherSites, 5],
+    ["two resolvers, one of them 2.1.305", split + blocked + otherSites, 5],
     ["no status-line site", split + effectiveSite + precomputeSite, 3],
   ]) {
     const result = patchCustomContextWindows(source);
@@ -146,6 +193,13 @@ test("a folded- or split-shape function that is not the resolver is left alone",
     split.replace("let r=RU(e)", "let r=RU(n)"),
     // Returns something other than the helper's result.
     split.replace("Math.min(r,CXe):r}", "Math.min(r,CXe):CXe}"),
+    // 2.1.305 shape: parameter order, a lookup that is not returned when
+    // non-null, a lookup on the headers parameter, and a tail that ignores
+    // the helper's result.
+    blocked.replace("mXn(e,n)", "mXn(n,e)"),
+    blocked.replace("if(r!==null)return r;", "if(r!==null)return 0;"),
+    blocked.replace("let r=s5s(e)", "let r=s5s(n)"),
+    blocked.replace("Math.min(s,MCe):s}", "Math.min(s,MCe):MCe}"),
   ]) {
     const source = decoy + otherSites;
     const result = patchCustomContextWindows(source);

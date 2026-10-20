@@ -3298,6 +3298,20 @@ function patchCustomContextWindows(content) {
     // not exported from its chunk, and the wrapper's opening is unique in the
     // bundle. Nothing here enforces that for later versions.
     String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);return (?:[^;{}]*:)?\6\})`,
+    // 2.1.305 turned the 1M check into a block returning the catalog window
+    // and put a second one-parameter lookup ahead of the helper:
+    //
+    //   2.1.304  function iE(e,n){if(x8n(e,n))return 1e6;let r=qU(e);return yf(e)&&Gun(e)===null?Math.min(r,PJe):r}
+    //   2.1.305  function pE(e,n){if(mXn(e,n)){let h=Xa(qe(Mt(e)))?.context;return Math.max(h?.maximum_window??h?.window??0,n0)}
+    //              let r=s5s(e);if(r!==null)return r;let s=o0(e);return kf(e)&&X_t(e)===null?Math.min(s,MCe):s}
+    //
+    // Pinned the same way as 2.1.301: the block (no nested braces), the
+    // lookup returning its non-null result, then the single return ending in
+    // the helper's result. On the darwin-arm64 2.1.305 bundle, measured:
+    // `pE`'s opening is unique, it is called twice in its module as `iE` was,
+    // and `s5s` and `o0` are each called only from it and not exported.
+    String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)\{[^{}]*\}let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==null\)return \6;` +
+      String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);return (?:[^;{}]*:)?\7\})`,
   ].map((body) => new RegExp(resolverHead + body, "g"));
 
   // Claude's stock pipeline subtracts an output reserve and may precompute at
