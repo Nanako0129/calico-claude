@@ -200,6 +200,9 @@ test("a folded- or split-shape function that is not the resolver is left alone",
     blocked.replace("if(r!==null)return r;", "if(r!==null)return 0;"),
     blocked.replace("let r=s5s(e)", "let r=s5s(n)"),
     blocked.replace("Math.min(s,MCe):s}", "Math.min(s,MCe):MCe}"),
+    // The block is matched as one brace-free unit: a block holding a nested
+    // `{…}` is not this shape, so a loosened `[^{}]*` would show up here.
+    blocked.replace("let h=Xa(qe(Mt(e)))?.context;", "if(h){h=0}let h=Xa(qe(Mt(e)))?.context;"),
   ]) {
     const source = decoy + otherSites;
     const result = patchCustomContextWindows(source);

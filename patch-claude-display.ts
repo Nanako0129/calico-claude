@@ -3253,7 +3253,7 @@ function patchCustomContextWindows(content) {
   // --assert-all, since it only fails at zero — a silent loss of coverage.
   // Capture both and emit the captures.
   //
-  // Upstream has since reshaped the resolver three more times. Each known
+  // Upstream has since reshaped the resolver four more times. Each known
   // shape is a separate pattern below; all share the same head and the same
   // injection, which goes at the head of the function that takes both the
   // model and the headers parameter, before any upstream rule. That placement
@@ -3307,9 +3307,11 @@ function patchCustomContextWindows(content) {
     //
     // Pinned the same way as 2.1.301: the block (no nested braces), the
     // lookup returning its non-null result, then the single return ending in
-    // the helper's result. On the darwin-arm64 2.1.305 bundle, measured:
-    // `pE`'s opening is unique, it is called twice in its module as `iE` was,
-    // and `s5s` and `o0` are each called only from it and not exported.
+    // the helper's result. Measured on all five 2.1.305 platform bundles (the
+    // wrapper is `pE`, `aE` or `iE` by platform): its opening is unique, it is
+    // called twice in its module as 2.1.304's was, and the lookup and the
+    // helper are each called only from it and not exported. Nothing here
+    // enforces that for later versions.
     String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)\{[^{}]*\}let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==null\)return \6;` +
       String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);return (?:[^;{}]*:)?\7\})`,
   ].map((body) => new RegExp(resolverHead + body, "g"));
@@ -3345,6 +3347,7 @@ function patchCustomContextWindows(content) {
   // injection defines. That happened on 2.1.260, 2.1.295 and 2.1.301; the
   // effective-window site was lost the same way on 2.1.281 and 2.1.287. Only
   // the verifier caught them, and `npm run patch:native` does not run it.
+  // 2.1.305's reshape was the first to meet this gate: 3 candidates, 0 patched.
   // Reporting zero patched with non-zero candidates is the loud form: it fails
   // --assert-all and names this module. A second match is refused too, since
   // the resolver injection would declare its helper twice in one scope.
