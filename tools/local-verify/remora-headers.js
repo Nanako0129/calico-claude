@@ -15,6 +15,8 @@
 //
 // --disable takes the patch-native disable list. The check needs all three
 // modules below, so it reports itself skipped when any of them is disabled.
+// With compact-body-policy enabled it also checks the request body: /compact,
+// and only /compact, carries CALICO_COMPACT_EFFORT as its effort.
 
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
@@ -38,6 +40,9 @@ if (off.length > 0) {
 }
 
 const TURN_TIMEOUT_MS = 120_000;
+const compactBody = !disabled.includes("compact-body-policy");
+// Not a real effort level, so it can only have come from the rewrite.
+const PROBE_EFFORT = "calico-probe";
 const NAMES = ["x-calico-request-source", "x-calico-prompt-id", "x-calico-active-turn-version"];
 // Each name all-lowercase and then Title-Case. The lowercase line lands on
 // Calico's own key in the factory's header object, so it catches Calico's
@@ -137,8 +142,11 @@ const run = (port, env, args) =>
         seen = mockLog.length;
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
-      const requests = [...mockLog.slice(before).matchAll(/^REQUEST .* calico=(\{.*\})$/gm)].map(
-        (match) => JSON.parse(match[1])
+      const requests = [
+        ...mockLog.slice(before).matchAll(/^REQUEST .* effort=(\S+) calico=(\{.*\})$/gm),
+      ].map((match) =>
+        // Non-enumerable, so the header checks below never see it.
+        Object.defineProperty(JSON.parse(match[2]), "effort", { value: JSON.parse(match[1]) })
       );
       if (requests.length === 0) finish(1, `${args.join(" ")} sent no request`);
       resolve(requests);
@@ -147,16 +155,22 @@ const run = (port, env, args) =>
 
 (async () => {
   const port = await waitForPort();
-  const remora = { ANTHROPIC_CUSTOM_HEADERS: FORGED, REMORA_ACTIVE: "1" };
+  const remora = {
+    ANTHROPIC_CUSTOM_HEADERS: FORGED,
+    REMORA_ACTIVE: "1",
+    CALICO_COMPACT_EFFORT: PROBE_EFFORT,
+  };
   const session = crypto.randomUUID();
   const main = await run(port, remora, ["--print", "ping", "--session-id", session]);
   const compact = await run(port, remora, ["--resume", session, "--print", "/compact"]);
   const plain = await run(port, { ANTHROPIC_CUSTOM_HEADERS: "", REMORA_ACTIVE: "" }, ["--print", "ping"]);
   const show = (requests) => requests.map((h) => JSON.stringify(h)).join(" ");
+
   console.log(`binary        : ${binary}`);
   console.log(`main turn     : ${show(main)}`);
   console.log(`compact       : ${show(compact)}`);
   console.log(`no remora     : ${show(plain)}`);
+  console.log(`effort        : main ${main.map((h) => h.effort)} compact ${compact.map((h) => h.effort)}`);
 
   const forgedSent = [...main, ...compact].filter((h) =>
     Object.values(h).some((value) => value.includes("forged"))
@@ -182,6 +196,17 @@ const run = (port, env, args) =>
   }
   if (plain.some((h) => Object.keys(h).length > 0)) {
     finish(1, "without REMORA_ACTIVE the request carries an x-calico header");
+  }
+  if (compactBody) {
+    // Every compact-sourced request, so one rewritten request cannot cover
+    // another that was missed.
+    const compactSourced = compact.filter((h) => h["x-calico-request-source"] === "compact");
+    if (!compactSourced.every((h) => h.effort === PROBE_EFFORT)) {
+      finish(1, "/compact does not carry CALICO_COMPACT_EFFORT: compact-body-policy did not rewrite it");
+    }
+    if (main.some((h) => h.effort === PROBE_EFFORT)) {
+      finish(1, "the main turn carries CALICO_COMPACT_EFFORT");
+    }
   }
   console.log("remora headers: OK");
   finish(0);

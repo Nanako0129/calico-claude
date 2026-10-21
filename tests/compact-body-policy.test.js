@@ -473,3 +473,36 @@ test("hoisted and inline session-id anchors together patch nothing", () => {
   assert.equal(result.patched, 0);
   assert.equal(result.content, bothShapes);
 });
+
+// 2.1.307 moved the destructure into the body: `async function ON(e){let{apiKey:
+// r,…}=e,…`. The factory opening now ends inside that `let` chain, so the wrap
+// is the next declarator rather than a statement; executed, not just matched.
+const fixture307 = fixture285.replace(
+  "async function Zie({apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b}){let B=0,",
+  "async function Zie(p){let{apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b,noResponseRetryLedger:q}=p,B=0,"
+);
+
+test("2.1.307 body destructure: the wrap is the declarator after it", async () => {
+  assert.notEqual(fixture307, fixture285);
+  const withActive = patchActiveTurnPromptIdentity(fixture307);
+  const withCompact = patchCompactRequestSource(withActive.content);
+  const withAll = patchCompactBodyPolicy(withCompact.content);
+  assert.equal(withActive.patched, 2);
+  assert.equal(withCompact.patched, 1);
+  assert.equal(withAll.patched, 1);
+  assert.ok(
+    withAll.content.includes(
+      '=p,__calicoCompactFetchWrapped=process.env.REMORA_ACTIVE==="1"&&h==="compact"?s=__calicoCompactWrapFetch(s):void 0,B=0,'
+    )
+  );
+  assert.equal(evaluatePatchModule("compact-request-source", withAll.content), null);
+  assert.equal(evaluatePatchModule("compact-body-policy", withAll.content), null);
+
+  const context = runPatched(withAll.content);
+  const body = { model: "gpt-5.6-sol", output_config: { effort: "xhigh" } };
+  const compact = await callWrappedFetch(context, "compact", body);
+  assert.equal(JSON.parse(compact.calls[0].init.body).output_config.effort, "medium");
+  assert.equal(compact.headers["x-calico-request-source"], "compact");
+  const main = await callWrappedFetch(context, "repl_main_thread", body);
+  assert.equal(JSON.parse(main.calls[0].init.body).output_config.effort, "xhigh");
+});

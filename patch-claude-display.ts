@@ -5261,10 +5261,20 @@ function insertAfter(text, anchor, insertion) {
 // Capture the parameter list as one run and look fields up by name instead, so
 // upstream may reorder, insert, rename around, or default anything as long as
 // the fields this patcher actually reads are still present. `[^{}]*` keeps the
-// run inside the one parameter object: a nested destructure or an object
-// default would end the match early rather than swallow the function body.
+// run inside the one destructure (the parameter object, or on 2.1.307 the
+// body's `let{…}`): a nested destructure or an object default would end the
+// match early rather than swallow the function body.
+//
+// 2.1.307 moved the destructure into the body: `async function ON(e){let{
+// apiKey:r,…}=e,…`. Both spellings are accepted; the list is group 1 on the
+// old one and group 3 on the new one (group 2 is the parameter), so read it
+// through clientFactoryFields. The new opening ends inside the `let` chain.
 const CLIENT_FACTORY_SOURCE =
-  "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
+  "async function [A-Za-z_$][\\w$]*\\((?:\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{|([A-Za-z_$][\\w$]*)\\)\\{let\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}=\\2,)";
+
+function clientFactoryFields(match) {
+  return match[1] ?? match[3];
+}
 
 // A fresh RegExp per call: these are `g`-flagged and driven by exec() loops, so
 // a shared instance would carry lastIndex between modules.
@@ -5440,8 +5450,8 @@ function patchActiveTurnPromptIdentity(content) {
     // (so `<ctx>` is in scope), and the header entry below finds the spread on
     // its own shape. So pin only the sanitizer assignment and let upstream put
     // whatever it likes between that and the header object.
-    const sourceParam = clientFactoryLocal(clientStartMatch[1], "source");
-    const contextParam = clientFactoryLocal(clientStartMatch[1], "agentContext");
+    const sourceParam = clientFactoryLocal(clientFactoryFields(clientStartMatch), "source");
+    const contextParam = clientFactoryLocal(clientFactoryFields(clientStartMatch), "agentContext");
     if (!sourceParam || !contextParam) {
       continue;
     }
@@ -5574,7 +5584,7 @@ function patchCompactRequestSource(content) {
     if (hasSpread && anchor === null) {
       continue;
     }
-    const sourceParam = clientFactoryLocal(clientStartMatch[1], "source");
+    const sourceParam = clientFactoryLocal(clientFactoryFields(clientStartMatch), "source");
     if (!sourceParam) {
       continue;
     }
@@ -5638,7 +5648,7 @@ function patchCalicoHeaderWire(content) {
   const clientStartPattern = clientFactoryPattern();
   let clientStartMatch;
   while ((clientStartMatch = clientStartPattern.exec(output)) !== null) {
-    if (!clientFactoryLocal(clientStartMatch[1], "fetchOverride")) {
+    if (!clientFactoryLocal(clientFactoryFields(clientStartMatch), "fetchOverride")) {
       continue;
     }
     const start = clientStartMatch.index;
@@ -5741,13 +5751,19 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     }
 
     candidates += 1;
-    const fetchOverrideParam = clientFactoryLocal(clientStartMatch[1], "fetchOverride");
-    const sourceParam = clientFactoryLocal(clientStartMatch[1], "source");
+    const fetchOverrideParam = clientFactoryLocal(clientFactoryFields(clientStartMatch), "fetchOverride");
+    const sourceParam = clientFactoryLocal(clientFactoryFields(clientStartMatch), "source");
     if (!fetchOverrideParam || !sourceParam) {
       continue;
     }
-    const inject =
-      `if(process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"){${fetchOverrideParam}=__calicoCompactWrapFetch(${fetchOverrideParam})}`;
+    // Right after the opening either way. Old shape: the body's first
+    // statement. 2.1.307 shape: the opening ends inside the body's `let`
+    // chain, right after the destructure, so the wrap is the next declarator;
+    // the destructured locals are `let` bindings and already assigned there.
+    const wrap = `${fetchOverrideParam}=__calicoCompactWrapFetch(${fetchOverrideParam})`;
+    const inject = clientStartMatch[2]
+      ? `__calicoCompactFetchWrapped=process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"?${wrap}:void 0,`
+      : `if(process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"){${wrap}}`;
     const nextSegment =
       clientStartMatch[0] + inject + segment.slice(clientStartMatch[0].length);
     if (nextSegment === segment) {

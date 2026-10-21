@@ -122,8 +122,11 @@ const SESSION_ID_HEADER_KEY =
 // here: the contract is shared by the patcher's four client-factory modules
 // (each calls clientFactoryPattern()) and the verifier checks that call
 // clientFactorySegments().
+// 2.1.307 moved the destructure into the body (`async function ON(e){let{
+// apiKey:r,…}=e,`): group 1 is the old list, group 2 the parameter and group 3
+// the new list.
 const CLIENT_FACTORY_SOURCE =
-  "async function [A-Za-z_$][\\w$]*\\(\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{";
+  "async function [A-Za-z_$][\\w$]*\\((?:\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{|([A-Za-z_$][\\w$]*)\\)\\{let\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}=\\2,)";
 
 // Kept in lockstep with maskStringLiterals/clientFactoryLocal in
 // patch-claude-display.ts. Sharing the lookup is what makes the masking matter
@@ -201,12 +204,13 @@ function hoistedSessionHeader(content: string): { name: string } | null {
 // the next module entirely.
 function clientFactorySegments(
   content: string
-): { index: number; opening: string; fields: string; segment: string }[] {
+): { index: number; opening: string; fields: string; param: string | null; segment: string }[] {
   const pattern = new RegExp(CLIENT_FACTORY_SOURCE, "g");
   const segments: {
     index: number;
     opening: string;
     fields: string;
+    param: string | null;
     segment: string;
   }[] = [];
   let match: RegExpExecArray | null;
@@ -216,7 +220,8 @@ function clientFactorySegments(
     segments.push({
       index: start,
       opening: match[0],
-      fields: match[1],
+      fields: match[1] ?? match[3],
+      param: match[2] ?? null,
       segment: boundedToModule(
         content.slice(start, next === -1 ? content.length : next)
       ),
@@ -883,7 +888,7 @@ const CHECKS: Check[] = [
       // the header reads the factory's own `source` binding, which a single
       // regex can only express by pinning where that field sits.
       const hoisted = hoistedSessionHeader(content);
-      const owned = clientFactorySegments(content).some(({ fields, segment }) => {
+      const owned = clientFactorySegments(content).some(({ fields, param, segment }) => {
         const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
         const sourceLocal = clientFactoryLocal(fields, "source");
         if (!fetchOverrideLocal || !sourceLocal) {
@@ -891,7 +896,9 @@ const CHECKS: Check[] = [
         }
         const source = escapeRegExp(sourceLocal);
         const fetchOverride = escapeRegExp(fetchOverrideLocal);
-        const head = `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?`;
+        const head = param
+          ? `^async function [A-Za-z_$][\\w$]*\\(${escapeRegExp(param)}\\)\\{let\\{[\\s\\S]*?`
+          : `^async function [A-Za-z_$][\\w$]*\\([\\s\\S]*?\\)\\{(?:if\\(process\\.env\\.REMORA_ACTIVE==="1"&&${source}==="compact"\\)\\{${fetchOverride}=__calicoCompactWrapFetch\\(${fetchOverride}\\)\\})?let [\\s\\S]*?`;
         // Written on every remora request, null unless compact: the SDK
         // merges ANTHROPIC_CUSTOM_HEADERS back underneath, and
         // calico-header-wire only enforces names this object carries (#78).
@@ -993,20 +1000,24 @@ const CHECKS: Check[] = [
       // arm64 into `r`), so the inject is matched by shape with the source and
       // fetchOverride locals captured, never pinned.
       const wrapInjectPattern =
-        /if\(process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*==="compact"\)\{([A-Za-z_$][\w$]*)=__calicoCompactWrapFetch\(\1\)\}/g;
-      // The wrap must be the first statement of a factory, gated on that same
+        /if\(process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*==="compact"\)\{([A-Za-z_$][\w$]*)=__calicoCompactWrapFetch\(\1\)\}|__calicoCompactFetchWrapped=process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*==="compact"\?([A-Za-z_$][\w$]*)=__calicoCompactWrapFetch\(\2\):void 0,/g;
+      // The wrap must directly follow a factory's opening (its first statement,
+      // or on the 2.1.307 shape the declarator after the destructure), gated on that same
       // factory's own `source` binding and rewriting its own `fetchOverride` —
       // resolved by name so an inserted or defaulted field cannot hide them.
       const ownedFactories = clientFactorySegments(content).filter(
-        ({ opening, fields, segment }) => {
+        ({ opening, fields, param, segment }) => {
           const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
           const sourceLocal = clientFactoryLocal(fields, "source");
           if (!fetchOverrideLocal || !sourceLocal) {
             return false;
           }
-          const wrap =
-            `if(process.env.REMORA_ACTIVE==="1"&&${sourceLocal}==="compact")` +
-            `{${fetchOverrideLocal}=__calicoCompactWrapFetch(${fetchOverrideLocal})}`;
+          // Kept in lockstep with patchCompactBodyPolicy: on the 2.1.307
+          // shape the wrap is the declarator right after the destructure.
+          const assign = `${fetchOverrideLocal}=__calicoCompactWrapFetch(${fetchOverrideLocal})`;
+          const wrap = param
+            ? `__calicoCompactFetchWrapped=process.env.REMORA_ACTIVE==="1"&&${sourceLocal}==="compact"?${assign}:void 0,`
+            : `if(process.env.REMORA_ACTIVE==="1"&&${sourceLocal}==="compact"){${assign}}`;
           return segment.startsWith(opening + wrap);
         }
       );
