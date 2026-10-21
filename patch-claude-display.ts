@@ -5261,8 +5261,9 @@ function insertAfter(text, anchor, insertion) {
 // Capture the parameter list as one run and look fields up by name instead, so
 // upstream may reorder, insert, rename around, or default anything as long as
 // the fields this patcher actually reads are still present. `[^{}]*` keeps the
-// run inside the one parameter object: a nested destructure or an object
-// default would end the match early rather than swallow the function body.
+// run inside the one destructure (the parameter object, or on 2.1.307 the
+// body's `let{…}`): a nested destructure or an object default would end the
+// match early rather than swallow the function body.
 //
 // 2.1.307 moved the destructure into the body: `async function ON(e){let{
 // apiKey:r,…}=e,…`. Both spellings are accepted; the list is group 1 on the

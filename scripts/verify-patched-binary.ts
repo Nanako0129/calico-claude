@@ -1000,7 +1000,7 @@ const CHECKS: Check[] = [
       // arm64 into `r`), so the inject is matched by shape with the source and
       // fetchOverride locals captured, never pinned.
       const wrapInjectPattern =
-        /(?:if\(|__calicoCompactFetchWrapped=)process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*==="compact"(?:\)\{([A-Za-z_$][\w$]*)=__calicoCompactWrapFetch\(\1\)\}|\?([A-Za-z_$][\w$]*)=__calicoCompactWrapFetch\(\2\):void 0,)/g;
+        /if\(process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*==="compact"\)\{([A-Za-z_$][\w$]*)=__calicoCompactWrapFetch\(\1\)\}|__calicoCompactFetchWrapped=process\.env\.REMORA_ACTIVE==="1"&&[A-Za-z_$][\w$]*==="compact"\?([A-Za-z_$][\w$]*)=__calicoCompactWrapFetch\(\2\):void 0,/g;
       // The wrap must directly follow a factory's opening (its first statement,
       // or on the 2.1.307 shape the declarator after the destructure), gated on that same
       // factory's own `source` binding and rewriting its own `fetchOverride` —

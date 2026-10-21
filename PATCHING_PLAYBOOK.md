@@ -380,6 +380,12 @@ Old bundle shapes we match:
   `…,c=<sanitizer>(i)?void 0:i,u=<extraHeaders>(),p={…,"X-Claude-Code-Session-Id":<sid>(),...u,…}`,
   where `c` is the sanitized agent context, `u` the extra-header object, `p` the header literal, and
   `...u,` the extra-header spread
+- 2.1.307 destructures in the body instead: `async function ON(e){let{apiKey:r,…,source:b,…,
+  fetchOverride:h,…}=e,z=…`. `CLIENT_FACTORY_SOURCE` accepts both spellings (field list in group 1
+  or 3, the parameter in group 2; read through `clientFactoryFields`). On this shape the opening ends
+  inside the body's `let` chain, so `compact-body-policy` injects its wrap as the next declarator
+  (`__calicoCompactFetchWrapped=process.env.REMORA_ACTIVE==="1"&&b==="compact"?h=__calicoCompactWrapFetch(h):void 0,`)
+  rather than a statement; a statement before the `let` would break the anchor itself
 - 2.1.238 appends `,credentials:s` to the parameter object
   (`…,source:o,agentContext:i,credentials:s}`). Because that consumes the `s` binding, every following
   minified body local shifts by one letter: `c=…,u=…,p={` becomes `u=…,d=…,f={` and the spread `...u,`

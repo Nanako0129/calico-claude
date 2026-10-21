@@ -170,7 +170,7 @@ const run = (port, env, args) =>
   console.log(`main turn     : ${show(main)}`);
   console.log(`compact       : ${show(compact)}`);
   console.log(`no remora     : ${show(plain)}`);
-  console.log(`effort       : main ${main.map((h) => h.effort)} compact ${compact.map((h) => h.effort)}`);
+  console.log(`effort        : main ${main.map((h) => h.effort)} compact ${compact.map((h) => h.effort)}`);
 
   const forgedSent = [...main, ...compact].filter((h) =>
     Object.values(h).some((value) => value.includes("forged"))
@@ -198,7 +198,10 @@ const run = (port, env, args) =>
     finish(1, "without REMORA_ACTIVE the request carries an x-calico header");
   }
   if (compactBody) {
-    if (!compact.some((h) => h.effort === PROBE_EFFORT)) {
+    // Every compact-sourced request, so one rewritten request cannot cover
+    // another that was missed.
+    const compactSourced = compact.filter((h) => h["x-calico-request-source"] === "compact");
+    if (!compactSourced.every((h) => h.effort === PROBE_EFFORT)) {
       finish(1, "/compact does not carry CALICO_COMPACT_EFFORT: compact-body-policy did not rewrite it");
     }
     if (main.some((h) => h.effort === PROBE_EFFORT)) {
