@@ -29,7 +29,7 @@ const server = http.createServer((req, res) => {
       Object.entries(req.headers).filter(([name]) => name.startsWith("x-calico-"))
     );
     process.stderr.write(
-      `REQUEST thinking=${JSON.stringify(parsed.thinking)} stream=${parsed.stream} calico=${JSON.stringify(calico)}\n`
+      `REQUEST thinking=${JSON.stringify(parsed.thinking)} stream=${parsed.stream} effort=${JSON.stringify(parsed.output_config?.effort ?? null)} calico=${JSON.stringify(calico)}\n`
     );
 
     if (!parsed.stream) {
