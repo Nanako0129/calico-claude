@@ -1884,12 +1884,14 @@ const CHECKS: Check[] = [
       // result's own preCompactTokenCount and compactMetadata.preTokens, which
       // is what 2.1.267 reads. Checking only one would pass a build that had
       // silently lost the other era's source.
-      // From 2.1.314 the renderer returns an object and the caller spreads it,
-      // so the producer sits behind `...` instead of `displayText:`.
+      // Anchored on the producer's own assignment, not on what precedes it:
+      // the lead in front of it is upstream's (`displayText:` until 2.1.312,
+      // a `...` spread from 2.1.314) and pinning it here only added a third
+      // place to update on every drift. Placement is asserted by `wired` below.
       const producer =
-        /(?:displayText:|\.\.\.)\(globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{let __cc_m=__cc_r\?\.boundaryMarker\?\.compactMetadata,__cc_a=__cc_r\?\.preCompactTokenCount\?\?__cc_m\?\.preTokens,__cc_b=__cc_m\?\.postTokens;/;
+        /globalThis\.__calico_compact_saved=\(\(__cc_r\)=>\{let __cc_m=__cc_r\?\.boundaryMarker\?\.compactMetadata,__cc_a=__cc_r\?\.preCompactTokenCount\?\?__cc_m\?\.preTokens,__cc_b=__cc_m\?\.postTokens;/;
       if (!producer.test(content)) {
-        return "the saving is not computed at the compact command's displayText site";
+        return "the saving is not computed at the compact command's call site";
       }
       const consumer =
         /\.dim\("Compacted "\+\(\(\)=>\{let __cc_s=globalThis\.__calico_compact_saved;globalThis\.__calico_compact_saved=void 0;return __cc_s\?\?""\}\)\(\)\+/;

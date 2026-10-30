@@ -199,6 +199,11 @@ test("handles the 2.1.314 spread renderer result", () => {
   assert.equal(out.displayText, "DIM(Compacted · saved 256.3k tokens (ctrl+o to see full summary))");
   assert.equal(out.displayTextIsHintOnly, true);
   assert.equal(finish(300000, undefined).displayText, "DIM(Compacted (ctrl+o to see full summary))");
+  // The renderer's own object is what gets spread, so its flag still tracks
+  // the user display message rather than being frozen by the rewrite.
+  const withMessage = context.finish(outcome267(300000, 43700), { options: { verbose: false } }, "hook said hi");
+  assert.equal(withMessage.displayTextIsHintOnly, false);
+  assert.match(withMessage.displayText, /saved 256\.3k tokens/);
 });
 
 // preCompactTokenCount wins when both are present, so a bundle carrying the old

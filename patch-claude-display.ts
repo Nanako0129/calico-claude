@@ -3436,8 +3436,9 @@ function patchCompactTokensSaved(content) {
   // anchor that drifts silently. See __calico_display_window for the same
   // channel used for the harder reason (genuinely different chunks).
   //
-  // The renderer's minified name is `w` on every version measured, which is
-  // also the name of 111 other functions in the bundle. It is therefore never
+  // The renderer's minified name was `w` on 2.1.259 through 2.1.263 (also the
+  // name of 111 other functions in those bundles) and has since been `O`, `D`
+  // and `I`. It is therefore never
   // matched by name: the call site below is what identifies it, and the second
   // pattern keys off the string literal, which is unique bundle-wide.
   // The spread is captured whole, not assumed to be `<local>.result`. 2.1.267
