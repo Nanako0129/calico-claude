@@ -3462,8 +3462,18 @@ function patchCompactTokensSaved(content) {
   // can re-emit it verbatim — so it accepts a member chain now. Pinning it to a
   // bare identifier cost the call-site match and, with it, the module: the
   // render anchor still matched, so this reported 1 candidate and 0 patched.
+  //
+  // 2.1.314 made the renderer return an object carrying displayText (plus a new
+  // displayTextIsHintOnly flag), and the caller now spreads it:
+  //
+  //   2.1.312  displayText:D(e.options.verbose,E),
+  //   2.1.314  ...I(e.options.verbose,w),
+  //
+  // Both leads are accepted and re-emitted verbatim. Spreading a parenthesised
+  // comma expression spreads its last operand, so the sequenced producer works
+  // unchanged in either position.
   const callSitePattern =
-    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},displayText:([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\2\)/g;
+    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},(displayText:|\.\.\.)([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\2\)/g;
 
   // Reads the compaction result rather than the caller's `preTokens`/
   // `postTokens` locals: those are declared ~700 characters earlier and only
@@ -3517,9 +3527,9 @@ function patchCompactTokensSaved(content) {
     // `spreadExpr` is the whole spread argument as it appears upstream —
     // `<local>.result` up to 2.1.266, a bare `<local>` from 2.1.267 — so it is
     // re-emitted verbatim and never has a suffix appended to it.
-    (full, spreadExpr, displayVar, renderFn, ctxVar) =>
+    (full, spreadExpr, displayVar, lead, renderFn, ctxVar) =>
       `compactionResult:{...${spreadExpr},userDisplayMessage:${displayVar}},` +
-      `displayText:(globalThis.__calico_compact_saved=${summary}(${spreadExpr}),` +
+      `${lead}(globalThis.__calico_compact_saved=${summary}(${spreadExpr}),` +
       `${renderFn}(${ctxVar},${displayVar}))`
   );
 

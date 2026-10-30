@@ -31,15 +31,23 @@ const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 // context (`w(e.options.verbose,y)`). Nothing in the module reads that
 // argument, but pinning it to an identifier cost the call-site match and with
 // it the module — 1 candidate, 0 patched, release blocked.
+//
+// 2.1.314 made the renderer return `{displayText,displayTextIsHintOnly}` and the
+// caller spread it (`...w(e.options.verbose,y)`). The call-site anchor pinned
+// `displayText:` and went to 1 candidate, 0 patched.
 const fixture = (resultVar, era = "pre267") => {
-  const verbose = era === "v271" ? "s" : "s.options.verbose";
-  const contextArg = era === "v271" ? "e.options.verbose" : "e";
+  const memberArg = era === "v271" || era === "v314";
+  const verbose = memberArg ? "s" : "s.options.verbose";
+  const contextArg = memberArg ? "e.options.verbose" : "e";
+  const rendered = 'ie.dim("Compacted "+m.join(`\\n`))';
+  const returned = era === "v314" ? `{displayText:${rendered},displayTextIsHintOnly:!e&&!n}` : rendered;
+  const lead = era === "v314" ? "..." : "displayText:";
   return `
 var ie={dim:(s)=>"DIM("+s+")"};
 function T4(){return tipText}
 function p_(){return"ctrl+o"}
-function w(s,e){let n=T4("tip"),o=p_("app:toggleTranscript","Global","ctrl+o"),m=[...${verbose}?[]:[\`(\${o} to see full summary)\`],...e?[e]:[],...n?[n]:[]];return ie.dim("Compacted "+m.join(\`\\n\`))}
-function finish(${resultVar},e,y){return{type:"compact",compactionResult:{...${resultVar}${era === "pre267" ? ".result" : ""},userDisplayMessage:y},displayText:w(${contextArg},y)}}
+function w(s,e){let n=T4("tip"),o=p_("app:toggleTranscript","Global","ctrl+o"),m=[...${verbose}?[]:[\`(\${o} to see full summary)\`],...e?[e]:[],...n?[n]:[]];return ${returned}}
+function finish(${resultVar},e,y){return{type:"compact",compactionResult:{...${resultVar}${era === "pre267" ? ".result" : ""},userDisplayMessage:y},${lead}w(${contextArg},y)}}
 function renderOnly(e,y){return w(${contextArg},y)}
 `;
 };
@@ -178,6 +186,19 @@ test("handles the 2.1.271 member-chain renderer argument", () => {
     "DIM(Compacted · saved 256.3k tokens (ctrl+o to see full summary))"
   );
   assert.equal(render(300000, undefined), "DIM(Compacted (ctrl+o to see full summary))");
+});
+
+// 2.1.314: the renderer returns an object and the caller spreads it. The
+// producer has to sit in the spread and the flag the renderer added has to
+// survive alongside displayText.
+test("handles the 2.1.314 spread renderer result", () => {
+  const { context } = load("_", "v314");
+  const finish = (pre, post) => context.finish(outcome267(pre, post), { options: { verbose: false } }, undefined);
+
+  const out = finish(300000, 43700);
+  assert.equal(out.displayText, "DIM(Compacted · saved 256.3k tokens (ctrl+o to see full summary))");
+  assert.equal(out.displayTextIsHintOnly, true);
+  assert.equal(finish(300000, undefined).displayText, "DIM(Compacted (ctrl+o to see full summary))");
 });
 
 // preCompactTokenCount wins when both are present, so a bundle carrying the old
