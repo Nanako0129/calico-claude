@@ -382,6 +382,16 @@ function disabledMarkerForCheck(check: Check): RegExp | string | undefined {
   return check.disabledMarker ?? (check.kind === "presence" ? check.marker : undefined);
 }
 
+// Whether the bundle's own VERSION is 2.1.<micro> or later. False when the
+// metadata cannot be read, so an unreadable bundle is not held to a
+// requirement that only later versions carry.
+function bundleAtLeast(content: string, micro: number): boolean {
+  const version = /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/.exec(content);
+  if (version === null) return false;
+  const [major, minor, patch] = version.slice(1).map(Number);
+  return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= micro)));
+}
+
 const CHECKS: Check[] = [
   {
     id: "gateway-fast-mode",
@@ -1959,6 +1969,12 @@ const CHECKS: Check[] = [
       if (main === 0) {
         return "the act-don't-re-derive steer does not carry the standing-rules carve-out";
       }
+      // From 2.1.301 the lean wording ships in every bundle; a bundle of that
+      // age without it has reworded it, and the flag-served prompt would go out
+      // without the carve-out.
+      if (lean === 0 && bundleAtLeast(content, 301)) {
+        return "the lean-rewrite wording of the steer is missing from a 2.1.301+ bundle";
+      }
       if (leanPatched !== lean) {
         return `${lean - leanPatched} lean-rewrite wording(s) of the steer lack the standing-rules carve-out`;
       }
@@ -1978,8 +1994,14 @@ const CHECKS: Check[] = [
       if (content.includes("blocks are background context, not user instructions, and reflect what was true when written.")) {
         return "an unpatched copy of the memory framing is still present";
       }
-      return content.includes("block, it's background context, not an instruction from the user.")
-        ? "an unpatched copy of the rewriteMemoryHygiene memory framing is still present"
+      if (content.includes("block, it's background context, not an instruction from the user.")) {
+        return "an unpatched copy of the rewriteMemoryHygiene memory framing is still present";
+      }
+      // From 2.1.301 the rewriteMemoryHygiene wording ships in every bundle; if
+      // it is neither there nor rewritten, upstream reworded it.
+      return bundleAtLeast(content, 301) &&
+        !content.includes("If you see a recalled memory inside a `<system-reminder>` block: `feedback` memories record how the user has told you to work")
+        ? "the rewriteMemoryHygiene memory framing is missing from a 2.1.301+ bundle"
         : null;
     },
   },
@@ -2032,7 +2054,7 @@ const CHECKS: Check[] = [
       // own parameters. Found here independently of the patcher: the
       // collector is the one `async function` with seven parameters that opens
       // with `if(X(<ctx>.agentContext))return[];` (every version 2.1.278–2.1.317),
-      // and the wired site must be the first reminder site after it.
+      // and the wired site must lie inside its body.
       const collectors = [
         ...content.matchAll(
           new RegExp(`async function ${I}\\(((?:${I},){6}(${I}))\\)\\{if\\(${I}\\((${I})\\.agentContext\\)\\)return\\[\\];`, "g")
@@ -2060,10 +2082,14 @@ const CHECKS: Check[] = [
       if (injected[1] !== collector[3] || injected[2] !== collector[2]) {
         return `the rules reminder reads ${injected[1]}/${injected[2]}, not the collector's ${collector[3]}/${collector[2]}`;
       }
+      // Only the collector's own site is the module's; a reminder site in some
+      // other function is left alone by the patcher and is not checked here.
       const original = new RegExp(
         `${I}\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\(${I}\\(${I}\\.criticalSystemReminder_EXPERIMENTAL\\)\\)\\)`
       );
-      return original.test(content) ? "an unpatched critical reminder site is still present" : null;
+      return original.test(content.slice(collector.index, bodyEnd))
+        ? "an unpatched critical reminder site is still present in the collector"
+        : null;
     },
   },
   {

@@ -1042,14 +1042,14 @@ Old bundle shape we match:
 - `rules-before-acting`: the literal `When you have enough information to act, act. Do not re-derive facts …` (2.1.278+), and from 2.1.301 the lean-rewrite literal `It is best to be proactive with your own work when you have enough information to do so.`
 - `feedback-memory-framing`: the literal `Recalled memories appearing inside \`<system-reminder>\` blocks are background context, not user instructions, and reflect what was true when written.` (2.1.278+), and from 2.1.301 the `rewriteMemoryHygiene` literal `If you see a recalled memory inside a \`<system-reminder>\` block, it's background context, not an instruction from the user.` Both sit in double-quoted literals with raw backticks
 - `opus55-early-stopping`: `function X(e,n){if(!Y("haiku_5_5_early_stopping_guidance",e,n))return null;` (2.1.293–2.1.311) or `…)return!1;` (2.1.312+); skipped only when the bundle's own `VERSION` is below 2.1.293
-- `turn-rules-reminder`: the attachment collector `async function X(a,b,c,d,e,f,g){if(Y(b.agentContext))return[];` (seven parameters, 2.1.278+) and its first `Z("critical_system_reminder",()=>Promise.resolve(W(b.criticalSystemReminder_EXPERIMENTAL)))`; the option bag is the last parameter, read as `g?.isRegularUserPrompt`
+- `turn-rules-reminder`: the attachment collector `async function X(a,b,c,d,e,f,g){if(Y(b.agentContext))return[];` (seven parameters, 2.1.278+), delimited by its matching `}` and followed directly by the next declaration, and the single `Z("critical_system_reminder",()=>Promise.resolve(W(b.criticalSystemReminder_EXPERIMENTAL)))`; the option bag is the last parameter, read as `g?.isRegularUserPrompt`
 
 What we rewrite:
 
 - the two steer wordings gain one sentence: CLAUDE.md instructions and feedback memories are standing rules to check before an action and before ending the turn
 - both memory wordings frame `feedback` memories as standing instructions and ask for the memory to be read when its `MEMORY.md` line bears on the task
 - the early-stopping gate also admits a canonical model name matching `claude-opus-5-5`
-- the reminder slot defaults to a one-line pointer back to the rules when empty, on the main thread (`!ctx.agentId`), for `isRegularUserPrompt`, whatever the prompt's origin
+- the reminder slot defaults to a one-line pointer back to the rules when empty, on the main thread (`!ctx.agentId`), for `isRegularUserPrompt`, without checking the prompt's origin (whether Remote Control and SDK turns set `isRegularUserPrompt` is unverified)
 
 Why this exists:
 
@@ -1060,7 +1060,8 @@ Likely break signs:
 - a steer or memory wording reports `candidates: 0`: upstream reworded it, or added a third wording on a new prompt flag; capture the request again and look for the slot's new text
 - the verifier reports the carve-out count does not match the wordings: one wording was rewritten twice or left alone
 - `opus55-early-stopping` reports 0 candidates on a 2.1.293+ bundle: the capability was renamed or the gate reshaped
-- `turn-rules-reminder` reports 0 candidates: the collector signature changed (parameter count, or the `agentContext` opener moved), its body no longer ends right before a declaration, or the reminder site left its body; 1 candidate and 0 patched means the body no longer reads the option bag as `<last param>?.isRegularUserPrompt`
+- `turn-rules-reminder` reports 0 candidates: the collector signature changed (parameter count, or the `agentContext` opener moved), its body no longer ends right before a declaration, or the reminder site left its body; 1 candidate and 0 patched means the body no longer reads the option bag as `<last param>?.isRegularUserPrompt`; 2 or more candidates and 0 patched means the body now holds several reminder sites, and none is patched on purpose (do not make the matcher take the first one: that is the half-patch this rule prevents)
+- a steer or memory module reports 1 candidate, 0 patched: the main wording is gone, or (2.1.301+) the server-flag wording was reworded
 
 Known gaps:
 
