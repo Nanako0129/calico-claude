@@ -350,6 +350,22 @@ Atomicity and verification:
   present together are rejected
 - the injected refresh is appended after the matched native completion, so `modelsUsed` and telemetry
   metadata are not rebuilt or dropped
+- the completion must not sit inside a block opened after the progress call: every `{` opened between
+  the two seams has to close before the completion (`blocksOpenedBetweenClose`, mirrored in the
+  verifier, with a test that runs both copies on the same inputs). Any block counts, so closures,
+  method shorthand, getters and class bodies are caught; an `if(){` wrapping the completion is refused
+  too, which is loud rather than silent. The check does not tokenize JavaScript: any `` ` `` or `/` in
+  the segment refuses, because templates, regexes and comments are where a scanner miscounts and a
+  miscount would fail open; only plain quoted strings are skipped. The 2.1.316–2.1.318 segments contain
+  neither character
+- known gaps of that check: a `}` closing a block opened before the progress call is allowed (2.1.318
+  closes an `if(Gt){` there), so a callback wrapping only the progress call is not detected; and an
+  expression-bodied arrow is not a block, which is safe only because every completion pattern starts
+  with `let `. A named `function` declaration between the seams still fails the separate same-function
+  check (`lastIndexOf("function ")`), so it is refused even though it closes
+- until 2.1.317 the rule was "no `=>` at all in the segment"; 2.1.318 added
+  `tools.some((at)=>ht(at,ut))` inside an error constructor there and that rule zeroed the module on a
+  bundle it handles correctly
 - `scripts/verify-patched-binary.ts` requires both helpers, the response-ID map, terminal stream
   support, both transcript refresh seams, and exactly one owned completion variant
 - regression tests cover provisional `0/0`, native message-start input, terminal GPT usage,

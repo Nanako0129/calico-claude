@@ -265,6 +265,32 @@ function closingBraceIndex(text: string, openIndex: number): number {
   return -1;
 }
 
+// Mirrors blocksOpenedBetweenClose in patch-claude-display.ts (a test runs both
+// on the same inputs; the reasoning is documented there): true when every `{`
+// opened in text[start, end) closes before end. Any `` ` `` or `/` refuses,
+// because templates, regexes and comments are where a scanner miscounts and a
+// miscount fails open; only plain quoted strings are skipped.
+function blocksOpenedBetweenClose(text: string, start: number, end: number): boolean {
+  let open = 0;
+  for (let i = start; i < end; i += 1) {
+    const char = text[i];
+    if (char === "`" || char === "/") {
+      return false;
+    }
+    if (char === '"' || char === "'") {
+      for (i += 1; i < end && text[i] !== char; i += 1) {
+        if (text[i] === "\\") i += 1;
+      }
+      if (i >= end) return false;
+    } else if (char === "{") {
+      open += 1;
+    } else if (char === "}" && open > 0) {
+      open -= 1;
+    }
+  }
+  return open === 0;
+}
+
 function owningGuardIndex(text: string, statementIndex: number): number {
   let search = text.lastIndexOf("if(", statementIndex);
   while (search !== -1) {
@@ -1248,16 +1274,12 @@ const CHECKS: Check[] = [
         progressIndex === -1 ? -1 : progressIndex + progress[0].length;
       const progressFunctionStart = content.lastIndexOf("function ", progressIndex);
       const completionFunctionStart = content.lastIndexOf("function ", completionIndex);
-      const progressToCompletionSegment =
-        progressEnd === -1 || completionIndex === -1
-          ? ""
-          : content.slice(progressEnd, completionIndex);
       if (
         progressFunctionStart === -1 ||
         progressFunctionStart !== completionFunctionStart ||
+        progressEnd === -1 ||
         completionIndex < progressEnd ||
-        progressToCompletionSegment.includes("=>") ||
-        progressToCompletionSegment.includes("function ") ||
+        !blocksOpenedBetweenClose(content, progressEnd, completionIndex) ||
         completion.refreshTracker !== progress[2] ||
         completion.refreshOwner !== completion.owner ||
         completion.summaryTracker !== progress[2] ||
@@ -3006,7 +3028,12 @@ function evaluateDisabledPatchModule(id: string, content: string): string | null
     : null;
 }
 
-module.exports = { boundedToModule, evaluateDisabledPatchModule, evaluatePatchModule };
+module.exports = {
+  blocksOpenedBetweenClose,
+  boundedToModule,
+  evaluateDisabledPatchModule,
+  evaluatePatchModule,
+};
 
 if (require.main === module) {
   void main();
