@@ -1936,6 +1936,117 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "rules-before-acting",
+    kind: "custom",
+    disabledMarker: "are standing rules, not facts to re-derive",
+    describe: "the act-don't-re-derive steer exempts CLAUDE.md and feedback memories",
+    run: (content: string): string | null => {
+      if (!content.includes("CLAUDE.md instructions and feedback memories are standing rules, not facts to re-derive")) {
+        return "the act-don't-re-derive steer does not carry the standing-rules carve-out";
+      }
+      if (content.includes("When you have enough information to act, act. Do not re-derive facts")) {
+        return "an unpatched copy of the act-don't-re-derive steer is still present";
+      }
+      // The lean-rewrite wording (2.1.301+) fills the same builder slot when
+      // the server turns it on; it must carry the carve-out too.
+      const lean = "It is best to be proactive with your own work when you have enough information to do so.";
+      if (content.includes(lean) && !content.includes(`${lean} The user's CLAUDE.md instructions and feedback memories are standing rules`)) {
+        return "the lean-rewrite wording of the steer lacks the standing-rules carve-out";
+      }
+      return null;
+    },
+  },
+  {
+    id: "feedback-memory-framing",
+    kind: "custom",
+    disabledMarker: "`feedback` memories record how the user has told you to work",
+    describe: "feedback memories are framed as standing instructions",
+    run: (content: string): string | null => {
+      if (!content.includes("`feedback` memories record how the user has told you to work: treat them as standing instructions")) {
+        return "the memory section does not frame feedback memories as standing instructions";
+      }
+      if (content.includes("blocks are background context, not user instructions, and reflect what was true when written.")) {
+        return "an unpatched copy of the memory framing is still present";
+      }
+      return content.includes("block, it's background context, not an instruction from the user.")
+        ? "an unpatched copy of the rewriteMemoryHygiene memory framing is still present"
+        : null;
+    },
+  },
+  {
+    id: "opus55-early-stopping",
+    kind: "custom",
+    disabledMarker: "&&!/claude-opus-5-5/.test(String(",
+    describe: "the finish-the-request guidance gate also admits Opus 5.5",
+    run: (content: string): string | null => {
+      // A bundle that never calls the capability check predates the guidance
+      // (2.1.293) and has nothing to admit Opus 5.5 to.
+      if (!/"haiku_5_5_early_stopping_guidance",[A-Za-z_$]/.test(content)) {
+        return null;
+      }
+      const I = "[A-Za-z_$][\\w$]*";
+      const patched = new RegExp(
+        `if\\(!${I}\\("haiku_5_5_early_stopping_guidance",(${I}),${I}\\)&&!/claude-opus-5-5/\\.test\\(String\\(\\1\\)\\)\\)return(?:!1| null);`
+      );
+      if (!patched.test(content)) {
+        return "the early-stopping guidance gate does not admit Opus 5.5";
+      }
+      const original = new RegExp(`if\\(!${I}\\("haiku_5_5_early_stopping_guidance",${I},${I}\\)\\)return(?:!1| null);`);
+      return original.test(content) ? "an unpatched early-stopping gate is still present" : null;
+    },
+  },
+  {
+    id: "turn-rules-reminder",
+    kind: "custom",
+    disabledMarker: "Before acting on this message, check which of the user's CLAUDE.md instructions",
+    describe: "each user message on the main thread carries a pointer back to CLAUDE.md and feedback memories",
+    run: (content: string): string | null => {
+      const I = "[A-Za-z_$][\\w$]*";
+      // The default sits inside the collector's own expression, guarded on the
+      // main thread and on a typed message. Text present elsewhere without that
+      // wiring would never reach the model, or would reach it after every tool
+      // call.
+      const wired = new RegExp(
+        `${I}\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\(${I}\\((${I})\\.criticalSystemReminder_EXPERIMENTAL\\?\\?\\(!\\1\\.agentId&&${I}\\?\\.isRegularUserPrompt&&${I}\\?\\.isHumanTypedPrompt!==!1\\?"Before acting on this message, check which of the user's CLAUDE\\.md instructions`
+      );
+      const match = wired.exec(content);
+      if (match === null) {
+        return "the per-message rules reminder is not wired into the attachment collector";
+      }
+      // The identifiers the injected expression reads must be the collector's
+      // own parameters. Found here independently of the patcher: the
+      // collector is the one `async function` with seven parameters that opens
+      // with `if(X(<ctx>.agentContext))return[];` (every version 2.1.278–2.1.317),
+      // and the wired site must be the first reminder site after it.
+      const collectors = [
+        ...content.matchAll(
+          new RegExp(`async function ${I}\\(((?:${I},){6}(${I}))\\)\\{if\\(${I}\\((${I})\\.agentContext\\)\\)return\\[\\];`, "g")
+        ),
+      ];
+      if (collectors.length !== 1) {
+        return `expected 1 attachment collector, found ${collectors.length}`;
+      }
+      const [collector] = collectors;
+      const firstSite = content.indexOf('("critical_system_reminder",', collector.index);
+      if (firstSite === -1 || firstSite < match.index || firstSite >= match.index + match[0].length) {
+        return "the wired rules reminder is not the collector's own reminder site";
+      }
+      const injected = new RegExp(
+        `\\?\\?\\(!(${I})\\.agentId&&(${I})\\?\\.isRegularUserPrompt&&\\2\\?\\.isHumanTypedPrompt!==!1\\?`
+      ).exec(match[0]);
+      if (injected === null) {
+        return "the rules reminder is not gated on a typed, human prompt";
+      }
+      if (injected[1] !== collector[3] || injected[2] !== collector[2]) {
+        return `the rules reminder reads ${injected[1]}/${injected[2]}, not the collector's ${collector[3]}/${collector[2]}`;
+      }
+      const original = new RegExp(
+        `${I}\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\(${I}\\(${I}\\.criticalSystemReminder_EXPERIMENTAL\\)\\)\\)`
+      );
+      return original.test(content) ? "an unpatched critical reminder site is still present" : null;
+    },
+  },
+  {
     id: "usage-limit-under-remote-control",
     kind: "custom",
     describe: "the four usage-limit sites skip only the Remote Control bridge term",

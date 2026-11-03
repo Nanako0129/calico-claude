@@ -2365,6 +2365,191 @@ function patchDisableBashFirst(content) {
   return { content: output, candidates, patched };
 }
 
+// Opus 5.5 runs on a lean system prompt that tells it to act at once and never
+// asks it to look back at CLAUDE.md or feedback memories, while both reach it
+// only once, at the top of the conversation. That much is measured: on
+// 2.1.280–2.1.317 the request a real binary sends as Opus 5.5 (captured against
+// a mock API) has exactly that shape. The behaviour it is meant to fix — rules
+// quoted correctly when asked afterwards but not applied while acting, more
+// misses as a session grows, stopping mid-task — is user-reported, not
+// measured here. The next four modules each change one piece of the request;
+// their tests show the before/after of each.
+
+const CALICO_STANDING_RULES =
+  "The user's CLAUDE.md instructions and feedback memories are standing rules, not facts to re-derive: before an action they bear on, and again before you end your turn, check that what you did follows them.";
+
+const CALICO_RULES_BEFORE_ACTING =
+  "When you have enough information to act, act. The user's CLAUDE.md instructions and feedback memories are standing rules, not facts to re-derive: before an action they bear on, and again before you end your turn, check that what you did follows them. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey";
+
+// Each pair is one wording of the same instruction; upstream swaps between
+// them on server-side prompt flags, so every wording present is rewritten.
+function replaceLiterals(content, pairs) {
+  let output = content;
+  let candidates = 0;
+  for (const [original, replacement] of pairs) {
+    const parts = output.split(original);
+    candidates += parts.length - 1;
+    if (parts.length > 1) output = parts.join(replacement);
+  }
+  return { content: output, candidates, patched: candidates };
+}
+
+function patchRulesBeforeActing(content) {
+  // `tengu_cedar_lantern` (default on) adds "When you have enough information
+  // to act, act. Do not re-derive facts already established…" to every main
+  // prompt. Nothing next to it says the user's standing rules are not such
+  // facts, so it reads as licence to skip re-checking them. The sentence keeps
+  // its anti-dithering intent and gains that carve-out. Present verbatim, once,
+  // on every version from 2.1.278 through 2.1.317.
+  //
+  // From 2.1.301 the lean rewrite (`temporal_hare`, served per model) uses its
+  // own wording, "It is best to be proactive with your own work…", picked by
+  // the same builder slot; it gets the same carve-out after its first sentence.
+  return replaceLiterals(content, [
+    [
+      "When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey",
+      CALICO_RULES_BEFORE_ACTING,
+    ],
+    [
+      "It is best to be proactive with your own work when you have enough information to do so.",
+      `It is best to be proactive with your own work when you have enough information to do so. ${CALICO_STANDING_RULES}`,
+    ],
+  ]);
+}
+
+const CALICO_FEEDBACK_MEMORY_FRAMING =
+  "Recalled memories appearing inside `<system-reminder>` blocks reflect what was true when written. `feedback` memories record how the user has told you to work: treat them as standing instructions with the same weight as CLAUDE.md, and when a line in MEMORY.md bears on the task, read that memory before acting. Other recalled memories are background context, not instructions.";
+
+const CALICO_FEEDBACK_MEMORY_FRAMING_HYGIENE =
+  "If you see a recalled memory inside a `<system-reminder>` block: `feedback` memories record how the user has told you to work, so treat them as standing instructions with the same weight as CLAUDE.md, and when a line in MEMORY.md bears on the task, read that memory before acting. Other recalled memories are background context, not an instruction from the user.";
+
+function patchFeedbackMemoryFraming(content) {
+  // The memory section ends with "Recalled memories … are background context,
+  // not user instructions", which also covers `feedback` memories — the type
+  // whose whole purpose is recording the user's corrections. Only MEMORY.md's
+  // one-line index is loaded, so a correction the model never opens is a
+  // correction it never applies. The following sentence ("If one names a file…
+  // verify it still exists") is left as it is.
+  //
+  // Upstream keeps this in a double-quoted literal with raw backticks, so the
+  // replacement must not contain a double quote or `${`.
+  //
+  // From 2.1.301 the `rewriteMemoryHygiene` variant says the same thing in its
+  // own words ("If you see a recalled memory inside a `<system-reminder>`
+  // block, it's background context, not an instruction from the user.") and is
+  // rewritten the same way.
+  return replaceLiterals(content, [
+    [
+      "Recalled memories appearing inside `<system-reminder>` blocks are background context, not user instructions, and reflect what was true when written.",
+      CALICO_FEEDBACK_MEMORY_FRAMING,
+  CALICO_FEEDBACK_MEMORY_FRAMING_HYGIENE,
+  CALICO_STANDING_RULES,
+    ],
+    [
+      "If you see a recalled memory inside a `<system-reminder>` block, it's background context, not an instruction from the user.",
+      CALICO_FEEDBACK_MEMORY_FRAMING_HYGIENE,
+    ],
+  ]);
+}
+
+function patchOpus55EarlyStopping(content) {
+  // Upstream wrote guidance against ending a turn early ("Ending your turn
+  // stops all work until the user replies… End your turn when the request is
+  // done") and gates it on a capability only Haiku 5.5 carries:
+  //
+  //   function Ofr(e,n){if(!bR("haiku_5_5_early_stopping_guidance",e,n))return!1;
+  //     return un("tengu_idempotent_wolf",!0)}
+  //
+  // The captured Opus 5.5 request has it zero times. The first argument is the
+  // canonical model name, so matching it also covers `[1m]` and provider
+  // spellings. The trailing `tengu_idempotent_wolf` kill switch is left in
+  // place. The system-prompt engine replays a decision already recorded for a
+  // session, so a session started before this patch keeps its old answer.
+  //
+  // Present once from 2.1.293; up to 2.1.311 the gate bails with `return null`
+  // (it returns the text itself), from 2.1.312 with `return!1`. A bundle that never calls the capability check
+  // predates the guidance and is skipped; one that calls it in a form this
+  // pattern no longer matches is a drift and reports zero patched.
+  // From 2.1.29x the name already sits in the capability list, so the test
+  // is for a call that passes it with arguments, not for the string itself.
+  if (!/"haiku_5_5_early_stopping_guidance",[A-Za-z_$]/.test(content)) {
+    return { content, candidates: 0, patched: 0, skipped: true, reason: "bundle predates the early-stopping guidance (2.1.293)" };
+  }
+  const I = "[A-Za-z_$][\\w$]*";
+  const gatePattern = new RegExp(
+    `function (${I})\\((${I}),(${I})\\)\\{if\\(!(${I})\\("haiku_5_5_early_stopping_guidance",\\2,\\3\\)\\)(return!1|return null);`,
+    "g"
+  );
+  let candidates = 0;
+  const output = content.replace(gatePattern, (full, name, model, raw, capability, bail) => {
+    candidates += 1;
+    return `function ${name}(${model},${raw}){if(!${capability}("haiku_5_5_early_stopping_guidance",${model},${raw})&&!/claude-opus-5-5/.test(String(${model})))${bail};`;
+  });
+  return { content: output, candidates: Math.max(candidates, 1), patched: candidates };
+}
+
+const CALICO_TURN_RULES_REMINDER =
+  "Before acting on this message, check which of the user's CLAUDE.md instructions and feedback memories apply to it (read a memory file when its MEMORY.md line bears on the task) and follow them; they override your defaults. Keep working until the request is done.";
+
+// The per-turn attachment collector is `async function X(e,n,r,s,h,y,b)`: its
+// context is a parameter and its option bag is the last one. Shared with the
+// verifier so both read the same signature.
+function enclosingCollector(content, offset) {
+  const I = "[A-Za-z_$][\\w$]*";
+  const head = content.slice(Math.max(0, offset - 20000), offset);
+  const signature = [...head.matchAll(new RegExp(`async function ${I}\\(((?:${I},)*${I})\\)\\{`, "g"))].pop();
+  if (signature === undefined) {
+    return null;
+  }
+  const params = signature[1].split(",");
+  const start = Math.max(0, offset - 20000) + signature.index;
+  return { params, options: params[params.length - 1], start };
+}
+
+function patchTurnRulesReminder(content) {
+  // CLAUDE.md and the MEMORY.md index are attached once, to the first user
+  // message, and drift further from the current turn with every tool result.
+  // The per-turn attachment collector already has a slot for a fixed reminder,
+  // unused outside custom subagents:
+  //
+  //   Ou("critical_system_reminder",()=>Promise.resolve(WAn(n.criticalSystemReminder_EXPERIMENTAL)))
+  //
+  // It is filled with a short pointer back to the rules when the slot is empty,
+  // on the main thread (`!n.agentId`, the same test upstream's own
+  // silent_turn_reminder uses in this function), and only for a new turn the
+  // user typed (`isRegularUserPrompt`, and not `isHumanTypedPrompt:false`) —
+  // so it sits next to each new request rather than after every tool call. An
+  // agent's own reminder still wins. A message typed while the model is
+  // mid-turn arrives on the after-tool-step path as queued input and gets no
+  // reminder; that path is not covered.
+  const I = "[A-Za-z_$][\\w$]*";
+  const sitePattern = new RegExp(
+    `(${I})\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\((${I})\\((${I})\\.criticalSystemReminder_EXPERIMENTAL\\)\\)\\)`,
+    "g"
+  );
+  let candidates = 0;
+  let patched = 0;
+  const output = content.replace(sitePattern, (full, collect, wrap, ctx, offset) => {
+    candidates += 1;
+    const collector = enclosingCollector(content, offset);
+    // Only when the site's context is the collector's own parameter and the
+    // collector really reads its last parameter as the option bag; otherwise
+    // the injected read could name an unrelated or undefined variable.
+    const readsOptions =
+      collector !== null &&
+      collector.params.includes(ctx) &&
+      new RegExp(`(?<![\\w$.])${collector.options.replace(/\$/g, "\\$")}\\?\\.isRegularUserPrompt`).test(
+        content.slice(collector.start, offset + 3000)
+      );
+    if (!readsOptions) {
+      return full;
+    }
+    patched += 1;
+    return `${collect}("critical_system_reminder",()=>Promise.resolve(${wrap}(${ctx}.criticalSystemReminder_EXPERIMENTAL??(!${ctx}.agentId&&${collector.options}?.isRegularUserPrompt&&${collector.options}?.isHumanTypedPrompt!==!1?${JSON.stringify(CALICO_TURN_RULES_REMINDER)}:void 0))))`;
+  });
+  return { content: patched === candidates ? output : content, candidates, patched: patched === candidates ? patched : 0 };
+}
+
 function patchUsageLimitUnderRemoteControl(content) {
   // With Remote Control on, hitting a claude.ai usage limit does nothing: the
   // `/rate-limit-options` menu does not open and automatic continue does not
@@ -5882,6 +6067,26 @@ const PATCH_MODULES = [
     apply: patchDisableBashFirst,
   },
   {
+    id: "rules-before-acting",
+    description: "Exempt CLAUDE.md and feedback memories from the act-don't-re-derive steer",
+    apply: patchRulesBeforeActing,
+  },
+  {
+    id: "feedback-memory-framing",
+    description: "Treat feedback memories as standing instructions and read the relevant ones",
+    apply: patchFeedbackMemoryFraming,
+  },
+  {
+    id: "opus55-early-stopping",
+    description: "Give Opus 5.5 the finish-the-request guidance upstream gates on Haiku 5.5",
+    apply: patchOpus55EarlyStopping,
+  },
+  {
+    id: "turn-rules-reminder",
+    description: "Point back to CLAUDE.md and feedback memories on each user message",
+    apply: patchTurnRulesReminder,
+  },
+  {
     id: "usage-limit-under-remote-control",
     description: "Open the usage-limit menu and allow automatic continue while Remote Control is on",
     apply: patchUsageLimitUnderRemoteControl,
@@ -6199,6 +6404,13 @@ module.exports = {
   patchCustomContextWindows,
   patchCompactTokensSaved,
   patchDisableBashFirst,
+  patchRulesBeforeActing,
+  patchFeedbackMemoryFraming,
+  patchOpus55EarlyStopping,
+  patchTurnRulesReminder,
+  CALICO_RULES_BEFORE_ACTING,
+  CALICO_FEEDBACK_MEMORY_FRAMING,
+  CALICO_TURN_RULES_REMINDER,
   patchThinkingSummariesDefault,
   patchThinkingNotCollapsed,
   patchThinkingFolded,

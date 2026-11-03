@@ -43,6 +43,10 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 | `disable-spinner-tips` | Disables spinner tips regardless of settings |
 | `compact-tokens-saved` | Reports how many tokens `/compact` actually saved, as the Claude mobile app does |
 | `disable-bash-first` | Defaults upstream's Bash-first tool steer off; `CLAUDE_CODE_THRIFTY_SONIC=1` opts back in |
+| `rules-before-acting` | Keeps upstream's "act, don't re-derive" steer but adds that CLAUDE.md instructions and feedback memories are standing rules to check before acting and before ending the turn |
+| `feedback-memory-framing` | Frames `feedback` memories as standing instructions with CLAUDE.md's weight, and asks the model to read a memory when its `MEMORY.md` line bears on the task; upstream calls every recalled memory "background context, not user instructions" |
+| `opus55-early-stopping` | Gives Opus 5.5 upstream's finish-the-request guidance ("Ending your turn stops all work…"), which upstream gates on Haiku 5.5 only |
+| `turn-rules-reminder` | Adds a one-line pointer back to CLAUDE.md and feedback memories next to each new message the user types (main thread only, not after tool calls); CLAUDE.md itself is attached only once, at the top of the conversation. A message typed while the model is mid-turn arrives as queued input and gets no pointer |
 | `thinking-summaries-default` | Defaults `showThinkingSummaries` on, so thinking is requested unredacted and shows up; `"showThinkingSummaries": false` opts out |
 | `usage-limit-under-remote-control` | With Remote Control on, a claude.ai usage limit still opens the `/rate-limit-options` menu and lets automatic continue arm; upstream silences both whenever the Remote Control bridge is active |
 | `background-agent-usage` | Accounts terminal stream usage in the background agent progress row |
