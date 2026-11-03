@@ -14,6 +14,7 @@ const {
   CALICO_RULES_BEFORE_ACTING,
   CALICO_FEEDBACK_MEMORY_FRAMING,
   CALICO_TURN_RULES_REMINDER,
+  CALICO_STANDING_RULES,
 } = require("../patch-claude-display.ts");
 const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
@@ -57,9 +58,20 @@ test("both modules rewrite the server-flag wording as well", () => {
   assert.match(context.b, /enough information to do so\. The user's CLAUDE\.md instructions and feedback memories are standing rules/);
   assert.match(context.d, /`feedback` memories record how the user has told you to work/);
   assert.ok(!context.d.includes("it's background context, not an instruction"));
+  // A second run changes nothing, and does not append the carve-out again.
+  const again = patchRulesBeforeActing(memory.content);
+  assert.equal(again.patched, 0);
+  assert.equal(again.content, memory.content);
+  assert.equal(patchFeedbackMemoryFraming(memory.content).patched, 0);
+  // Appending it twice by hand is caught by the verifier's count.
+  const doubled = memory.content.replace(
+    "do so. The user's CLAUDE.md",
+    `do so. ${CALICO_STANDING_RULES} The user's CLAUDE.md`
+  );
+  assert.match(evaluatePatchModule("rules-before-acting", doubled), /appears 3 times for 2 wordings/);
   // Only the main wording patched leaves the variant behind; the verifier says so.
   const half = patchRulesBeforeActing(`var a="${REDERIVE}";`).content + `var b="${lean}";`;
-  assert.match(evaluatePatchModule("rules-before-acting", half), /lean-rewrite wording/);
+  assert.match(evaluatePatchModule("rules-before-acting", half), /lean-rewrite wording\(s\) of the steer lack/);
 });
 
 test("feedback-memory-framing rewrites only the framing sentence", () => {
@@ -204,15 +216,22 @@ function Vir(e,n){if(!yU("haiku_5_5_early_stopping_guidance",e,n))return null;re
 });
 
 test("opus55-early-stopping skips bundles that predate the guidance", () => {
-  const old = 'function Ofr(e,n){return!1}var x="nothing here";';
+  const old = 'var meta={PACKAGE_URL:"@anthropic-ai/claude-code",VERSION:"2.1.280"};function Ofr(e,n){return!1}';
   const result = patchOpus55EarlyStopping(old);
   assert.equal(result.skipped, true);
   assert.equal(result.content, old);
   assert.equal(evaluatePatchModule("opus55-early-stopping", old), null);
-  // 2.1.300-2.1.311 list the capability before any gate reads it.
-  const listed = 'var Nbs=["haiku_5_5_early_stopping_guidance","original_games_guidance"];';
-  assert.equal(patchOpus55EarlyStopping(listed).skipped, true);
-  assert.equal(evaluatePatchModule("opus55-early-stopping", listed), null);
+  // Decided by the bundle's VERSION, not by the capability name: a 2.1.293+
+  // bundle that no longer matches (renamed capability, reshaped call) is drift.
+  const versioned = (v, body) => `var meta={PACKAGE_URL:"@anthropic-ai/claude-code",VERSION:"${v}"};${body}`;
+  const pre = versioned("2.1.292", 'function Ofr(e,n){return!1}');
+  assert.equal(patchOpus55EarlyStopping(pre).skipped, true);
+  assert.equal(evaluatePatchModule("opus55-early-stopping", pre), null);
+  const renamed = versioned("2.1.320", 'function Ofr(e,n){if(!bR("early_stopping_guidance",e,n))return!1}');
+  const renamedResult = patchOpus55EarlyStopping(renamed);
+  assert.equal(renamedResult.skipped, undefined);
+  assert.equal(renamedResult.patched, 0);
+  assert.notEqual(evaluatePatchModule("opus55-early-stopping", renamed), null);
   // Named but reshaped is drift, not a skip: it must fail loudly.
   const drifted = 'function Ofr(e,n){if(bR("haiku_5_5_early_stopping_guidance",e,n)!==!0)return!1}';
   const drift = patchOpus55EarlyStopping(drifted);

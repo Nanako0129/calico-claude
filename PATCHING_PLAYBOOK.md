@@ -1030,6 +1030,43 @@ Likely break signs:
 - some screens show patched branding while others revert to upstream naming
 - candidate counts change unevenly because only some string shapes moved
 
+### Instruction adherence (`rules-before-acting`, `feedback-memory-framing`, `opus55-early-stopping`, `turn-rules-reminder`)
+
+Intent:
+
+- make the model apply CLAUDE.md and feedback memories while it acts, not only when asked about them afterwards
+- measured on 2.1.280–2.1.317 by capturing the request a real binary sends as Opus 5.5 against a mock API: CLAUDE.md and the `MEMORY.md` index are attached once, to the first user message; the system prompt tells the model to act without re-deriving and calls every recalled memory "background context, not user instructions"; the finish-the-request guidance is Haiku 5.5 only. The behaviour (misses, stopping mid-task) is user-reported, not measured
+
+Old bundle shape we match:
+
+- `rules-before-acting`: the literal `When you have enough information to act, act. Do not re-derive facts …` (2.1.278+), and from 2.1.301 the lean-rewrite literal `It is best to be proactive with your own work when you have enough information to do so.`
+- `feedback-memory-framing`: the literal `Recalled memories appearing inside \`<system-reminder>\` blocks are background context, not user instructions, and reflect what was true when written.` (2.1.278+), and from 2.1.301 the `rewriteMemoryHygiene` literal `If you see a recalled memory inside a \`<system-reminder>\` block, it's background context, not an instruction from the user.` Both sit in double-quoted literals with raw backticks
+- `opus55-early-stopping`: `function X(e,n){if(!Y("haiku_5_5_early_stopping_guidance",e,n))return null;` (2.1.293–2.1.311) or `…)return!1;` (2.1.312+); skipped only when the bundle's own `VERSION` is below 2.1.293
+- `turn-rules-reminder`: the attachment collector `async function X(a,b,c,d,e,f,g){if(Y(b.agentContext))return[];` (seven parameters, 2.1.278+) and its first `Z("critical_system_reminder",()=>Promise.resolve(W(b.criticalSystemReminder_EXPERIMENTAL)))`; the option bag is the last parameter, read as `g?.isRegularUserPrompt`
+
+What we rewrite:
+
+- the two steer wordings gain one sentence: CLAUDE.md instructions and feedback memories are standing rules to check before an action and before ending the turn
+- both memory wordings frame `feedback` memories as standing instructions and ask for the memory to be read when its `MEMORY.md` line bears on the task
+- the early-stopping gate also admits a canonical model name matching `claude-opus-5-5`
+- the reminder slot defaults to a one-line pointer back to the rules when empty, on the main thread (`!ctx.agentId`), for `isRegularUserPrompt` and not `isHumanTypedPrompt:false`
+
+Why this exists:
+
+- CLAUDE.md is in context but far from the current turn, and nothing in the lean prompt points back to it
+
+Likely break signs:
+
+- a steer or memory wording reports `candidates: 0`: upstream reworded it, or added a third wording on a new prompt flag; capture the request again and look for the slot's new text
+- the verifier reports the carve-out count does not match the wordings: one wording was rewritten twice or left alone
+- `opus55-early-stopping` reports 1 candidate, 0 patched on a 2.1.293+ bundle: the capability was renamed or the gate reshaped
+- `turn-rules-reminder` patches 0: the collector signature changed (parameter count, or the `agentContext` opener moved)
+
+Known gaps:
+
+- a message typed while the model is mid-turn arrives as queued input on the after-tool-step path and gets no reminder
+- a session started before the patch replays its recorded `heron_brook` decision, so it keeps the old early-stopping answer
+
 ## Updating A Broken Patch
 
 When a Claude update breaks a patch, do this in order.

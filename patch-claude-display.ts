@@ -2373,23 +2373,35 @@ function patchDisableBashFirst(content) {
 // quoted correctly when asked afterwards but not applied while acting, more
 // misses as a session grows, stopping mid-task — is user-reported, not
 // measured here. The next four modules each change one piece of the request;
-// their tests show the before/after of each.
+// three of them apply to every model, since the other lean-prompt models get
+// the same shape. Their tests show the before/after of each.
 
 const CALICO_STANDING_RULES =
   "The user's CLAUDE.md instructions and feedback memories are standing rules, not facts to re-derive: before an action they bear on, and again before you end your turn, check that what you did follows them.";
 
-const CALICO_RULES_BEFORE_ACTING =
-  "When you have enough information to act, act. The user's CLAUDE.md instructions and feedback memories are standing rules, not facts to re-derive: before an action they bear on, and again before you end your turn, check that what you did follows them. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey";
+const CALICO_RULES_BEFORE_ACTING = `When you have enough information to act, act. ${CALICO_STANDING_RULES} Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey`;
+
+const CALICO_LEAN_PROACTIVE_ORIGINAL =
+  "It is best to be proactive with your own work when you have enough information to do so.";
 
 // Each pair is one wording of the same instruction; upstream swaps between
 // them on server-side prompt flags, so every wording present is rewritten.
+// A replacement may start with its own original (the lean wording only gains a
+// sentence), so text already rewritten is set aside first: a second run then
+// finds nothing, instead of appending the sentence again.
 function replaceLiterals(content, pairs) {
   let output = content;
   let candidates = 0;
   for (const [original, replacement] of pairs) {
-    const parts = output.split(original);
-    candidates += parts.length - 1;
-    if (parts.length > 1) output = parts.join(replacement);
+    const done = output.split(replacement);
+    let found = 0;
+    const rewritten = done.map((part) => {
+      const pieces = part.split(original);
+      found += pieces.length - 1;
+      return pieces.join(replacement);
+    });
+    candidates += found;
+    if (found > 0) output = rewritten.join(replacement);
   }
   return { content: output, candidates, patched: candidates };
 }
@@ -2402,18 +2414,15 @@ function patchRulesBeforeActing(content) {
   // its anti-dithering intent and gains that carve-out. Present verbatim, once,
   // on every version from 2.1.278 through 2.1.317.
   //
-  // From 2.1.301 the lean rewrite (`temporal_hare`, served per model) uses its
-  // own wording, "It is best to be proactive with your own work…", picked by
-  // the same builder slot; it gets the same carve-out after its first sentence.
+  // From 2.1.301 the lean rewrite (`temporal_hare`, served per model) fills the
+  // same builder slot with its own wording, "It is best to be proactive with
+  // your own work…"; it gets the same carve-out after its first sentence.
   return replaceLiterals(content, [
     [
       "When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey",
       CALICO_RULES_BEFORE_ACTING,
     ],
-    [
-      "It is best to be proactive with your own work when you have enough information to do so.",
-      `It is best to be proactive with your own work when you have enough information to do so. ${CALICO_STANDING_RULES}`,
-    ],
+    [CALICO_LEAN_PROACTIVE_ORIGINAL, `${CALICO_LEAN_PROACTIVE_ORIGINAL} ${CALICO_STANDING_RULES}`],
   ]);
 }
 
@@ -2431,19 +2440,17 @@ function patchFeedbackMemoryFraming(content) {
   // correction it never applies. The following sentence ("If one names a file…
   // verify it still exists") is left as it is.
   //
-  // Upstream keeps this in a double-quoted literal with raw backticks, so the
-  // replacement must not contain a double quote or `${`.
-  //
   // From 2.1.301 the `rewriteMemoryHygiene` variant says the same thing in its
   // own words ("If you see a recalled memory inside a `<system-reminder>`
   // block, it's background context, not an instruction from the user.") and is
   // rewritten the same way.
+  //
+  // Upstream keeps both in double-quoted literals with raw backticks, so the
+  // replacements must not contain a double quote or `${`.
   return replaceLiterals(content, [
     [
       "Recalled memories appearing inside `<system-reminder>` blocks are background context, not user instructions, and reflect what was true when written.",
       CALICO_FEEDBACK_MEMORY_FRAMING,
-  CALICO_FEEDBACK_MEMORY_FRAMING_HYGIENE,
-  CALICO_STANDING_RULES,
     ],
     [
       "If you see a recalled memory inside a `<system-reminder>` block, it's background context, not an instruction from the user.",
@@ -2452,13 +2459,19 @@ function patchFeedbackMemoryFraming(content) {
   ]);
 }
 
+// The bundle's own version, or null when its metadata cannot be read.
+function bundleVersion(content) {
+  const match = content.match(/PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/);
+  return match ? match.slice(1).map(Number) : null;
+}
+
 function patchOpus55EarlyStopping(content) {
   // Upstream wrote guidance against ending a turn early ("Ending your turn
   // stops all work until the user replies… End your turn when the request is
   // done") and gates it on a capability only Haiku 5.5 carries:
   //
-  //   function Ofr(e,n){if(!bR("haiku_5_5_early_stopping_guidance",e,n))return!1;
-  //     return un("tengu_idempotent_wolf",!0)}
+  //   2.1.293–2.1.311  function Vir(e,n){if(!yU("haiku_5_5_early_stopping_guidance",e,n))return null;…
+  //   2.1.312–2.1.317  function Ofr(e,n){if(!bR("haiku_5_5_early_stopping_guidance",e,n))return!1;…
   //
   // The captured Opus 5.5 request has it zero times. The first argument is the
   // canonical model name, so matching it also covers `[1m]` and provider
@@ -2466,14 +2479,12 @@ function patchOpus55EarlyStopping(content) {
   // place. The system-prompt engine replays a decision already recorded for a
   // session, so a session started before this patch keeps its old answer.
   //
-  // Present once from 2.1.293; up to 2.1.311 the gate bails with `return null`
-  // (it returns the text itself), from 2.1.312 with `return!1`. A bundle that never calls the capability check
-  // predates the guidance and is skipped; one that calls it in a form this
-  // pattern no longer matches is a drift and reports zero patched.
-  // From 2.1.29x the name already sits in the capability list, so the test
-  // is for a call that passes it with arguments, not for the string itself.
-  if (!/"haiku_5_5_early_stopping_guidance",[A-Za-z_$]/.test(content)) {
-    return { content, candidates: 0, patched: 0, skipped: true, reason: "bundle predates the early-stopping guidance (2.1.293)" };
+  // Only a bundle whose own VERSION is below 2.1.293 is skipped. Any later
+  // bundle the pattern misses — renamed capability, reshaped call — patches
+  // nothing and fails --assert-all, rather than shipping without the guidance.
+  const version = bundleVersion(content);
+  if (version !== null && (version[0] < 2 || (version[0] === 2 && (version[1] < 1 || (version[1] === 1 && version[2] < 293))))) {
+    return { content, candidates: 0, patched: 0, skipped: true, reason: `pre-2.1.293 bundle (${version.join(".")}) has no early-stopping guidance` };
   }
   const I = "[A-Za-z_$][\\w$]*";
   const gatePattern = new RegExp(
@@ -2491,21 +2502,6 @@ function patchOpus55EarlyStopping(content) {
 const CALICO_TURN_RULES_REMINDER =
   "Before acting on this message, check which of the user's CLAUDE.md instructions and feedback memories apply to it (read a memory file when its MEMORY.md line bears on the task) and follow them; they override your defaults. Keep working until the request is done.";
 
-// The per-turn attachment collector is `async function X(e,n,r,s,h,y,b)`: its
-// context is a parameter and its option bag is the last one. Shared with the
-// verifier so both read the same signature.
-function enclosingCollector(content, offset) {
-  const I = "[A-Za-z_$][\\w$]*";
-  const head = content.slice(Math.max(0, offset - 20000), offset);
-  const signature = [...head.matchAll(new RegExp(`async function ${I}\\(((?:${I},)*${I})\\)\\{`, "g"))].pop();
-  if (signature === undefined) {
-    return null;
-  }
-  const params = signature[1].split(",");
-  const start = Math.max(0, offset - 20000) + signature.index;
-  return { params, options: params[params.length - 1], start };
-}
-
 function patchTurnRulesReminder(content) {
   // CLAUDE.md and the MEMORY.md index are attached once, to the first user
   // message, and drift further from the current turn with every tool result.
@@ -2522,32 +2518,40 @@ function patchTurnRulesReminder(content) {
   // agent's own reminder still wins. A message typed while the model is
   // mid-turn arrives on the after-tool-step path as queued input and gets no
   // reminder; that path is not covered.
+  //
+  // The collector is the one `async function` with seven parameters that opens
+  // `if(X(<ctx>.agentContext))return[];` (every version 2.1.278–2.1.317); its
+  // last parameter is the option bag. Exactly one such collector must exist
+  // and the reminder site must be its first, or nothing is patched.
   const I = "[A-Za-z_$][\\w$]*";
+  const collectors = [
+    ...content.matchAll(
+      new RegExp(`async function ${I}\\(((?:${I},){6}(${I}))\\)\\{if\\(${I}\\((${I})\\.agentContext\\)\\)return\\[\\];`, "g")
+    ),
+  ];
   const sitePattern = new RegExp(
     `(${I})\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\((${I})\\((${I})\\.criticalSystemReminder_EXPERIMENTAL\\)\\)\\)`,
     "g"
   );
-  let candidates = 0;
-  let patched = 0;
-  const output = content.replace(sitePattern, (full, collect, wrap, ctx, offset) => {
-    candidates += 1;
-    const collector = enclosingCollector(content, offset);
-    // Only when the site's context is the collector's own parameter and the
-    // collector really reads its last parameter as the option bag; otherwise
-    // the injected read could name an unrelated or undefined variable.
-    const readsOptions =
-      collector !== null &&
-      collector.params.includes(ctx) &&
-      new RegExp(`(?<![\\w$.])${collector.options.replace(/\$/g, "\\$")}\\?\\.isRegularUserPrompt`).test(
-        content.slice(collector.start, offset + 3000)
-      );
-    if (!readsOptions) {
-      return full;
-    }
-    patched += 1;
-    return `${collect}("critical_system_reminder",()=>Promise.resolve(${wrap}(${ctx}.criticalSystemReminder_EXPERIMENTAL??(!${ctx}.agentId&&${collector.options}?.isRegularUserPrompt&&${collector.options}?.isHumanTypedPrompt!==!1?${JSON.stringify(CALICO_TURN_RULES_REMINDER)}:void 0))))`;
-  });
-  return { content: patched === candidates ? output : content, candidates, patched: patched === candidates ? patched : 0 };
+  const sites = [...content.matchAll(sitePattern)];
+  const collector = collectors.length === 1 ? collectors[0] : null;
+  const site = collector === null ? undefined : sites.find((match) => match.index > collector.index);
+  const options = collector?.[2];
+  const ctx = collector?.[3];
+  if (
+    site === undefined ||
+    site[3] !== ctx ||
+    !new RegExp(`(?<![\\w$.])${escapeRegExp(options)}\\?\\.isRegularUserPrompt`).test(content.slice(collector.index, site.index + 3000))
+  ) {
+    return { content, candidates: sites.length, patched: 0 };
+  }
+  const [full, collect, wrap] = site;
+  const replacement = `${collect}("critical_system_reminder",()=>Promise.resolve(${wrap}(${ctx}.criticalSystemReminder_EXPERIMENTAL??(!${ctx}.agentId&&${options}?.isRegularUserPrompt&&${options}?.isHumanTypedPrompt!==!1?${JSON.stringify(CALICO_TURN_RULES_REMINDER)}:void 0))))`;
+  return {
+    content: content.slice(0, site.index) + replacement + content.slice(site.index + full.length),
+    candidates: sites.length,
+    patched: sites.length === 1 ? 1 : 0,
+  };
 }
 
 function patchUsageLimitUnderRemoteControl(content) {
@@ -6410,6 +6414,8 @@ module.exports = {
   patchTurnRulesReminder,
   CALICO_RULES_BEFORE_ACTING,
   CALICO_FEEDBACK_MEMORY_FRAMING,
+  CALICO_FEEDBACK_MEMORY_FRAMING_HYGIENE,
+  CALICO_STANDING_RULES,
   CALICO_TURN_RULES_REMINDER,
   patchThinkingSummariesDefault,
   patchThinkingNotCollapsed,

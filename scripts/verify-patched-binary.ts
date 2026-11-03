@@ -1941,19 +1941,29 @@ const CHECKS: Check[] = [
     disabledMarker: "are standing rules, not facts to re-derive",
     describe: "the act-don't-re-derive steer exempts CLAUDE.md and feedback memories",
     run: (content: string): string | null => {
-      if (!content.includes("CLAUDE.md instructions and feedback memories are standing rules, not facts to re-derive")) {
-        return "the act-don't-re-derive steer does not carry the standing-rules carve-out";
-      }
       if (content.includes("When you have enough information to act, act. Do not re-derive facts")) {
         return "an unpatched copy of the act-don't-re-derive steer is still present";
       }
-      // The lean-rewrite wording (2.1.301+) fills the same builder slot when
-      // the server turns it on; it must carry the carve-out too.
-      const lean = "It is best to be proactive with your own work when you have enough information to do so.";
-      if (content.includes(lean) && !content.includes(`${lean} The user's CLAUDE.md instructions and feedback memories are standing rules`)) {
-        return "the lean-rewrite wording of the steer lacks the standing-rules carve-out";
+      // Every rewritten wording carries the carve-out exactly once: the main
+      // steer, plus the lean-rewrite wording (2.1.301+) that fills the same
+      // builder slot when the server turns it on. Counting rather than
+      // checking presence catches a wording left unpatched next to a patched
+      // one, and the carve-out appended twice by a second run.
+      const carveOut = "CLAUDE.md instructions and feedback memories are standing rules, not facts to re-derive";
+      const main = countOccurrences(content, "When you have enough information to act, act. The user's " + carveOut);
+      const lean = countOccurrences(content, "It is best to be proactive with your own work when you have enough information to do so.");
+      const leanPatched = countOccurrences(
+        content,
+        "It is best to be proactive with your own work when you have enough information to do so. The user's " + carveOut
+      );
+      if (main === 0) {
+        return "the act-don't-re-derive steer does not carry the standing-rules carve-out";
       }
-      return null;
+      if (leanPatched !== lean) {
+        return `${lean - leanPatched} lean-rewrite wording(s) of the steer lack the standing-rules carve-out`;
+      }
+      const total = countOccurrences(content, carveOut);
+      return total === main + lean ? null : `the standing-rules carve-out appears ${total} times for ${main + lean} wordings`;
     },
   },
   {
@@ -1979,10 +1989,15 @@ const CHECKS: Check[] = [
     disabledMarker: "&&!/claude-opus-5-5/.test(String(",
     describe: "the finish-the-request guidance gate also admits Opus 5.5",
     run: (content: string): string | null => {
-      // A bundle that never calls the capability check predates the guidance
-      // (2.1.293) and has nothing to admit Opus 5.5 to.
-      if (!/"haiku_5_5_early_stopping_guidance",[A-Za-z_$]/.test(content)) {
-        return null;
+      // Only a bundle whose own VERSION is below 2.1.293 predates the guidance.
+      // Deciding by the capability name instead would read a rename as
+      // "nothing to patch" and pass a binary that lost the guidance.
+      const version = /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/.exec(content);
+      if (version !== null) {
+        const [major, minor, micro] = version.slice(1).map(Number);
+        if (major < 2 || (major === 2 && (minor < 1 || (minor === 1 && micro < 293)))) {
+          return null;
+        }
       }
       const I = "[A-Za-z_$][\\w$]*";
       const patched = new RegExp(
