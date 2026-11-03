@@ -1986,7 +1986,7 @@ const CHECKS: Check[] = [
   {
     id: "opus55-early-stopping",
     kind: "custom",
-    disabledMarker: "&&!/claude-opus-5-5/.test(String(",
+    disabledMarker: '.replace("[1m]","")!=="claude-opus-5-5")',
     describe: "the finish-the-request guidance gate also admits Opus 5.5",
     run: (content: string): string | null => {
       // Only a bundle whose own VERSION is below 2.1.293 predates the guidance.
@@ -2000,10 +2000,10 @@ const CHECKS: Check[] = [
         }
       }
       const I = "[A-Za-z_$][\\w$]*";
-      const patched = new RegExp(
-        `if\\(!${I}\\("haiku_5_5_early_stopping_guidance",(${I}),${I}\\)&&!/claude-opus-5-5/\\.test\\(String\\(\\1\\)\\)\\)return(?:!1| null);`
-      );
-      if (!patched.test(content)) {
+      // The added test is fixed text after the captured model parameter, so it
+      // is compared as text rather than through another layer of escaping.
+      const gate = new RegExp(`if\\(!${I}\\("haiku_5_5_early_stopping_guidance",(${I}),${I}\\)&&`).exec(content);
+      if (gate === null || !content.startsWith(`String(${gate[1]}).replace("[1m]","")!=="claude-opus-5-5")return`, gate.index + gate[0].length)) {
         return "the early-stopping guidance gate does not admit Opus 5.5";
       }
       const original = new RegExp(`if\\(!${I}\\("haiku_5_5_early_stopping_guidance",${I},${I}\\)\\)return(?:!1| null);`);
@@ -2022,7 +2022,7 @@ const CHECKS: Check[] = [
       // wiring would never reach the model, or would reach it after every tool
       // call.
       const wired = new RegExp(
-        `${I}\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\(${I}\\((${I})\\.criticalSystemReminder_EXPERIMENTAL\\?\\?\\(!\\1\\.agentId&&${I}\\?\\.isRegularUserPrompt&&${I}\\?\\.isHumanTypedPrompt!==!1\\?"Before acting on this message, check which of the user's CLAUDE\\.md instructions`
+        `${I}\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\(${I}\\((${I})\\.criticalSystemReminder_EXPERIMENTAL\\?\\?\\(!\\1\\.agentId&&${I}\\?\\.isRegularUserPrompt\\?"Before acting on this message, check which of the user's CLAUDE\\.md instructions`
       );
       const match = wired.exec(content);
       if (match === null) {
@@ -2042,15 +2042,20 @@ const CHECKS: Check[] = [
         return `expected 1 attachment collector, found ${collectors.length}`;
       }
       const [collector] = collectors;
-      const firstSite = content.indexOf('("critical_system_reminder",', collector.index);
-      if (firstSite === -1 || firstSite < match.index || firstSite >= match.index + match[0].length) {
-        return "the wired rules reminder is not the collector's own reminder site";
+      // The wired site must lie inside the collector's own body, which runs to
+      // its matching `}` and is followed by the next declaration.
+      const bodyEnd = closingBraceIndex(content, collector.index + collector[0].indexOf("{"));
+      if (bodyEnd === -1 || !/^(?:async function |function |var |let |const |class )/.test(content.slice(bodyEnd + 1, bodyEnd + 16))) {
+        return "the attachment collector's body could not be delimited";
+      }
+      if (match.index < collector.index || match.index > bodyEnd) {
+        return "the wired rules reminder is not inside the attachment collector";
       }
       const injected = new RegExp(
-        `\\?\\?\\(!(${I})\\.agentId&&(${I})\\?\\.isRegularUserPrompt&&\\2\\?\\.isHumanTypedPrompt!==!1\\?`
+        `\\?\\?\\(!(${I})\\.agentId&&(${I})\\?\\.isRegularUserPrompt\\?`
       ).exec(match[0]);
       if (injected === null) {
-        return "the rules reminder is not gated on a typed, human prompt";
+        return "the rules reminder is not gated on the main thread and a new turn";
       }
       if (injected[1] !== collector[3] || injected[2] !== collector[2]) {
         return `the rules reminder reads ${injected[1]}/${injected[2]}, not the collector's ${collector[3]}/${collector[2]}`;

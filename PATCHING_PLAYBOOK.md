@@ -1049,7 +1049,7 @@ What we rewrite:
 - the two steer wordings gain one sentence: CLAUDE.md instructions and feedback memories are standing rules to check before an action and before ending the turn
 - both memory wordings frame `feedback` memories as standing instructions and ask for the memory to be read when its `MEMORY.md` line bears on the task
 - the early-stopping gate also admits a canonical model name matching `claude-opus-5-5`
-- the reminder slot defaults to a one-line pointer back to the rules when empty, on the main thread (`!ctx.agentId`), for `isRegularUserPrompt` and not `isHumanTypedPrompt:false`
+- the reminder slot defaults to a one-line pointer back to the rules when empty, on the main thread (`!ctx.agentId`), for `isRegularUserPrompt`, whatever the prompt's origin
 
 Why this exists:
 
@@ -1059,12 +1059,12 @@ Likely break signs:
 
 - a steer or memory wording reports `candidates: 0`: upstream reworded it, or added a third wording on a new prompt flag; capture the request again and look for the slot's new text
 - the verifier reports the carve-out count does not match the wordings: one wording was rewritten twice or left alone
-- `opus55-early-stopping` reports 1 candidate, 0 patched on a 2.1.293+ bundle: the capability was renamed or the gate reshaped
-- `turn-rules-reminder` patches 0: the collector signature changed (parameter count, or the `agentContext` opener moved)
+- `opus55-early-stopping` reports 0 candidates on a 2.1.293+ bundle: the capability was renamed or the gate reshaped
+- `turn-rules-reminder` reports 0 candidates: the collector signature changed (parameter count, or the `agentContext` opener moved), its body no longer ends right before a declaration, or the reminder site left its body; 1 candidate and 0 patched means the body no longer reads the option bag as `<last param>?.isRegularUserPrompt`
 
 Known gaps:
 
-- a message typed while the model is mid-turn arrives as queued input on the after-tool-step path and gets no reminder
+- a message sent while the model is mid-turn arrives as queued input on the after-tool-step path and gets no reminder
 - a session started before the patch replays its recorded `heron_brook` decision, so it keeps the old early-stopping answer
 
 ## Updating A Broken Patch

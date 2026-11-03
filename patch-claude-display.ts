@@ -2386,10 +2386,17 @@ const CALICO_LEAN_PROACTIVE_ORIGINAL =
 
 // Each pair is one wording of the same instruction; upstream swaps between
 // them on server-side prompt flags, so every wording present is rewritten.
-// A replacement may start with its own original (the lean wording only gains a
-// sentence), so text already rewritten is set aside first: a second run then
-// finds nothing, instead of appending the sentence again.
+// The first pair is the wording every version has: if neither it nor its
+// rewrite is in the bundle, nothing is patched and one candidate is reported,
+// so --assert-all fails here rather than only at the verifier. A replacement
+// may start with its own original (the lean wording only gains a sentence), so
+// text already rewritten is set aside first: a second run then finds nothing,
+// instead of appending the sentence again.
 function replaceLiterals(content, pairs) {
+  const [requiredOriginal, requiredReplacement] = pairs[0];
+  if (!content.includes(requiredOriginal) && !content.includes(requiredReplacement)) {
+    return { content, candidates: 1, patched: 0 };
+  }
   let output = content;
   let candidates = 0;
   for (const [original, replacement] of pairs) {
@@ -2474,8 +2481,8 @@ function patchOpus55EarlyStopping(content) {
   //   2.1.312–2.1.317  function Ofr(e,n){if(!bR("haiku_5_5_early_stopping_guidance",e,n))return!1;…
   //
   // The captured Opus 5.5 request has it zero times. The first argument is the
-  // canonical model name, so matching it also covers `[1m]` and provider
-  // spellings. The trailing `tengu_idempotent_wolf` kill switch is left in
+  // canonical model name; it is matched whole (with or without `[1m]`), so a
+  // later id that merely starts with claude-opus-5-5 is not admitted. The trailing `tengu_idempotent_wolf` kill switch is left in
   // place. The system-prompt engine replays a decision already recorded for a
   // session, so a session started before this patch keeps its old answer.
   //
@@ -2494,9 +2501,9 @@ function patchOpus55EarlyStopping(content) {
   let candidates = 0;
   const output = content.replace(gatePattern, (full, name, model, raw, capability, bail) => {
     candidates += 1;
-    return `function ${name}(${model},${raw}){if(!${capability}("haiku_5_5_early_stopping_guidance",${model},${raw})&&!/claude-opus-5-5/.test(String(${model})))${bail};`;
+    return `function ${name}(${model},${raw}){if(!${capability}("haiku_5_5_early_stopping_guidance",${model},${raw})&&String(${model}).replace("[1m]","")!=="claude-opus-5-5")${bail};`;
   });
-  return { content: output, candidates: Math.max(candidates, 1), patched: candidates };
+  return { content: output, candidates, patched: candidates };
 }
 
 const CALICO_TURN_RULES_REMINDER =
@@ -2512,46 +2519,55 @@ function patchTurnRulesReminder(content) {
   //
   // It is filled with a short pointer back to the rules when the slot is empty,
   // on the main thread (`!n.agentId`, the same test upstream's own
-  // silent_turn_reminder uses in this function), and only for a new turn the
-  // user typed (`isRegularUserPrompt`, and not `isHumanTypedPrompt:false`) —
-  // so it sits next to each new request rather than after every tool call. An
-  // agent's own reminder still wins. A message typed while the model is
+  // silent_turn_reminder uses in this function), and only for a new turn
+  // (`isRegularUserPrompt`) — so it sits next to each new request rather than
+  // after every tool call. The prompt's origin is not looked at, so a prompt
+  // from Remote Control or the SDK gets it as one typed in the terminal does.
+  // An agent's own reminder still wins. A message sent while the model is
   // mid-turn arrives on the after-tool-step path as queued input and gets no
   // reminder; that path is not covered.
   //
   // The collector is the one `async function` with seven parameters that opens
   // `if(X(<ctx>.agentContext))return[];` (every version 2.1.278–2.1.317); its
-  // last parameter is the option bag. Exactly one such collector must exist
-  // and the reminder site must be its first, or nothing is patched.
+  // last parameter is the option bag. Its body runs to the matching `}`, which
+  // on every measured version is followed directly by the next declaration.
+  // The reminder site must be the one site inside that body, and the body must
+  // read the option bag as `<b>?.isRegularUserPrompt`; otherwise nothing is
+  // patched.
   const I = "[A-Za-z_$][\\w$]*";
   const collectors = [
     ...content.matchAll(
       new RegExp(`async function ${I}\\(((?:${I},){6}(${I}))\\)\\{if\\(${I}\\((${I})\\.agentContext\\)\\)return\\[\\];`, "g")
     ),
   ];
-  const sitePattern = new RegExp(
-    `(${I})\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\((${I})\\((${I})\\.criticalSystemReminder_EXPERIMENTAL\\)\\)\\)`,
-    "g"
-  );
-  const sites = [...content.matchAll(sitePattern)];
-  const collector = collectors.length === 1 ? collectors[0] : null;
-  const site = collector === null ? undefined : sites.find((match) => match.index > collector.index);
-  const options = collector?.[2];
-  const ctx = collector?.[3];
-  if (
-    site === undefined ||
-    site[3] !== ctx ||
-    !new RegExp(`(?<![\\w$.])${escapeRegExp(options)}\\?\\.isRegularUserPrompt`).test(content.slice(collector.index, site.index + 3000))
-  ) {
+  if (collectors.length !== 1) {
+    return { content, candidates: 0, patched: 0 };
+  }
+  const [collector] = collectors;
+  const options = collector[2];
+  const ctx = collector[3];
+  const bodyEnd = closingBraceIndex(content, collector.index + collector[0].indexOf("{"));
+  if (bodyEnd === -1 || !/^(?:async function |function |var |let |const |class )/.test(content.slice(bodyEnd + 1, bodyEnd + 16))) {
+    return { content, candidates: 0, patched: 0 };
+  }
+  const body = content.slice(collector.index, bodyEnd);
+  const sites = [
+    ...body.matchAll(
+      new RegExp(`(${I})\\("critical_system_reminder",\\(\\)=>Promise\\.resolve\\((${I})\\((${I})\\.criticalSystemReminder_EXPERIMENTAL\\)\\)\\)`, "g")
+    ),
+  ];
+  if (sites.length !== 1) {
     return { content, candidates: sites.length, patched: 0 };
   }
+  const [site] = sites;
+  const readsOptions = new RegExp(`(?<![\\w$.])${escapeRegExp(options)}\\?\\.isRegularUserPrompt`).test(body);
+  if (site[3] !== ctx || !readsOptions) {
+    return { content, candidates: 1, patched: 0 };
+  }
   const [full, collect, wrap] = site;
-  const replacement = `${collect}("critical_system_reminder",()=>Promise.resolve(${wrap}(${ctx}.criticalSystemReminder_EXPERIMENTAL??(!${ctx}.agentId&&${options}?.isRegularUserPrompt&&${options}?.isHumanTypedPrompt!==!1?${JSON.stringify(CALICO_TURN_RULES_REMINDER)}:void 0))))`;
-  return {
-    content: content.slice(0, site.index) + replacement + content.slice(site.index + full.length),
-    candidates: sites.length,
-    patched: sites.length === 1 ? 1 : 0,
-  };
+  const at = collector.index + site.index;
+  const replacement = `${collect}("critical_system_reminder",()=>Promise.resolve(${wrap}(${ctx}.criticalSystemReminder_EXPERIMENTAL??(!${ctx}.agentId&&${options}?.isRegularUserPrompt?${JSON.stringify(CALICO_TURN_RULES_REMINDER)}:void 0))))`;
+  return { content: content.slice(0, at) + replacement + content.slice(at + full.length), candidates: 1, patched: 1 };
 }
 
 function patchUsageLimitUnderRemoteControl(content) {
