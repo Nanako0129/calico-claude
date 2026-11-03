@@ -3762,6 +3762,45 @@ function patchCompactTokensSaved(content) {
   return { content: output, candidates, patched: candidates };
 }
 
+// True when every `{` opened in text[start, end) is closed again before end, so
+// no block opened after the site at `start` still encloses the site at `end`.
+// Every kind of body counts, not just `=>{` and `function`: method shorthand,
+// getters, class bodies and plain `if(){` blocks all open a `{`. Over-refusing
+// an `if` block is loud (--assert-all fails); a missed closure is silent.
+//
+// This deliberately does not tokenize JavaScript. Regex literals, comments and
+// templates are where a hand-written scanner miscounts, and a miscount here
+// fails open, so any `` ` `` or `/` in the segment refuses outright. Only plain
+// `'…'` and `"…"` strings are skipped: with no regex allowed, a quote can only
+// open a string. The 2.1.316–2.1.318 segments contain neither character.
+//
+// Two things this does not check: a `}` closing a block opened before `start`
+// is allowed (2.1.318 closes an `if(Gt){` there), so a callback wrapping the
+// progress call alone is not detected; and an expression-bodied arrow is not a
+// block. The latter is safe only because every completion pattern starts with
+// `let `, which an expression body cannot contain.
+// Mirrored in scripts/verify-patched-binary.ts; a test runs both on the same inputs.
+function blocksOpenedBetweenClose(text, start, end) {
+  let open = 0;
+  for (let i = start; i < end; i += 1) {
+    const char = text[i];
+    if (char === "`" || char === "/") {
+      return false;
+    }
+    if (char === '"' || char === "'") {
+      for (i += 1; i < end && text[i] !== char; i += 1) {
+        if (text[i] === "\\") i += 1;
+      }
+      if (i >= end) return false;
+    } else if (char === "{") {
+      open += 1;
+    } else if (char === "}" && open > 0) {
+      open -= 1;
+    }
+  }
+  return open === 0;
+}
+
 function patchBackgroundAgentUsage(content) {
   const original = content;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
@@ -3959,15 +3998,16 @@ function patchBackgroundAgentUsage(content) {
   const completionIndex = completionMatch?.match.index ?? -1;
   const completionFunctionStart =
     completionIndex === -1 ? -1 : content.lastIndexOf("function ", completionIndex);
-  const progressToCompletionSegment =
-    progressEnd === -1 || completionIndex === -1
-      ? ""
-      : content.slice(progressEnd, completionIndex);
+  // The completion must not sit inside a closure (or any block) opened after the
+  // progress call. Testing the segment for any `=>` was too
+  // blunt: 2.1.318 put `tools.some((at)=>ht(at,ut))` inside an error
+  // constructor there, a predicate that closes long before the completion, and
+  // the module refused a bundle it handles correctly. What matters is whether a
+  // block opened in the segment is still open at the completion.
   const completionRemainsDirect =
     progressEnd !== -1 &&
     completionIndex >= progressEnd &&
-    !progressToCompletionSegment.includes("=>") &&
-    !progressToCompletionSegment.includes("function ");
+    blocksOpenedBetweenClose(content, progressEnd, completionIndex);
   const trackerCount = trackerMatches.length;
   const eventCount = accountingMatches.length;
   const progressCount = progressMatches.length;
@@ -6432,6 +6472,7 @@ module.exports = {
   CALICO_HEADER_FETCH,
   patchCompactBodyPolicy,
   patchBackgroundAgentUsage,
+  blocksOpenedBetweenClose,
   patchStatuslineCommittedUsage,
   patchStatuslineRateLimitWindows,
   patchCustomContextWindows,

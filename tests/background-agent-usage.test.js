@@ -4,9 +4,11 @@ const vm = require("node:vm");
 
 const {
   patchBackgroundAgentUsage,
+  blocksOpenedBetweenClose: patcherBlocksClose,
 } = require("../patch-claude-display.ts");
 const {
   evaluatePatchModule,
+  blocksOpenedBetweenClose: verifierBlocksClose,
 } = require("../scripts/verify-patched-binary.ts");
 
 const fixture = `
@@ -456,6 +458,76 @@ test("fails atomically when completion is deferred into an arrow callback", () =
   assert.equal(result.content.includes("__calicoTrackAgentUsage"), false);
 });
 
+test("accepts callbacks that close before the completion (2.1.318 error constructor)", () => {
+  const completion = "let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});";
+  // 2.1.318 builds an error with `tools.some((at)=>ht(at,ut))` between the
+  // progress call and the completion; a braced callback that closes is the
+  // same case one step further.
+  const withCallbacks = fixture.replace(
+    completion,
+    `if(gz)throw Error(String(tl.some((q)=>q.ok)));if(gz)tl.forEach((q)=>{q.ok=!0});${completion}`
+  );
+  assert.notEqual(withCallbacks, fixture);
+  const result = patchBackgroundAgentUsage(withCallbacks);
+
+  assert.equal(result.patched, result.candidates);
+  assert.ok(result.patched > 0);
+  assert.equal(evaluatePatchModule("background-agent-usage", result.content), null);
+});
+
+test("block check: closed callbacks pass, anything still open at the site fails", () => {
+  // `@` marks the completion site; the segment is everything before it.
+  const cases = [
+    // closed before the site
+    ["x.some((q)=>q.ok);@", true],
+    ["x.forEach((q)=>{q.ok=!0});@", true],
+    ["function inner(){return 1}@", true],
+    ['throw Error("tools.some is not a function");@', true],
+    ["}if(a){return}@", true], // closes a block opened before the segment
+    ['log("{");@', true], // brace inside a string does not count
+    // still open at the site
+    ["queueMicrotask(()=>{@", false],
+    ["queueMicrotask(function(){@", false],
+    ["const h={done(){@", false], // method shorthand
+    ["class K{m(){@", false],
+    ['x.forEach((q)=>{log("}");@', false], // a string `}` cannot cancel a real `{`
+    ["if(a){@", false], // over-refused on purpose: loud, never silent
+    // anything a hand-written scanner would miscount refuses outright
+    ["x.forEach((q)=>{log(`}`);@", false],
+    ["let t=`a${b}`;@", false],
+    ["s=s.replace(/'/g,\"\");queueMicrotask(()=>{@", false], // quote inside a regex
+    ['queueMicrotask(()=>{x=y.replace(/\\}/g,"");@', false], // brace inside a regex
+    ["let t=`${`{`}`;queueMicrotask(()=>{@", false], // nested template
+    ["a=b/c;@", false], // division too: refusing is loud
+    ['log("unterminated@', false],
+  ];
+  for (const [source, expected] of cases) {
+    const end = source.indexOf("@");
+    assert.equal(patcherBlocksClose(source, 0, end), expected, `patcher: ${source}`);
+    assert.equal(verifierBlocksClose(source, 0, end), expected, `verifier: ${source}`);
+  }
+});
+
+test("fails atomically when completion is moved into a method body", () => {
+  const completion = "let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});";
+  const moved = fixture.replace(completion, `const hz={done(){${completion}}};hz.done();`);
+  assert.notEqual(moved, fixture);
+  const result = patchBackgroundAgentUsage(moved);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, moved);
+});
+
+test("fails atomically when completion is deferred into a function expression", () => {
+  const completion = "let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});";
+  const deferred = fixture.replace(completion, `queueMicrotask(function(){${completion}});`);
+  assert.notEqual(deferred, fixture);
+  const result = patchBackgroundAgentUsage(deferred);
+
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, deferred);
+});
+
 test("fails atomically when progress and completion matches come from different functions", () => {
   const split = fixture.replace(
     "function asyncLoopFixture(){hQn(re,_e,ie,i.options.tools),Z0u(e,a9r(re),s);let oe=RTy(s,e,g),de=fCs(oe,e,n,{suppressTelemetry:ee});if(tRu(de,s))return}",
@@ -672,7 +744,10 @@ test("split completion fails closed when it is not the one shared site", () => {
   const brokenFixtures = [
     source.replace("let fo=Ws(T,e,de)", "let fo=Ws(other,e,de)"),
     source.replace("let fo=Ws(T,e,de)", "let fo=Ws(T,other,de)"),
-    source.replace(progress + completion, progress + "const hop=()=>0;" + completion),
+    // A closure that still encloses the completion. (An arrow that closes
+    // before it, such as `const hop=()=>0;`, leaves the completion in scope
+    // and is accepted; see the 2.1.318 error-constructor test.)
+    source.replace(progress + completion, progress + "const hop=()=>{" + completion + "};"),
     source.replace(
       `function asyncLoopFixture(){let xe=Ws(T,e,de).filter((q)=>q);let De=IPn(xe,e,{...r,modelsUsed:le},{suppressTelemetry:!0});${progress}${completion}}`,
       `function progressFixture(){let xe=Ws(T,e,de).filter((q)=>q);let De=IPn(xe,e,{...r,modelsUsed:le},{suppressTelemetry:!0});${progress}}function completionFixture(){${completion}}`
