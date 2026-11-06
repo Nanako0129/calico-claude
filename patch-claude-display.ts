@@ -2583,6 +2583,38 @@ function patchTurnRulesReminder(content) {
   return { content: content.slice(0, at) + replacement + content.slice(at + full.length), candidates: 1, patched: 1 };
 }
 
+function patchStripUserEmailContext(content) {
+  // The user context hands the model the signed-in account's address:
+  //
+  //   let Te={claudeMd:y??"",...H&&{userEmail:`The user's email address is ${H}. Use it only to identify the user, …`},…}
+  //
+  // and the model has sent it out as a client's contact details, e.g. in a
+  // `curl -A` User-Agent to a site whose policy asks scripted clients for an
+  // email (anthropics/claude-code#107757). Upstream's answer is the built-in
+  // `cc-plugin-privacy` mod, which refuses only a shell call that holds the
+  // address and names a User-Agent; WebFetch, MCP, scripts and computed values
+  // pass. Not handing the address to the model at all closes every one of
+  // those paths. `CALICO_KEEP_USER_EMAIL=1` restores the upstream block.
+  //
+  // The block is spread from `<email>&&{userEmail:…}`; the same object feeds
+  // the session-start context and its re-read, so this one site covers both.
+  // Exactly one site has existed in every bundle 2.1.278–2.1.319; any other
+  // count patches nothing.
+  const I = "[A-Za-z_$][\\w$]*";
+  const sitePattern = new RegExp(`\\.\\.\\.(${I})&&\\{userEmail:\``, "g");
+  const sites = [...content.matchAll(sitePattern)];
+  if (sites.length !== 1) {
+    return { content, candidates: sites.length, patched: 0 };
+  }
+  const [site] = sites;
+  const replacement = `...${site[1]}&&process.env.CALICO_KEEP_USER_EMAIL==="1"&&{userEmail:\``;
+  return {
+    content: content.slice(0, site.index) + replacement + content.slice(site.index + site[0].length),
+    candidates: 1,
+    patched: 1,
+  };
+}
+
 function patchUsageLimitUnderRemoteControl(content) {
   // With Remote Control on, hitting a claude.ai usage limit does nothing: the
   // `/rate-limit-options` menu does not open and automatic continue does not
@@ -6261,6 +6293,11 @@ const PATCH_MODULES = [
     apply: patchTurnRulesReminder,
   },
   {
+    id: "strip-user-email-context",
+    description: "Keep the account email out of the model context unless CALICO_KEEP_USER_EMAIL=1",
+    apply: patchStripUserEmailContext,
+  },
+  {
     id: "usage-limit-under-remote-control",
     description: "Open the usage-limit menu and allow automatic continue while Remote Control is on",
     apply: patchUsageLimitUnderRemoteControl,
@@ -6584,6 +6621,7 @@ module.exports = {
   patchFeedbackMemoryFraming,
   patchOpus55EarlyStopping,
   patchTurnRulesReminder,
+  patchStripUserEmailContext,
   CALICO_RULES_BEFORE_ACTING,
   CALICO_FEEDBACK_MEMORY_FRAMING,
   CALICO_FEEDBACK_MEMORY_FRAMING_HYGIENE,
