@@ -142,3 +142,91 @@ test("2.1.288: the request gate moved into a shared private method", () => {
   assert.equal(vm.runInContext("new Waiter().wouldWait(1)", context), true);
   assert.equal(vm.runInContext("unrelatedDialog()", context), true);
 });
+
+const waiterRequest =
+  "function request(e){if(e===void 0||!gt()||!_bt()||!z3t()||em())return{outcome:\"declined\",failureNote:void 0};return{outcome:\"accepted\"}}";
+
+// 2.1.319 split the waiter method into two billing branches; the negated
+// predicate now sits inside the first one, followed by more terms.
+test("2.1.319: the waiter's negated predicate sits inside a billing branch", () => {
+  const branched = fixture.replace(
+    waiterRequest,
+    "class Waiter{#f(){return void 0}#p(){return gt()&&this.#f()===void 0&&z3t()&&(_bt()&&!em()&&state.billing!==\"usage_based\"||state.alt===!0&&!state.background)}wouldWait(e){return this.#p()}join(e){if(e===void 0||!this.#p())return{outcome:\"declined\",failureNote:void 0};return{outcome:\"accepted\"}}}\nfunction request(e){return new Waiter().join(e)}"
+  );
+  assert.notEqual(branched, fixture);
+  const result = patchUsageLimitUnderRemoteControl(branched);
+  assert.equal(result.patched, 5);
+  assert.equal(evaluatePatchModule("usage-limit-under-remote-control", result.content), null);
+  const context = { host: { surfaceCapabilities: { replBridgeActive: () => true } }, state: { background: false, armed: false } };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+  assert.equal(vm.runInContext("request({})", context).outcome, "accepted");
+  assert.equal(vm.runInContext("new Waiter().wouldWait(1)", context), true);
+  assert.equal(vm.runInContext("unrelatedDialog()", context), true);
+  // The background-session term still declines in the branched shape.
+  vm.runInContext("state.background=true", context);
+  assert.equal(vm.runInContext("request({})", context).outcome, "declined");
+});
+
+const waiterClass = (body) =>
+  `class Waiter{${body}wouldWait(e){return this.#c()}join(e){if(e===void 0||!this.#c())return{outcome:"declined",failureNote:void 0};return{outcome:"accepted"}}}\nfunction request(e){return new Waiter().join(e)}`;
+
+test("waiter method: the predicate is found by name, not by being the first negated call", () => {
+  const source = fixture.replace(waiterRequest, waiterClass("#c(){return gt()&&!_bt()===!1&&!em()}"));
+  assert.notEqual(source, fixture);
+  const result = patchUsageLimitUnderRemoteControl(source);
+  assert.equal(result.patched, 5);
+  assert.match(result.content, /!_bt\(\)===!1&&!em\(!0\)\}wouldWait\(/);
+  assert.equal(evaluatePatchModule("usage-limit-under-remote-control", result.content), null);
+});
+
+test("waiter method: a private method sharing the predicate's name is not a call", () => {
+  const source = fixture
+    .replace(waiterRequest, "class Waiter{#em(){return void 0}#c(){return this.#em()===void 0&&!em()}wouldWait(e){return this.#c()}join(e){if(e===void 0||!this.#c())return{outcome:\"declined\",failureNote:void 0};return{outcome:\"accepted\"}}}\nfunction request(e){return new Waiter().join(e)}");
+  assert.notEqual(source, fixture);
+  const result = patchUsageLimitUnderRemoteControl(source);
+  assert.equal(result.patched, 5);
+  assert.equal(evaluatePatchModule("usage-limit-under-remote-control", result.content), null);
+});
+
+test("waiter method: `return` written without a space still matches", () => {
+  const source = fixture.replace(waiterRequest, waiterClass("#c(){return!em()&&gt()}"));
+  assert.notEqual(source, fixture);
+  const result = patchUsageLimitUnderRemoteControl(source);
+  assert.equal(result.patched, 5);
+  assert.equal(evaluatePatchModule("usage-limit-under-remote-control", result.content), null);
+});
+
+test("waiter method: a second, non-negated call of the predicate fails closed", () => {
+  const source = fixture.replace(waiterRequest, waiterClass("#c(){return gt()&&!em()&&(z3t()||em()===!1)}"));
+  assert.notEqual(source, fixture);
+  const result = patchUsageLimitUnderRemoteControl(source);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, source);
+});
+
+test("both request spellings present fails closed", () => {
+  const source = fixture.replace(waiterRequest, `${waiterRequest}\n${waiterClass("#c(){return gt()&&!em()}").replace("function request(", "function request2(")}`);
+  assert.notEqual(source, fixture);
+  assert.equal(patchUsageLimitUnderRemoteControl(source).patched, 0);
+});
+
+test("verifier rejects a waiter that still calls the predicate bare", () => {
+  const source = fixture.replace(waiterRequest, waiterClass("#c(){return gt()&&!em()}"));
+  const patched = patchUsageLimitUnderRemoteControl(source).content;
+  assert.equal(evaluatePatchModule("usage-limit-under-remote-control", patched), null);
+  const reverted = patched.replace("&&!em(!0)}wouldWait(", "&&!em(!0)&&em()===!1}wouldWait(");
+  assert.notEqual(reverted, patched);
+  assert.notEqual(evaluatePatchModule("usage-limit-under-remote-control", reverted), null);
+});
+
+test("waiter method: a second negated copy of the predicate fails closed", () => {
+  const twice = fixture.replace(
+    waiterRequest,
+    "class Waiter{#c(){return gt()&&!em()&&(z3t()||!em())}wouldWait(e){return this.#c()}join(e){if(e===void 0||!this.#c())return{outcome:\"declined\",failureNote:void 0};return{outcome:\"accepted\"}}}\nfunction request(e){return new Waiter().join(e)}"
+  );
+  assert.notEqual(twice, fixture);
+  const result = patchUsageLimitUnderRemoteControl(twice);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, twice);
+});
