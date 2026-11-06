@@ -4834,6 +4834,77 @@ function patchStickyPromptHeader(content) {
   return { content: output, candidates, patched };
 }
 
+// Fullscreen scrolling re-runs every plugin `ui.render` hook for the transcript
+// messages at the viewport's edges, on every wheel step. The engine caches a
+// plugin's answer under a key built by `valueKeyOf` (2.1.318: chunk 427,
+// minified `Vpr`) from the viewport columns, isFullscreen and a hash of the
+// whole props object, and props carry `onScreen` (which rows of the message the
+// viewport shows, or null while it is drawn outside the viewport). A scroll
+// changes onScreen, so the key changes, the cache misses, and the whole plugin
+// chain, tree validation and rebuild run again for a message whose content did
+// not change.
+//
+// The same key also drives the UI's re-request (the effect dependency in the
+// transcript row) and the held-row lookup behind askedOnScreen/heldRowsOf. A
+// cache entry records the onScreen of the dispatch that created it, and the
+// engine's held-row path (noteHeldRows) only records rows while that is null.
+// Dropping onScreen from the key outright would freeze an entry first drawn
+// off-screen as off-screen for good, and leave a mod that draws a placeholder
+// off-screen on its placeholder. So the key keeps whether onScreen is null and
+// drops only the row range: a message still re-renders when it enters or
+// leaves the viewport, once each way, and no longer on every wheel step while
+// it stays visible. A mod reading e.props.onScreen keeps the range from the
+// render that brought the message on screen: one that draws only the visible
+// rows and placeholders for the rest keeps those placeholders on screen as
+// more of the message scrolls in, so it should not run with the env on.
+//
+// That still breaks the documented promise that a plugin hears onScreen again
+// on a scroll, so the change is opt-in: it does nothing unless
+// CALICO_STABLE_ONSCREEN=1. The env is read on every call, not once when the
+// chunk loads: Claude Code copies the settings.json `env` block into
+// process.env during startup, and a chunk evaluated before that would never
+// see a value set there.
+//
+// `kos` memoizes its hash on the props object's identity, so the stripped copy
+// is memoized on the props object it was made from: key computations handed
+// the same object (the cache lookup and the row's re-request effect, read from
+// the 2.1.319 bundle) share one copy and one hash. The held-row lookup builds a
+// fresh props object per call, so it pays a copy and a serialization each time;
+// stock pays the serialization there too.
+const STABLE_ONSCREEN_HELPER = "__calicoStableOnScreenProps";
+
+function patchPluginRenderStableOnScreen(content) {
+  if (content.includes(`function ${STABLE_ONSCREEN_HELPER}(`)) {
+    // One candidate, nothing patched: an already patched bundle, which the
+    // playbook tells apart from a reshaped key (zero candidates).
+    return { content, candidates: 1, patched: 0 };
+  }
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const site = new RegExp(
+    `var (${identifier})=\\((${identifier})\\)=>\\[\\2\\.viewport\\?\\.columns\\?\\?"",\\2\\.viewport\\?\\.isFullscreen\\?\\?"",(${identifier})\\(\\2\\.props\\)\\]\\.join\\("\\\\x00"\\);`,
+    "g"
+  );
+  const matches = [...content.matchAll(site)];
+  if (matches.length !== 1) {
+    return { content, candidates: matches.length, patched: 0 };
+  }
+  const [match] = matches;
+  const [whole, keyFn, param, hashFn] = match;
+  const start = match.index;
+  const helper =
+    `var __calicoStableOnScreenSeen=new WeakMap;` +
+    `function ${STABLE_ONSCREEN_HELPER}(p){` +
+    `if(process.env.CALICO_STABLE_ONSCREEN!=="1"||p===null||typeof p!=="object"||!Object.hasOwn(p,"onScreen"))return p;` +
+    `let s=__calicoStableOnScreenSeen.get(p);` +
+    `if(s===void 0){s={...p,onScreen:p.onScreen==null?p.onScreen:1};__calicoStableOnScreenSeen.set(p,s)}` +
+    `return s}`;
+  const key =
+    "var " + keyFn + "=(" + param + ")=>[" + param + '.viewport?.columns??"",' + param +
+    '.viewport?.isFullscreen??"",' + hashFn + "(" + STABLE_ONSCREEN_HELPER + "(" + param + '.props))].join("\\x00");';
+  const output = content.slice(0, start) + helper + key + content.slice(start + whole.length);
+  return { content: output, candidates: 1, patched: 1 };
+}
+
 function patchStatuslineRateLimitWindows(content) {
   const original = content;
   const identifier = "[A-Za-z_$][\\w$]*";
@@ -6150,6 +6221,11 @@ const PATCH_MODULES = [
     apply: patchStickyPromptHeader,
   },
   {
+    id: "plugin-render-stable-onscreen",
+    description: "Opt-in (CALICO_STABLE_ONSCREEN=1): plugin render cache key drops the onScreen row range, so scrolling stops re-running ui.render for messages that stay on screen",
+    apply: patchPluginRenderStableOnScreen,
+  },
+  {
     id: "custom-context-window",
     description: "Allow exact opt-in custom model context windows",
     apply: patchCustomContextWindows,
@@ -6490,6 +6566,7 @@ function main() {
 module.exports = {
   patchDisableUsageWrapUpHints,
   patchStickyPromptHeader,
+  patchPluginRenderStableOnScreen,
   patchGatewayFastMode,
   patchActiveTurnPromptIdentity,
   patchCompactRequestSource,
