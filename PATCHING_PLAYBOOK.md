@@ -1084,6 +1084,49 @@ Known gaps:
 - a message sent while the model is mid-turn arrives as queued input on the after-tool-step path and gets no reminder
 - a session started before the patch replays its recorded `heron_brook` decision, so it keeps the old early-stopping answer
 
+### `plugin-render-stable-onscreen`
+
+Intent: with `CALICO_STABLE_ONSCREEN=1`, scrolling a fullscreen transcript stops re-running mod
+`ui.render` hooks for messages whose content did not change.
+
+Upstream shape (2.1.318, chunk 427, exported as `valueKeyOf`):
+
+```js
+var Vpr=(e)=>[e.viewport?.columns??"",e.viewport?.isFullscreen??"",kos(e.props)].join("\x00");
+```
+
+`kos` hashes the props object (memoized on its identity), and the transcript row's props carry
+`onScreen`, which changes for the messages at the viewport's edges on every wheel step. The key feeds
+three places: the engine's render cache (`Xno`, reuse check `Kno`), the transcript row's effect that
+re-requests `ui.render` (`hr`), and the held-row lookup `r()` behind `askedOnScreen`/`heldRowsOf`.
+
+The patch splices a gate `__calicoStableOnScreenOn` (read from the env once, when the module loads)
+and a helper `__calicoStableOnScreenProps`, both in the same module right before the key, and hashes
+`__calicoStableOnScreenProps(props)` instead of `props`. Without the env the helper returns the props
+untouched, so the key is byte-for-byte stock. With it, the helper returns a copy whose `onScreen` is
+reduced to whether it is null: `null` stays `null`, any row range becomes `1`.
+
+Why null-ness stays in the key: a cache entry records the `onScreen` of the dispatch that created it,
+`noteHeldRows` only records held rows while that is `null`, and `askedOnScreen` seeds a remounted row
+from it. Dropping `onScreen` outright (the first version of this module, caught in review) left an
+entry first drawn off-screen marked off-screen after it scrolled into view, and a mod that draws a
+placeholder off-screen stuck on its placeholder. Keeping null-ness, a message re-renders once when it
+enters the viewport and once when it leaves, as stock does at those transitions, and no longer on every
+wheel step while it stays visible.
+
+The copy is memoized in a `WeakMap` on the props object it was made from. Key computations handed the
+same object (the cache lookup and the row's re-request effect `hr`, read from the 2.1.319 bundle) share
+one copy and one hash. The held-row lookup `r()` builds a fresh props object per call, so it pays a copy
+and a serialization each time; stock pays that serialization too.
+
+Known effect with the env on, by design: a mod that reads `e.props.onScreen` keeps the row range from
+the render that brought the message on screen. A mod that draws only the visible rows and placeholders
+for the rest therefore keeps those placeholders on screen as more of the message scrolls in; such a mod
+should not run with the env on.
+
+Likely break signs: candidates 0 (the key was reshaped or renamed off the `viewport?.columns` shape) or
+2 (a second value key with the same shape). The verifier fails on any key still hashing raw props.
+
 ## Updating A Broken Patch
 
 When a Claude update breaks a patch, do this in order.

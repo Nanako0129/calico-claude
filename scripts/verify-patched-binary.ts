@@ -2,6 +2,7 @@
 
 const path = require("node:path") as typeof import("node:path");
 const fs = require("node:fs") as typeof import("node:fs");
+const vm = require("node:vm") as typeof import("node:vm");
 
 type NativeContentHandle = {
   content: string;
@@ -1780,6 +1781,70 @@ const CHECKS: Check[] = [
       // sharing a cache local can still be split across functions.
       if (!forcedMatches.every((match) => ownedByStickyComponent(content, match.index ?? -1))) {
         return "forced viewport reads are not inside the sticky-prompt component";
+      }
+      return null;
+    },
+  },
+  {
+    id: "plugin-render-stable-onscreen",
+    kind: "custom",
+    describe: "plugin render cache key drops the onScreen row range under CALICO_STABLE_ONSCREEN=1",
+    disabledMarker: "function __calicoStableOnScreenProps(",
+    run: (content: string): string | null => {
+      const identifier = "[A-Za-z_$][\\w$]*";
+      const head = `=\\((${identifier})\\)=>\\[\\1\\.viewport\\?\\.columns\\?\\?"",\\1\\.viewport\\?\\.isFullscreen\\?\\?"",${identifier}\\(`;
+      const stale = new RegExp(`${head}\\1\\.props\\)\\]\\.join\\(`, "g");
+      const keyed = new RegExp(`${head}__calicoStableOnScreenProps\\(\\1\\.props\\)\\)\\]\\.join\\(`, "g");
+      const staleMatches = [...content.matchAll(stale)];
+      const keyedMatches = [...content.matchAll(keyed)];
+      // Kept in lockstep with patchPluginRenderStableOnScreen. A key still
+      // hashing the raw props is the unpatched shape: every scroll step would
+      // miss the render cache whatever the env says.
+      if (staleMatches.length > 0) {
+        return `found ${staleMatches.length} render key(s) still hashing props with onScreen`;
+      }
+      if (keyedMatches.length !== 1) {
+        return `expected 1 render key through __calicoStableOnScreenProps, found ${keyedMatches.length}`;
+      }
+      const declaration = "function __calicoStableOnScreenProps(";
+      const at = content.indexOf(declaration);
+      if (at === -1 || content.indexOf(declaration, at + 1) !== -1) {
+        return "expected exactly one __calicoStableOnScreenProps declaration";
+      }
+      // The bundle is many ES module scopes: a helper declared in another
+      // chunk is undefined where the key calls it.
+      if (!inSameModule(content, at, keyedMatches[0].index ?? -1)) {
+        return "__calicoStableOnScreenProps is declared in a different module from the render key";
+      }
+      const gate = 'var __calicoStableOnScreenOn=process.env.CALICO_STABLE_ONSCREEN==="1"';
+      const gateAt = content.indexOf(gate);
+      if (gateAt === -1 || content.indexOf(gate, gateAt + 1) !== -1 || !inSameModule(content, gateAt, at)) {
+        return "the CALICO_STABLE_ONSCREEN gate is missing, duplicated or in another module";
+      }
+      // Run the helper as spliced, rather than scanning its text: only the row
+      // range may go, whether onScreen is null has to stay in the key (or an
+      // entry first drawn off-screen stays off-screen to the engine), and with
+      // the env off the props must come back untouched.
+      const keyStart = content.lastIndexOf("var ", keyedMatches[0].index ?? -1);
+      if (keyStart <= gateAt) {
+        return "cannot find the render key statement after the gate";
+      }
+      const helperSource = content.slice(gateAt, keyStart);
+      const helperIn = (env: Record<string, string>) =>
+        vm.runInNewContext(`${helperSource};__calicoStableOnScreenProps`, { process: { env } }) as (p: unknown) => any;
+      try {
+        const on = helperIn({ CALICO_STABLE_ONSCREEN: "1" });
+        const off = helperIn({});
+        const visible = { text: "a", onScreen: { first: 0, last: 1, of: 4 } };
+        const scrolled = { text: "a", onScreen: { first: 2, last: 3, of: 4 } };
+        const outside = { text: "a", onScreen: null };
+        if (on(outside).onScreen !== null) return "with the env on, an off-screen row no longer keys as null";
+        if (JSON.stringify(on(visible)) !== JSON.stringify(on(scrolled))) return "with the env on, the row range still changes the key";
+        if (on(visible).onScreen === null || on(visible).text !== "a") return "with the env on, a visible row keys like an off-screen one or loses props";
+        if (off(visible) !== visible || off(outside) !== outside) return "with the env off, the props do not come back untouched";
+        if (visible.onScreen.first !== 0) return "the helper mutates the engine's props";
+      } catch (error) {
+        return `__calicoStableOnScreenProps does not evaluate: ${error instanceof Error ? error.message : String(error)}`;
       }
       return null;
     },

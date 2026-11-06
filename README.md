@@ -72,6 +72,7 @@ Each of these changes nothing at all unless its trigger is present in the proces
 | `calico-header-wire` | `REMORA_ACTIVE=1` | Applies the two modules above to the request as sent, whatever casing `ANTHROPIC_CUSTOM_HEADERS` uses for their header names |
 | `compact-body-policy` | `REMORA_ACTIVE=1` + `CALICO_COMPACT_*` | Rewrites the full outbound compact JSON body before it leaves the process |
 | `gateway-fast-mode` | `REMORA_ACTIVE=1` | Applies `service_tier: "priority"` from remora's shared request-time worker state |
+| `plugin-render-stable-onscreen` | `CALICO_STABLE_ONSCREEN=1` | Keeps a mod's cached `ui.render` answer for a transcript message while it stays on screen, instead of re-running every render hook on each wheel step; it still re-renders when the message enters or leaves the viewport, and a mod reading `onScreen` keeps the row range from that render, so leave it off with a mod that draws only the visible rows |
 
 > The startup banner reflects the **branding** patch only. An older build can print `Calico Claude`
 > while lacking a newer adapter entirely — see [Verify the installed binary](#verify-the-installed-binary).
