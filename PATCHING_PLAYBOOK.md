@@ -1100,9 +1100,11 @@ var Vpr=(e)=>[e.viewport?.columns??"",e.viewport?.isFullscreen??"",kos(e.props)]
 three places: the engine's render cache (`Xno`, reuse check `Kno`), the transcript row's effect that
 re-requests `ui.render` (`hr`), and the held-row lookup `r()` behind `askedOnScreen`/`heldRowsOf`.
 
-The patch splices a gate `__calicoStableOnScreenOn` (read from the env once, when the module loads)
-and a helper `__calicoStableOnScreenProps`, both in the same module right before the key, and hashes
-`__calicoStableOnScreenProps(props)` instead of `props`. Without the env the helper returns the props
+The patch splices a memo `__calicoStableOnScreenSeen` and a helper `__calicoStableOnScreenProps`,
+both in the same module right before the key, and hashes `__calicoStableOnScreenProps(props)` instead
+of `props`. The helper reads `CALICO_STABLE_ONSCREEN` on every call: Claude Code copies the
+settings.json `env` block into `process.env` during startup, after some chunks have already run, so a
+gate read once at load would miss a value set there. Without the env the helper returns the props
 untouched, so the key is byte-for-byte stock. With it, the helper returns a copy whose `onScreen` is
 reduced to whether it is null: `null` stays `null`, any row range becomes `1`.
 
@@ -1124,7 +1126,7 @@ the render that brought the message on screen. A mod that draws only the visible
 for the rest therefore keeps those placeholders on screen as more of the message scrolls in; such a mod
 should not run with the env on.
 
-Likely break signs: candidates 0 (the key was reshaped or renamed off the `viewport?.columns` shape) or
+Likely break signs: candidates 1 with nothing patched means the bundle is already patched. Candidates 0 (the key was reshaped or renamed off the `viewport?.columns` shape) or
 2 (a second value key with the same shape). The verifier fails on any key still hashing raw props.
 
 ## Updating A Broken Patch

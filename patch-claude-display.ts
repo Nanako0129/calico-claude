@@ -4835,7 +4835,10 @@ function patchStickyPromptHeader(content) {
 //
 // That still breaks the documented promise that a plugin hears onScreen again
 // on a scroll, so the change is opt-in: it does nothing unless
-// CALICO_STABLE_ONSCREEN=1 is set when the module loads.
+// CALICO_STABLE_ONSCREEN=1. The env is read on every call, not once when the
+// chunk loads: Claude Code copies the settings.json `env` block into
+// process.env during startup, and a chunk evaluated before that would never
+// see a value set there.
 //
 // `kos` memoizes its hash on the props object's identity, so the stripped copy
 // is memoized on the props object it was made from: key computations handed
@@ -4847,7 +4850,9 @@ const STABLE_ONSCREEN_HELPER = "__calicoStableOnScreenProps";
 
 function patchPluginRenderStableOnScreen(content) {
   if (content.includes(`function ${STABLE_ONSCREEN_HELPER}(`)) {
-    return { content, candidates: 0, patched: 0 };
+    // One candidate, nothing patched: an already patched bundle, which the
+    // playbook tells apart from a reshaped key (zero candidates).
+    return { content, candidates: 1, patched: 0 };
   }
   const identifier = "[A-Za-z_$][\\w$]*";
   const site = new RegExp(
@@ -4860,14 +4865,11 @@ function patchPluginRenderStableOnScreen(content) {
   }
   const [match] = matches;
   const [whole, keyFn, param, hashFn] = match;
-  const start = match.index ?? -1;
-  if (start === -1) {
-    return { content, candidates: 1, patched: 0 };
-  }
+  const start = match.index;
   const helper =
-    `var __calicoStableOnScreenOn=process.env.CALICO_STABLE_ONSCREEN==="1",__calicoStableOnScreenSeen=new WeakMap;` +
+    `var __calicoStableOnScreenSeen=new WeakMap;` +
     `function ${STABLE_ONSCREEN_HELPER}(p){` +
-    `if(!__calicoStableOnScreenOn||p===null||typeof p!=="object"||!Object.hasOwn(p,"onScreen"))return p;` +
+    `if(process.env.CALICO_STABLE_ONSCREEN!=="1"||p===null||typeof p!=="object"||!Object.hasOwn(p,"onScreen"))return p;` +
     `let s=__calicoStableOnScreenSeen.get(p);` +
     `if(s===void 0){s={...p,onScreen:p.onScreen==null?p.onScreen:1};__calicoStableOnScreenSeen.set(p,s)}` +
     `return s}`;

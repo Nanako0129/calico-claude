@@ -35,8 +35,8 @@ test("patches the one value key and declares its helper beside it", () => {
   const result = patchPluginRenderStableOnScreen(fixture);
   assert.equal(result.candidates, 1);
   assert.equal(result.patched, 1);
-  assert.ok(result.content.includes('var __calicoStableOnScreenOn=process.env.CALICO_STABLE_ONSCREEN==="1"'));
-  assert.match(result.content, /function __calicoStableOnScreenProps\(p\)\{if\(!__calicoStableOnScreenOn/);
+  assert.ok(result.content.includes("var __calicoStableOnScreenSeen=new WeakMap;"));
+  assert.match(result.content, /function __calicoStableOnScreenProps\(p\)\{if\(process\.env\.CALICO_STABLE_ONSCREEN!=="1"/);
   assert.ok(result.content.includes('kos(__calicoStableOnScreenProps(e.props))].join("\\x00");'));
   assert.ok(result.content.includes(hasher), "the hasher is left alone");
   assert.equal(evaluatePatchModule("plugin-render-stable-onscreen", result.content), null);
@@ -47,6 +47,7 @@ test("a second run changes nothing", () => {
   const twice = patchPluginRenderStableOnScreen(once);
   assert.equal(twice.content, once);
   assert.equal(twice.patched, 0);
+  assert.equal(twice.candidates, 1, "already patched, told apart from a reshaped key");
 });
 
 test("an unknown shape or a second site patches nothing", () => {
@@ -67,8 +68,8 @@ test("the verifier runs the helper and rejects one that drops null-ness", () => 
   const patched = patchPluginRenderStableOnScreen(fixture).content;
   const dropped = patched.replace("onScreen:p.onScreen==null?p.onScreen:1", () => "onScreen:1");
   assert.match(evaluatePatchModule("plugin-render-stable-onscreen", dropped), /off-screen row no longer keys as null/);
-  const ungated = patched.replace('process.env.CALICO_STABLE_ONSCREEN==="1"', () => 'process.env.CALICO_STABLE_ONSCREEN!=="nope"');
-  assert.match(evaluatePatchModule("plugin-render-stable-onscreen", ungated), /gate is missing/);
+  const ungated = patched.replace('process.env.CALICO_STABLE_ONSCREEN!=="1"', () => "!1");
+  assert.match(evaluatePatchModule("plugin-render-stable-onscreen", ungated), /does not read CALICO_STABLE_ONSCREEN on each call/);
 });
 
 test("the verifier rejects the unpatched key", () => {
@@ -122,6 +123,19 @@ test("the copy is memoized on the props object: one hash per object the row buil
   assert.equal(hashed.length, 2, "a new props object costs one serialization, as stock");
   assert.equal(hashed[0].onScreen, 1);
   assert.deepEqual(first.props.onScreen, { first: 0, last: 4, of: 9 }, "the engine's props are not mutated");
+});
+
+test("the env is read on each call, so a value set after the chunk loads still counts", () => {
+  const patched = patchPluginRenderStableOnScreen(fixture).content;
+  const env = {};
+  const { key } = keyOf(patched, env);
+  const a = at("hello", { first: 0, last: 4, of: 9 });
+  const b = at("hello", { first: 3, last: 7, of: 9 });
+  assert.notEqual(key(a), key(b), "stock while unset");
+  env.CALICO_STABLE_ONSCREEN = "1";
+  const c = at("hello", { first: 0, last: 4, of: 9 });
+  const d = at("hello", { first: 3, last: 7, of: 9 });
+  assert.equal(key(c), key(d), "set later, as the settings.json env block does at startup");
 });
 
 test("minified names carrying $ are emitted verbatim", () => {

@@ -1816,20 +1816,22 @@ const CHECKS: Check[] = [
       if (!inSameModule(content, at, keyedMatches[0].index ?? -1)) {
         return "__calicoStableOnScreenProps is declared in a different module from the render key";
       }
-      const gate = 'var __calicoStableOnScreenOn=process.env.CALICO_STABLE_ONSCREEN==="1"';
-      const gateAt = content.indexOf(gate);
-      if (gateAt === -1 || content.indexOf(gate, gateAt + 1) !== -1 || !inSameModule(content, gateAt, at)) {
-        return "the CALICO_STABLE_ONSCREEN gate is missing, duplicated or in another module";
+      const seen = "var __calicoStableOnScreenSeen=new WeakMap;";
+      const seenAt = content.indexOf(seen);
+      if (seenAt === -1 || content.indexOf(seen, seenAt + 1) !== -1 || !inSameModule(content, seenAt, at)) {
+        return "the __calicoStableOnScreenSeen memo is missing, duplicated or in another module";
+      }
+      // Read on every call: a gate read once at chunk load misses an env set
+      // through the settings.json `env` block.
+      const end = content.indexOf("return s}", at);
+      if (end === -1 || !content.slice(at, end).includes('process.env.CALICO_STABLE_ONSCREEN!=="1"')) {
+        return "__calicoStableOnScreenProps does not read CALICO_STABLE_ONSCREEN on each call";
       }
       // Run the helper as spliced, rather than scanning its text: only the row
       // range may go, whether onScreen is null has to stay in the key (or an
       // entry first drawn off-screen stays off-screen to the engine), and with
       // the env off the props must come back untouched.
-      const keyStart = content.lastIndexOf("var ", keyedMatches[0].index ?? -1);
-      if (keyStart <= gateAt) {
-        return "cannot find the render key statement after the gate";
-      }
-      const helperSource = content.slice(gateAt, keyStart);
+      const helperSource = content.slice(seenAt, end + "return s}".length);
       const helperIn = (env: Record<string, string>) =>
         vm.runInNewContext(`${helperSource};__calicoStableOnScreenProps`, { process: { env } }) as (p: unknown) => any;
       try {
