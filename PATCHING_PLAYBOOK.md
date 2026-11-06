@@ -378,6 +378,44 @@ Likely break signs:
 - a later agent turn retains the previous turn's input total instead of the latest one
 - the module reports `0` candidates or the verifier reports a missing refresh seam
 
+### `strip-user-email-context`
+
+Intent: the signed-in account's email never reaches the model, so the model cannot send it out as a
+client's contact details. In anthropics/claude-code#107757 it went to third-party sites in `curl`
+User-Agent headers. `CALICO_KEEP_USER_EMAIL=1` restores the upstream behavior.
+
+Upstream shape (every bundle 2.1.278–2.1.319, one site):
+
+```js
+let Te={claudeMd:y??"",...H&&{userEmail:`The user's email address is ${H}. Use it only to identify the user, …`},…}
+```
+
+`H` comes from `oauthAccount.emailAddress` (or `CLAUDE_CODE_USER_EMAIL` on a diskless host) and is
+set only under a claude.ai/OAuth login. With an API key there is no address and no block. The same
+object feeds the session-start context and its re-read (`# userEmail` in the "session context was
+re-read" reminder), so the one site covers both.
+
+Rewrite: `...H&&{userEmail:` becomes `...H&&process.env.CALICO_KEEP_USER_EMAIL==="1"&&{userEmail:`.
+Spreading `false` adds nothing, so the key is absent rather than empty.
+
+Why not rely on upstream's built-in `cc-plugin-privacy`: it refuses only a Bash, PowerShell or
+Monitor call whose input holds the address and names a User-Agent. By its own README, WebFetch, MCP
+tools, scripts, variables and computed values pass, and one report in #107757 shows it not refusing
+the documented case on 2.1.318. Not handing the address to the model closes all of those paths. The
+mod is left as shipped.
+
+Trade-off: the model no longer knows the account email, so "find my own commits" style requests need
+it to read `git config user.email` or ask.
+
+Observed (2.1.319, darwin-arm64, mock OAuth login with a marker address, request body captured): the
+stock binary sends `# userEmail` with the marker; the patched binary sends neither the block nor the
+marker, with CLAUDE.md still present; `CALICO_KEEP_USER_EMAIL=1` brings both back. Measured with an
+interactive TUI turn only. Other request paths that might read the address directly are not covered
+by this module.
+
+Likely break signs: candidates 0 (the block was renamed or reshaped) or 2. The verifier also fails on
+any `userEmail` spread left ungated.
+
 ### remora client factory (`active-turn-prompt-id`, `compact-request-source`, `calico-header-wire`, `compact-body-policy`)
 
 These remora adapters share one anchor: the async Anthropic client factory ("Zie") whose

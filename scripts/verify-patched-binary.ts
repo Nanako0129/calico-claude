@@ -2122,6 +2122,28 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "strip-user-email-context",
+    kind: "custom",
+    disabledMarker: "CALICO_KEEP_USER_EMAIL",
+    describe: "the account email reaches the model context only with CALICO_KEEP_USER_EMAIL=1",
+    run: (content: string): string | null => {
+      const I = "[A-Za-z_$][\\w$]*";
+      const gated = [
+        ...content.matchAll(
+          new RegExp(`\\.\\.\\.${I}&&process\\.env\\.CALICO_KEEP_USER_EMAIL==="1"&&\\{userEmail:\``, "g")
+        ),
+      ].length;
+      if (gated !== 1) {
+        return `expected 1 gated userEmail context block, found ${gated}`;
+      }
+      const ungated = [...content.matchAll(new RegExp(`\\.\\.\\.${I}&&\\{userEmail:\``, "g"))].length;
+      if (ungated !== 0) {
+        return `found ${ungated} userEmail context block(s) not gated on CALICO_KEEP_USER_EMAIL`;
+      }
+      return null;
+    },
+  },
+  {
     id: "turn-rules-reminder",
     kind: "custom",
     disabledMarker: "Before acting on this message, check which of the user's CLAUDE.md instructions",
