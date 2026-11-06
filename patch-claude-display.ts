@@ -2645,31 +2645,56 @@ function patchUsageLimitUnderRemoteControl(content) {
   // Both callers are the auto-continue waiter, so the one call site covers
   // both. The two spellings are paired, not crossed: exactly one of them must
   // match.
-  const requestMethodPattern = new RegExp(
-    `(&&${I}\\(\\)&&${I}\\(\\)&&!)(${I})\\(\\)(\\}wouldWait\\()`,
-    "g"
-  );
+  //
+  // 2.1.319 split that method into two billing branches and the negated
+  // predicate moved inside the first one:
+  //
+  //   #p(){return At()&&this.#f()===void 0&&Vtr()&&(mwn()&&!Nl()&&hn()?.billingType!=="usage_based"||Fjs()&&…&&RH())}wouldWait(e){…}
+  //
+  // so the method is matched by its own shape — a brace-free `#x(){return…}`
+  // directly before `}wouldWait(`, with or without a space after `return` —
+  // and the call is found by the predicate's own name, not by the tokens
+  // around it or by being the first negated call. The body must call the
+  // predicate exactly once, negated: a second call, negated or not, would stay
+  // unpatched, so the module fails closed instead.
+  const predicateName = definitions.length === 1 ? definitions[0][1] : null;
+  const requestMethodPattern =
+    predicateName === null
+      ? null
+      : new RegExp(`(#${I}\\(\\)\\{return[^{}]*?!)(${escapeRegExp(predicateName)})\\(\\)([^{}]*\\}wouldWait\\()`, "g");
   const surfaceArmPattern = new RegExp(
     `(armRateLimitAutoContinue=\\(${I}\\)=>\\{if\\(${I}===this\\._autoContinueResetsAt\\)return!1;if\\()(${I})\\(\\)(\\)return!1;)`,
     "g"
   );
-  const requestForm = [requestPattern, requestMethodPattern].filter(
-    (pattern) => [...content.matchAll(pattern)].length > 0
-  );
-  const sitePatterns = [openPattern, armPattern, requestForm.length === 1 ? requestForm[0] : requestPattern, surfaceArmPattern];
-  const sites = sitePatterns.map((pattern) => [
-    ...content.matchAll(pattern),
-  ]);
+  // The two request spellings are exclusive: both present means a bundle this
+  // module was not written for, so neither is chosen.
+  const requestMatches = [...content.matchAll(requestPattern)];
+  const methodMatches = requestMethodPattern ? [...content.matchAll(requestMethodPattern)] : [];
+  const methodForm = methodMatches.length > 0;
+  const bothForms = requestMatches.length > 0 && methodForm;
+  const sitePatterns = [openPattern, armPattern, methodForm ? requestMethodPattern : requestPattern, surfaceArmPattern];
+  const sites = [
+    [...content.matchAll(openPattern)],
+    [...content.matchAll(armPattern)],
+    methodForm ? methodMatches : requestMatches,
+    [...content.matchAll(surfaceArmPattern)],
+  ];
   const candidates = definitions.length + sites.reduce((total, matches) => total + matches.length, 0);
 
   // One definition, one match per site, and every site calling the predicate
   // under the definition's own name. A site reaching it through a different
   // import alias cannot be proven to be this predicate, so it fails closed.
   const definition = definitions[0];
+  const callsOnce = (text) =>
+    // `#` is excluded so a private method that shares the minified name
+    // (`#f(){…}`, `this.#f()`) is not counted as a call.
+    [...text.matchAll(new RegExp(`(?<![\\w$.#])${escapeRegExp(definition[1])}\\(`, "g"))].length === 1;
   if (
     definitions.length !== 1 ||
+    bothForms ||
     sites.some((matches) => matches.length !== 1) ||
-    sites.some((matches) => matches[0][2] !== definition[1])
+    sites.some((matches) => matches[0][2] !== definition[1]) ||
+    (methodForm && !callsOnce(sites[2][0][0]))
   ) {
     return { content, candidates, patched: 0 };
   }
