@@ -440,6 +440,11 @@ Old bundle shapes we match:
   inside the body's `let` chain, so `compact-body-policy` injects its wrap as the next declarator
   (`__calicoCompactFetchWrapped=process.env.REMORA_ACTIVE==="1"&&b==="compact"?h=__calicoCompactWrapFetch(h):void 0,`)
   rather than a statement; a statement before the `let` would break the anchor itself
+- 2.1.321 ends that destructure with a statement: `async function HU(e){let{apiKey:n,…}=e;await
+  oLr(V,…);let te=…`. The terminator is group 4 of `CLIENT_FACTORY_SOURCE`; after `;` the wrap is the
+  `if(…){h=__calicoCompactWrapFetch(h)}` statement again. Before this was accepted, the factory matched
+  nothing and `active-turn-prompt-id`, `compact-request-source`, `calico-header-wire` and
+  `compact-body-policy` all went to zero in the same preflight
 - 2.1.238 appends `,credentials:s` to the parameter object
   (`…,source:o,agentContext:i,credentials:s}`). Because that consumes the `s` binding, every following
   minified body local shifts by one letter: `c=…,u=…,p={` becomes `u=…,d=…,f={` and the spread `...u,`
@@ -707,7 +712,11 @@ Claude Code 2.1.211–2.1.212 semantic anchors:
 - the thin/control handler is identified by the same native availability reason and action, the
   `"bridge"` source, argument parsing, and `.options.fastMode` bare-toggle fallback
 - the `local-jsx` registration owns `thinClientDispatch:"control-request"`; the `local` registration
-  owns non-interactive support; both retain the same native model-description getter
+  owns non-interactive support; both retain the same native model-description getter. The
+  getter's interpolation was one call (`${R9()}`) until 2.1.321 wrapped it (`${dtt(at())}`), which
+  zeroed the module. Any interpolation without braces or a backtick is now captured and re-emitted
+  verbatim (an object-literal argument still fails closed), and every replacement goes through a
+  callback, so a `$$` name is not collapsed to `$`
 - the request-body builder parses `CLAUDE_CODE_EXTRA_BODY`, validates that the native result is an
   object, merges `anthropic_beta`, and returns the resulting body
 - the worker dispatch record owns `proto`, `short`, `sessionId`, `respawnFlags`, and the raw
