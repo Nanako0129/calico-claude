@@ -506,3 +506,37 @@ test("2.1.307 body destructure: the wrap is the declarator after it", async () =
   const main = await callWrappedFetch(context, "repl_main_thread", body);
   assert.equal(JSON.parse(main.calls[0].init.body).output_config.effort, "xhigh");
 });
+
+// 2.1.321 ends that destructure with a statement, `}=e;await gate(...);let …`,
+// so the opening no longer ends inside a `let` chain and the wrap goes back to
+// being a statement. Before this the factory matched nothing and the three
+// client-factory modules plus active-turn-prompt-id went to zero together.
+const fixture321 = fixture285.replace(
+  "async function Zie({apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b}){let B=0,",
+  "async function Zie(p){let{apiKey:e,maxRetries:n,model:r,fetchOverride:s,source:h,querySource:g=h,agentContext:b,noResponseRetryLedger:q}=p;await void 0;let B=0,"
+);
+
+test("2.1.321 semicolon-terminated destructure: the wrap is a statement after it", async () => {
+  assert.notEqual(fixture321, fixture285);
+  const withActive = patchActiveTurnPromptIdentity(fixture321);
+  const withCompact = patchCompactRequestSource(withActive.content);
+  const withAll = patchCompactBodyPolicy(withCompact.content);
+  assert.equal(withActive.patched, 2);
+  assert.equal(withCompact.patched, 1);
+  assert.equal(withAll.patched, 1);
+  assert.ok(
+    withAll.content.includes(
+      '=p;if(process.env.REMORA_ACTIVE==="1"&&h==="compact"){s=__calicoCompactWrapFetch(s)}await void 0;'
+    )
+  );
+  assert.equal(evaluatePatchModule("compact-request-source", withAll.content), null);
+  assert.equal(evaluatePatchModule("compact-body-policy", withAll.content), null);
+
+  const context = runPatched(withAll.content);
+  const body = { model: "gpt-5.6-sol", output_config: { effort: "xhigh" } };
+  const compact = await callWrappedFetch(context, "compact", body);
+  assert.equal(JSON.parse(compact.calls[0].init.body).output_config.effort, "medium");
+  assert.equal(compact.headers["x-calico-request-source"], "compact");
+  const main = await callWrappedFetch(context, "repl_main_thread", body);
+  assert.equal(JSON.parse(main.calls[0].init.body).output_config.effort, "xhigh");
+});

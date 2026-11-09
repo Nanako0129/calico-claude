@@ -5176,10 +5176,13 @@ function patchGatewayFastMode(content) {
       ")\\(\\)\\?\\?\"Fast mode is not available\"\\};",
     "g"
   );
+  // The description interpolates one call, `${R9()}`, or since 2.1.321 a call
+  // wrapping one, `${dtt(at())}`. The whole interpolation is captured and
+  // re-emitted verbatim.
   const localJsxPattern =
-    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*\(\))?\))\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
   const localPattern =
-    /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\}/g;
+    /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*\(\))?\))\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\}/g;
   const builderPattern = new RegExp(
     "function (" +
       identifier +
@@ -5452,9 +5455,9 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
   );
 
   const jsxDescription =
-    'get description(){return`Toggle fast mode (${'+localJsx[2]+'()})`}';
+    'get description(){return`Toggle fast mode (${'+localJsx[2]+'})`}';
   const jsxGatewayDescription =
-    'get description(){return process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":`Toggle fast mode (${'+localJsx[2]+'()})`}';
+    'get description(){return process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":`Toggle fast mode (${'+localJsx[2]+'})`}';
   let localJsxReplacement = localJsx[0].replace(jsxDescription, jsxGatewayDescription);
   localJsxReplacement = localJsxReplacement.replace(
     `get isHidden(){return!${localJsx[3]}()}`,
@@ -5462,9 +5465,9 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
   );
 
   const localDescription =
-    'get description(){return`Toggle fast mode (${'+local[2]+'()})`}';
+    'get description(){return`Toggle fast mode (${'+local[2]+'})`}';
   const localGatewayDescription =
-    'get description(){return process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":`Toggle fast mode (${'+local[2]+'()})`}';
+    'get description(){return process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":`Toggle fast mode (${'+local[2]+'})`}';
   let localReplacement = local[0].replace(localDescription, localGatewayDescription);
   localReplacement = localReplacement.replace(
     `isEnabled:()=>${local[3]}(),get isHidden(){return!${local[4]}()}`,
@@ -5666,8 +5669,13 @@ function insertAfter(text, anchor, insertion) {
 // apiKey:r,…}=e,…`. Both spellings are accepted; the list is group 1 on the
 // old one and group 3 on the new one (group 2 is the parameter), so read it
 // through clientFactoryFields. The new opening ends inside the `let` chain.
+//
+// 2.1.321 ends that destructure with a statement instead (`}=e;await …;let
+// …`), which matched nothing and took active-turn-prompt-id and the three
+// modules below to zero at once. Group 4 is the terminator: `,` means the
+// opening ends inside the `let` chain, `;` that it ends between statements.
 const CLIENT_FACTORY_SOURCE =
-  "async function [A-Za-z_$][\\w$]*\\((?:\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{|([A-Za-z_$][\\w$]*)\\)\\{let\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}=\\2,)";
+  "async function [A-Za-z_$][\\w$]*\\((?:\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{|([A-Za-z_$][\\w$]*)\\)\\{let\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}=\\2([,;]))";
 
 function clientFactoryFields(match) {
   return match[1] ?? match[3];
@@ -6157,8 +6165,10 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
     // statement. 2.1.307 shape: the opening ends inside the body's `let`
     // chain, right after the destructure, so the wrap is the next declarator;
     // the destructured locals are `let` bindings and already assigned there.
+    // 2.1.321 shape (`}=e;`): the opening ends between statements, so the
+    // wrap is a statement again.
     const wrap = `${fetchOverrideParam}=__calicoCompactWrapFetch(${fetchOverrideParam})`;
-    const inject = clientStartMatch[2]
+    const inject = clientStartMatch[4] === ","
       ? `__calicoCompactFetchWrapped=process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"?${wrap}:void 0,`
       : `if(process.env.REMORA_ACTIVE==="1"&&${sourceParam}==="compact"){${wrap}}`;
     const nextSegment =

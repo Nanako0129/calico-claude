@@ -774,3 +774,20 @@ test("a `$`-named dispatch record still propagates the worker locator", async (t
 
   assert.equal(dispatch.env.CALICO_GATEWAY_FAST_STATE_FILE, locator);
 });
+
+// 2.1.321 formats the model name before interpolating it:
+// `Toggle fast mode (${dtt(at())})`. Both registrations stopped matching and the
+// module went to 0 patched. The interpolation is carried over verbatim.
+test("2.1.321 nested description call keeps its native text and gets the gateway text", (t) => {
+  const fixture321 =
+    fixture.replaceAll("Toggle fast mode (${R9()})", "Toggle fast mode (${fmt(R9())})") +
+    'function fmt(e){return"["+e+"]"}';
+  assert.equal(fixture321.split("${fmt(R9())}").length - 1, 2);
+  const native = runtime(t, { source: fixture321 }).context;
+  assert.equal(native.zPy.description, "Toggle fast mode ([claude-opus-4-8])");
+  assert.equal(native.wSs.description, "Toggle fast mode ([claude-opus-4-8])");
+  const gateway = runtime(t, { source: fixture321, env: { REMORA_ACTIVE: "1" } }).context;
+  assert.equal(gateway.zPy.description, "Toggle gateway priority tier");
+  assert.equal(gateway.wSs.description, "Toggle gateway priority tier");
+  assert.equal(evaluatePatchModule("gateway-fast-mode", patchGatewayFastMode(fixture321).content), null);
+});

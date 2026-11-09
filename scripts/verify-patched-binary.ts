@@ -126,8 +126,11 @@ const SESSION_ID_HEADER_KEY =
 // 2.1.307 moved the destructure into the body (`async function ON(e){let{
 // apiKey:r,…}=e,`): group 1 is the old list, group 2 the parameter and group 3
 // the new list.
+// 2.1.321 may end it with `;` instead (`}=e;await …`); group 4 is that
+// terminator, which decides whether the compact wrap is a declarator or a
+// statement.
 const CLIENT_FACTORY_SOURCE =
-  "async function [A-Za-z_$][\\w$]*\\((?:\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{|([A-Za-z_$][\\w$]*)\\)\\{let\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}=\\2,)";
+  "async function [A-Za-z_$][\\w$]*\\((?:\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}\\)\\{|([A-Za-z_$][\\w$]*)\\)\\{let\\{apiKey:[A-Za-z_$][\\w$]*,([^{}]*)\\}=\\2([,;]))";
 
 // Kept in lockstep with maskStringLiterals/clientFactoryLocal in
 // patch-claude-display.ts. Sharing the lookup is what makes the masking matter
@@ -205,13 +208,14 @@ function hoistedSessionHeader(content: string): { name: string } | null {
 // the next module entirely.
 function clientFactorySegments(
   content: string
-): { index: number; opening: string; fields: string; param: string | null; segment: string }[] {
+): { index: number; opening: string; fields: string; param: string | null; terminator: string | null; segment: string }[] {
   const pattern = new RegExp(CLIENT_FACTORY_SOURCE, "g");
   const segments: {
     index: number;
     opening: string;
     fields: string;
     param: string | null;
+    terminator: string | null;
     segment: string;
   }[] = [];
   let match: RegExpExecArray | null;
@@ -223,6 +227,7 @@ function clientFactorySegments(
       opening: match[0],
       fields: match[1] ?? match[3],
       param: match[2] ?? null,
+      terminator: match[4] ?? null,
       segment: boundedToModule(
         content.slice(start, next === -1 ? content.length : next)
       ),
@@ -660,9 +665,9 @@ const CHECKS: Check[] = [
       }
 
       const localJsxPattern =
-        /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+        /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*\(\))?\))\}\)`\},get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
       const localPattern =
-        /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*)\(\)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>process\.env\.REMORA_ACTIVE==="1"\|\|([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\}/g;
+        /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?"Toggle gateway priority tier":`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*\(\))?\))\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>process\.env\.REMORA_ACTIVE==="1"\|\|([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return process\.env\.REMORA_ACTIVE==="1"\?!1:!([A-Za-z_$][\w$]*)\(\)\}/g;
       const localJsxMatches = [...content.matchAll(localJsxPattern)];
       const localMatches = [...content.matchAll(localPattern)];
       if (localJsxMatches.length !== 1 || localMatches.length !== 1) {
@@ -1043,7 +1048,7 @@ const CHECKS: Check[] = [
       // factory's own `source` binding and rewriting its own `fetchOverride` —
       // resolved by name so an inserted or defaulted field cannot hide them.
       const ownedFactories = clientFactorySegments(content).filter(
-        ({ opening, fields, param, segment }) => {
+        ({ opening, fields, terminator, segment }) => {
           const fetchOverrideLocal = clientFactoryLocal(fields, "fetchOverride");
           const sourceLocal = clientFactoryLocal(fields, "source");
           if (!fetchOverrideLocal || !sourceLocal) {
@@ -1052,7 +1057,7 @@ const CHECKS: Check[] = [
           // Kept in lockstep with patchCompactBodyPolicy: on the 2.1.307
           // shape the wrap is the declarator right after the destructure.
           const assign = `${fetchOverrideLocal}=__calicoCompactWrapFetch(${fetchOverrideLocal})`;
-          const wrap = param
+          const wrap = terminator === ","
             ? `__calicoCompactFetchWrapped=process.env.REMORA_ACTIVE==="1"&&${sourceLocal}==="compact"?${assign}:void 0,`
             : `if(process.env.REMORA_ACTIVE==="1"&&${sourceLocal}==="compact"){${assign}}`;
           return segment.startsWith(opening + wrap);
