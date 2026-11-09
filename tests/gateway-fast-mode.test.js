@@ -791,3 +791,19 @@ test("2.1.321 nested description call keeps its native text and gets the gateway
   assert.equal(gateway.wSs.description, "Toggle gateway priority tier");
   assert.equal(evaluatePatchModule("gateway-fast-mode", patchGatewayFastMode(fixture321).content), null);
 });
+
+// A minified name may be `$$`, which a plain replacement string collapses to
+// `$`; and any brace-free interpolation is carried over, not just one or two
+// nested calls.
+test("description interpolation survives `$$` names and argument lists verbatim", (t) => {
+  const fixtureDollar =
+    fixture.replaceAll("Toggle fast mode (${R9()})", () => "Toggle fast mode (${$$(R9(),!0)})") +
+    'function $$(e,n){return n?"<"+e+">":e}';
+  assert.equal(fixtureDollar.split("${$$(R9(),!0)}").length - 1, 2);
+  const patched = patchGatewayFastMode(fixtureDollar).content;
+  assert.equal(patched.split("${$$(R9(),!0)}").length - 1, 2);
+  const native = runtime(t, { source: fixtureDollar }).context;
+  assert.equal(native.zPy.description, "Toggle fast mode (<claude-opus-4-8>)");
+  assert.equal(native.wSs.description, "Toggle fast mode (<claude-opus-4-8>)");
+  assert.equal(evaluatePatchModule("gateway-fast-mode", patched), null);
+});

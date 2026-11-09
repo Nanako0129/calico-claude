@@ -5177,12 +5177,12 @@ function patchGatewayFastMode(content) {
     "g"
   );
   // The description interpolates one call, `${R9()}`, or since 2.1.321 a call
-  // wrapping one, `${dtt(at())}`. The whole interpolation is captured and
-  // re-emitted verbatim.
+  // wrapping one, `${dtt(at())}`. Any brace-free interpolation is captured and
+  // re-emitted verbatim, so the next formatting change does not zero the module.
   const localJsxPattern =
-    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*\(\))?\))\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
+    /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([^`{}]+)\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
   const localPattern =
-    /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return`Toggle fast mode \(\$\{([A-Za-z_$][\w$]*\((?:[A-Za-z_$][\w$]*\(\))?\))\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\}/g;
+    /([A-Za-z_$][\w$]*)=\{type:"local",name:"fast",supportsNonInteractive:!0,get description\(\)\{return`Toggle fast mode \(\$\{([^`{}]+)\}\)`\},argumentHint:"\[on\|off\]",isEnabled:\(\)=>([A-Za-z_$][\w$]*)\(\),get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\}/g;
   const builderPattern = new RegExp(
     "function (" +
       identifier +
@@ -5445,38 +5445,41 @@ function __calicoGatewayFastThin(e){return{type:"text",value:__calicoGatewayFast
 function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e;let t=__calicoGatewayFastRead(),r={...e};if(t==="on")r.service_tier="priority";else if(t==="off")delete r.service_tier;return r};
 `;
 
+  // Every replacement below goes through a callback: the replacement text
+  // carries minified names, and a `$$` in one would collapse to `$` in a plain
+  // replacement string.
   const interactiveReplacement = interactive[0].replace(
     `if(!${interactive[5]}())return ${interactive[2]}(${interactive[6]}()??"Fast mode is not available"),null;`,
-    `if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastInteractive(${interactive[2]},${interactive[4]});if(!${interactive[5]}())return ${interactive[2]}(${interactive[6]}()??"Fast mode is not available"),null;`
+    () => `if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastInteractive(${interactive[2]},${interactive[4]});if(!${interactive[5]}())return ${interactive[2]}(${interactive[6]}()??"Fast mode is not available"),null;`
   );
   const thinReplacement = thin[0].replace(
     `if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`,
-    `if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(${thin[2]});if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`
+    () => `if(process.env.REMORA_ACTIVE==="1")return __calicoGatewayFastThin(${thin[2]});if(!${thin[4]}())return{type:"text",value:${thin[5]}()??"Fast mode is not available"};`
   );
 
   const jsxDescription =
     'get description(){return`Toggle fast mode (${'+localJsx[2]+'})`}';
   const jsxGatewayDescription =
     'get description(){return process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":`Toggle fast mode (${'+localJsx[2]+'})`}';
-  let localJsxReplacement = localJsx[0].replace(jsxDescription, jsxGatewayDescription);
+  let localJsxReplacement = localJsx[0].replace(jsxDescription, () => jsxGatewayDescription);
   localJsxReplacement = localJsxReplacement.replace(
     `get isHidden(){return!${localJsx[3]}()}`,
-    `get isHidden(){return process.env.REMORA_ACTIVE==="1"?!1:!${localJsx[3]}()}`
+    () => `get isHidden(){return process.env.REMORA_ACTIVE==="1"?!1:!${localJsx[3]}()}`
   );
 
   const localDescription =
     'get description(){return`Toggle fast mode (${'+local[2]+'})`}';
   const localGatewayDescription =
     'get description(){return process.env.REMORA_ACTIVE==="1"?"Toggle gateway priority tier":`Toggle fast mode (${'+local[2]+'})`}';
-  let localReplacement = local[0].replace(localDescription, localGatewayDescription);
+  let localReplacement = local[0].replace(localDescription, () => localGatewayDescription);
   localReplacement = localReplacement.replace(
     `isEnabled:()=>${local[3]}(),get isHidden(){return!${local[4]}()}`,
-    `isEnabled:()=>process.env.REMORA_ACTIVE==="1"||${local[3]}(),get isHidden(){return process.env.REMORA_ACTIVE==="1"?!1:!${local[4]}()}`
+    () => `isEnabled:()=>process.env.REMORA_ACTIVE==="1"||${local[3]}(),get isHidden(){return process.env.REMORA_ACTIVE==="1"?!1:!${local[4]}()}`
   );
 
   const builderReplacement = builderSegment.replace(
     betaMergeNeedle,
-    `${builder[4]}=__calicoGatewayFastApply(${builder[4]});${betaMergeNeedle}`
+    () => `${builder[4]}=__calicoGatewayFastApply(${builder[4]});${betaMergeNeedle}`
   );
   const workerReplacement =
     worker[0] +
@@ -5494,12 +5497,12 @@ function __calicoGatewayFastApply(e){if(process.env.REMORA_ACTIVE!=="1")return e
   }
 
   let output = original;
-  output = output.replace(interactive[0], interactiveReplacement);
-  output = output.replace(thin[0], thinReplacement);
-  output = output.replace(localJsx[0], localJsxReplacement);
-  output = output.replace(local[0], localReplacement);
-  output = output.replace(builderSegment, builderReplacement);
-  output = output.replace(worker[0], workerReplacement);
+  output = output.replace(interactive[0], () => interactiveReplacement);
+  output = output.replace(thin[0], () => thinReplacement);
+  output = output.replace(localJsx[0], () => localJsxReplacement);
+  output = output.replace(local[0], () => localReplacement);
+  output = output.replace(builderSegment, () => builderReplacement);
+  output = output.replace(worker[0], () => workerReplacement);
 
   // The three consumers of these helpers — the interactive handler, the thin
   // handler and the request extra-body builder — are in three different Bun
