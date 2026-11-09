@@ -5177,8 +5177,9 @@ function patchGatewayFastMode(content) {
     "g"
   );
   // The description interpolates one call, `${R9()}`, or since 2.1.321 a call
-  // wrapping one, `${dtt(at())}`. Any brace-free interpolation is captured and
-  // re-emitted verbatim, so the next formatting change does not zero the module.
+  // wrapping one, `${dtt(at())}`. Any interpolation without `{`, `}` or a
+  // backtick is captured and re-emitted verbatim; one with an object-literal
+  // argument still fails closed (0 patched).
   const localJsxPattern =
     /([A-Za-z_$][\w$]*)=\{type:"local-jsx",name:"fast",get description\(\)\{return`Toggle fast mode \(\$\{([^`{}]+)\}\)`\},get isHidden\(\)\{return!([A-Za-z_$][\w$]*)\(\)\},argumentHint:"\[on\|off\]",(?:get immediate\(\)\{return [A-Za-z_$][\w$]*\(\)\}|immediate:!0),requires:\{ink:!0\},thinClientDispatch:"control-request"\}/g;
   const localPattern =

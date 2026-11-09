@@ -714,8 +714,9 @@ Claude Code 2.1.211–2.1.212 semantic anchors:
 - the `local-jsx` registration owns `thinClientDispatch:"control-request"`; the `local` registration
   owns non-interactive support; both retain the same native model-description getter. The
   getter's interpolation was one call (`${R9()}`) until 2.1.321 wrapped it (`${dtt(at())}`), which
-  zeroed the module. Any brace-free interpolation is now captured and re-emitted verbatim, and every
-  replacement goes through a callback, so a `$$` name is not collapsed to `$`
+  zeroed the module. Any interpolation without braces or a backtick is now captured and re-emitted
+  verbatim (an object-literal argument still fails closed), and every replacement goes through a
+  callback, so a `$$` name is not collapsed to `$`
 - the request-body builder parses `CLAUDE_CODE_EXTRA_BODY`, validates that the native result is an
   object, merges `anthropic_beta`, and returns the resulting body
 - the worker dispatch record owns `proto`, `short`, `sessionId`, `respawnFlags`, and the raw
