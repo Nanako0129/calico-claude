@@ -663,7 +663,10 @@ test("matches the 2.1.323 batch wrapper whose content builder takes a nested-cal
   const { context, result } = loadCommittedFixture(source);
   const completed = context.query(usage(210, 31), "end_turn");
 
-  assert.match(result.content, /i\.storageV5,\(hc\)=>tst\(A2\(hc\),e,hc\)\)/);
+  assert.match(
+    result.content,
+    /i\.storageV5,\(hc\)=>tst\(A2\(hc\),e,hc\)\),n,\(hc,_h\)=>XDt\(hc,_h,i\.agentId,i\.storageV5\)\)/
+  );
   assert.equal(completed[0].__calicoUsageState.committed, true);
   assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
   assert.equal(

@@ -4201,17 +4201,15 @@ function patchStatuslineCommittedUsage(content) {
   //
   // 2.1.238 appends a fifth argument to the content builder call
   // (`Gio([Ga],n,i.agentId,{requestId:Te??void 0,messageId:Gr.id},i.storageV5)`),
-  // so the trailing `,<identifier-or-member>` is matched optionally to keep both
-  // 2.1.237 (no fifth arg) and 2.1.238 (one appended arg) matching, and to
-  // tolerate a further appended argument without another edit.
+  // so trailing arguments are matched optionally (see 2.1.323 below for the
+  // current form of that run).
   // 2.1.246 appends `,...{}` after the effort spread. Match any trailing spread
   // entries so the wrapper still matches; the replacement is derived from the
   // matched text, so whatever upstream appended is carried across unchanged.
   // 2.1.251 appends a third argument to the batch content builder itself — a
   // callback, `j2t(Uq([…],o,d.agentId,{…},d.storageV5),o,(a,b)=>p0(a,b,…))` —
   // so the call no longer closes right after the second argument. Accept a
-  // trailing argument list, one level of call nesting deep so the callback body
-  // does not terminate it early.
+  // trailing argument list (nesting depth: see 2.1.323 below).
   // 2.1.257 stopped placing the message object immediately after the
   // destructuring — it inserts wire-tool-input bookkeeping between them
   // (`$c=Ps?Yxe([Hs]):void 0;YD||=…;let Ay=$c?.inputs,`) — and added
@@ -4249,12 +4247,15 @@ function patchStatuslineCommittedUsage(content) {
   // 2.1.323 gave the inner content builder a sixth argument, a callback whose
   // body nests a call: `…messageId:qy.id},Ee.storageV5,(hc)=>tst(A2(hc),e,hc))`.
   // The inner list used to accept one optional member argument and the outer
-  // list one level of nesting; both now take any argument list nested up to
-  // two parentheses deep, so a further appended argument or callback does not
-  // need another edit. `[^()]` cannot cross an unbalanced `)`, so each run
-  // still stops at its own call's closing parenthesis.
+  // list one level of nesting; both now use batchCallArgs, which accepts
+  // arguments nested up to two parentheses deep, so a further appended
+  // argument or callback of that depth does not need another edit. `[^()]`
+  // cannot cross an unbalanced `)`, so each run still stops at its own call's
+  // closing parenthesis. Ceilings: a third nesting level, or a string literal
+  // holding a lone parenthesis, still fails closed (match 0, module skipped).
+  const batchCallArgs = "(?:,(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*)?";
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}(?:,(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*)?\\),\\6(?:,(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*)?\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*,)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*,)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
   // Two spellings of the terminal commit, paired rather than crossed. Through
