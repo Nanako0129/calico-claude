@@ -652,6 +652,32 @@ test("matches the 2.1.238 batch wrapper with the appended storageV5 argument", (
   );
 });
 
+test("matches the 2.1.323 batch wrapper whose content builder takes a nested-call callback", () => {
+  // 2.1.323: `…messageId:qy.id},Ee.storageV5,(hc)=>tst(A2(hc),e,hc)),s,(hc,_h)=>XDt(…))`.
+  // The callbacks are never invoked by the fixture, so their callees need not exist.
+  const source = storageV5BatchFixture().replace(
+    ",messageId:wo.id},i.storageV5),n),Kn=",
+    ",messageId:wo.id},i.storageV5,(hc)=>tst(A2(hc),e,hc)),n,(hc,_h)=>XDt(hc,_h,i.agentId,i.storageV5)),Kn="
+  );
+  assert.notEqual(source, storageV5BatchFixture());
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+
+  assert.match(
+    result.content,
+    /i\.storageV5,\(hc\)=>tst\(A2\(hc\),e,hc\)\),n,\(hc,_h\)=>XDt\(hc,_h,i\.agentId,i\.storageV5\)\)/
+  );
+  assert.equal(completed[0].__calicoUsageState.committed, true);
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(
+    evaluatePatchModule(
+      "statusline-committed-usage",
+      result.content + modelsUsedCompletionSignal
+    ),
+    null
+  );
+});
+
 test("2.1.236 non-streaming fallback wrappers with inline usage are not canonical", () => {
   const source = batchCommittedUsageFixture();
   const fallback =

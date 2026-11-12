@@ -540,9 +540,12 @@ Source of truth:
   `usage:B5e(…)` and stay outside the anchor
 - Claude Code 2.1.238 appends a fifth argument (the storage-V5 handle) to the content builder call:
   `Gio([Ga],n,i.agentId,{requestId:Te??void 0,messageId:Gr.id},i.storageV5)` (2.1.237 had no fifth
-  argument). The batch-wrapper matcher accepts an optional trailing `,<identifier-or-member>` before
-  the content-builder call closes, so both 2.1.237 and 2.1.238 match and a further appended argument
-  will not break it again
+  argument). The batch-wrapper matcher accepts optional trailing arguments before the content-builder
+  call closes, so both 2.1.237 and 2.1.238 match. 2.1.323 appended a callback with a nested call
+  (`…},Ee.storageV5,(hc)=>tst(A2(hc),e,hc))`); both the inner and the outer argument lists now accept
+  any arguments nested up to two parentheses deep (`batchCallArgs`, same string in the patcher and
+  the verifier). A third nesting level or a string literal holding a lone parenthesis still fails
+  closed
 - production app state shallow-copies the wrapper before the terminal event; the shared object cell
   survives that copy, unlike the old primitive top-level boolean which remained stale `false`
 - the normal terminal `message_delta` mutation loop is the only path that can set `committed:!0`
