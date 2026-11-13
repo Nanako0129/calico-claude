@@ -1204,9 +1204,17 @@ What the module injects, all or nothing (`patched: 4`):
    the main status line was run with. Only the gated tick is published, as
    `globalThis.__calicoSubagentStatusLine`, and only once a record exists.
 2. **Panel call site** (`e(xue,{task:Vs,name:Ts.get(Vs.id),link:…`): adds
-   `decoration:globalThis.__calicoSubagentStatusLine?.(yo.filter(t=>!Dc(t)),Math.max(0,Dt-tk()-SN),Ts)?.get(Vs.id)`.
-   The tick runs on render; the panel's own 1 s elapsed-time refresh redraws the result, so there is
-   no new state.
+   `decoration:globalThis.__calicoSubagentStatusLine?.(yo,Dc,Math.max(0,Dt-tk()-SN),Ts,Tn)?.get(Vs.id)`.
+   `Tn` is the setter of the panel's own clock state `let[er,Tn]=y(EGt)` (`function EGt(){return
+   Date.now()}`), the one its 1 s interval `El(Jn,To||tn?1000:null)` calls while a task runs. When a
+   finished run changes the id → content map, the helper calls `Tn(Date.now())` once, which re-renders
+   the panel exactly as an interval tick does; an unchanged map calls nothing, so the loop settles.
+   Without it the row showed the previous run's result, the first decoration waited for an unrelated
+   render, and once no task ran the panel stopped refreshing. No hook is added anywhere: the setter
+   is an argument. The setter is captured by shape: declared with the row's state hook between the
+   panel's `{columns:Dt}=` read and the call site (no function declaration in between), its init
+   function returning `Date.now()` in the same chunk, and called again in the panel body; otherwise
+   the module patches nothing.
 3. **Row component** (`{task,name,link,labelWidth,statusWidth,…}=h`): destructures `decoration` and,
    after the fixed-width pointer box, returns the 2.1.322 decorated shape: pointer box, then a
    `flexGrow` box with the ANSI component the main status line uses (`hi`, captured from the status
@@ -1244,7 +1252,11 @@ The gate, re-evaluated on every tick (only its log lines are once per condition)
   measured). The helper also aborts its own signal after 5 s, so a stuck command cannot hold the
   single-flight slot.
 
-Runtime: single flight, 300 ms debounce, no spawn for an empty panel. stdout is parsed line by line;
+Runtime: single flight, at most one start per 300 ms, no spawn for an empty panel. The tick is
+called once per row with the same list; only the first call of a render (a new list reference or new
+columns) filters, prunes and schedules, and the rest return the cached map. A tick that arrives during
+a run makes the helper run again on the latest list when it ends; one inside the 300 ms window arms a
+single timer, so the last list a render handed over is always run. stdout is parsed line by line;
 non-JSON lines and lines without string `id` and `content` are dropped (logged once). Results are an
 id → `{content}` map, pruned to the ids still on the panel. `contextWindowSize` uses the
 context-window function and its betas argument as the payload builder in the runner chunk calls them
@@ -1272,7 +1284,7 @@ Rollback: `--disable subagent-statusline`; nothing else depends on it.
 
 Likely break signs: `patched: 0` with `candidates: N` means the first N anchors matched and the next
 one failed, in this order: config read, guard prefix, managed-only reader, executor call, row
-component (with the ANSI helper), panel call site. Upstream deleting the schema key turns the module
+component (with the ANSI helper), panel call site (with the clock setter). Upstream deleting the schema key turns the module
 into `skipped: feature absent`; upstream restoring `taskDecorations` turns it into `skipped: upstream
 implements`. Both are the intended exits.
 

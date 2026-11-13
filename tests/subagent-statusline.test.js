@@ -58,7 +58,11 @@ const rowComponent =
 const panelChunk =
   'function Xao(rt,bt){return e(n,{dimColor:!0,wrap:"truncate",children:e(hi,{children:rt})},bt)}' +
   'function Aue(h){return e(n,{children:h.count+" idle agents"})}' +
-  'function zPanel(h){let{columns:Dt}=Ae(),yo=h.tasks,Ts=h.names,aa=yo.map(()=>void 0),wi=10,Td=5;if(aa.some(Boolean)&&tk()+wi+3+Td>Dt-SN)aa=aa;let jr=0,Ji=yo.length;let Ml=yo.slice(jr,Ji).map((Xi,Al)=>{let la=jr+Al;if(Dc(Xi)){return e(Aue,{count:Xi.taskIds.length},Xi.id)}let Vs=Xi;let md=aa[la];return e(xue,{task:Vs,name:Ts.get(Vs.id),link:md,isSelected:!1,isViewed:!1,treeConnector:void 0,descendantSuffix:void 0,labelWidth:wi,statusWidth:Td,statusParts:{elapsed:"3s",tokenText:"",queuedText:"",queuedCount:0},onClick:()=>{}},Vs.id)});return r(s,{flexDirection:"column",children:Ml})}' +
+  'function EGt(){return Date.now()}' +
+  // The panel's clock state: its setter is what the 1 s interval calls, and
+  // what the helper calls to re-render after a run. `yo` is a fresh array each
+  // render, as 2.1.323's task-list builder returns.
+  'function zPanel(h){h.onRender?.();let{columns:Dt}=Ae(),[er,Tn]=y(EGt),Jn=()=>Tn(Date.now()),yo=h.tasks.filter(Boolean),Ts=h.names,aa=yo.map(()=>void 0),wi=10,Td=5;if(aa.some(Boolean)&&tk()+wi+3+Td>Dt-SN)aa=aa;let jr=0,Ji=yo.length;let Ml=yo.slice(jr,Ji).map((Xi,Al)=>{let la=jr+Al;if(Dc(Xi)){return e(Aue,{count:Xi.taskIds.length},Xi.id)}let Vs=Xi;let md=aa[la];return e(xue,{task:Vs,name:Ts.get(Vs.id),link:md,isSelected:!1,isViewed:!1,treeConnector:void 0,descendantSuffix:void 0,labelWidth:wi,statusWidth:Td,statusParts:{elapsed:"3s",tokenText:"",queuedText:"",queuedCount:0},onClick:()=>{}},Vs.id)});return r(s,{flexDirection:"column",children:Ml})}' +
   rowComponent;
 
 const fixture323 = runnerChunk + BUN_MODULE_BOUNDARY + panelChunk;
@@ -132,13 +136,27 @@ function harness(content, { flags = {}, settings = {}, policy, execResult, timer
       context.__payload = run(`Qcs({session:__session,mainLoopModel:"claude-opus-5-5",cwd:"/proj"})`);
       await run("aho(__session,__payload,new AbortController().signal)");
     },
-    // One tick of the panel's call: returns the decoration map.
-    tick(tasks = [TASK], columns = 80, names = new Map([[TASK.id, "explorer"]])) {
+    // One tick of the panel's call (the whole list, the panel's idle-group
+    // test, columns, name map, clock setter): returns the decoration map.
+    tick(tasks = [TASK], columns = 80, names = new Map([[TASK.id, "explorer"]]), refresh = undefined) {
       const tick = context.__calicoSubagentStatusLine;
-      return tick ? tick(tasks, columns, names) : undefined;
+      return tick ? tick(tasks, isGroup, columns, names, refresh) : undefined;
+    },
+    // Fires the newest pending debounce timer (timers: true), dropping the rest.
+    fireDebounce() {
+      const pending = scheduled.filter((entry) => entry.ms < 5000 && !entry.fired);
+      for (const entry of pending) entry.fired = true;
+      pending.at(-1)?.fn();
+      return pending.length;
+    },
+    pendingDebounce() {
+      return scheduled.filter((entry) => entry.ms < 5000 && !entry.fired).length;
     },
   };
 }
+
+// The panel's idle-group test (2.1.323 `Dc`, here by shape).
+const isGroup = (item) => Array.isArray(item.taskIds);
 
 // Values built inside the vm carry its realm's prototypes.
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -463,6 +481,35 @@ test("output: one {id,content} per line, invalid lines dropped, map pruned to pa
   assert.equal(h.tick([]).size, 0);
 });
 
+test("per-render cache: repeat calls with the same list and columns return the map without filtering or pruning", async () => {
+  const h = harness(patched(), {
+    settings: { subagentStatusLine: SUBAGENT },
+    execResult: () => ({ status: 0, stderr: "", aborted: false, stdout: '{"id":"agent-1","content":"ROW"}' }),
+  });
+  await h.mainRun();
+  const tick = h.context.__calicoSubagentStatusLine;
+  let filtered = 0;
+  const counting = (item) => (filtered++, isGroup(item));
+  const list = [TASK, { id: "agent-2", type: "local_agent" }];
+  const first = tick(list, counting, 80, new Map());
+  assert.equal(filtered, 2);
+  await flush();
+  const map = tick(list, counting, 80, new Map());
+  // A run landed in between: the cached call returns the current map, still
+  // without touching the list.
+  assert.equal(filtered, 2, "the same list reference is not filtered again");
+  assert.equal(map.get("agent-1").content, "ROW");
+  for (let row = 0; row < 5; row += 1) assert.equal(tick(list, counting, 80, new Map()), map);
+  assert.equal(filtered, 2);
+  assert.equal(subagentExecs(h).length, 1, "repeat calls start no run");
+  // A new list (the next render) or new columns is filtered and pruned again.
+  tick([TASK], counting, 80, new Map());
+  assert.equal(filtered, 3);
+  tick([TASK], counting, 81, new Map());
+  assert.equal(filtered, 4);
+  assert.notEqual(first, undefined);
+});
+
 // ---------------------------------------------------------------------------
 // Mutation controls: the gate tests above fail when their gate is removed from
 // the patched helper. Each control removes one gate and shows the same
@@ -552,7 +599,7 @@ test("without a capturable context-window use site the field is omitted and the 
 // ---------------------------------------------------------------------------
 // Panel + row, mounted through React.
 // ---------------------------------------------------------------------------
-async function mountPanel(content) {
+async function mountPanel(content, { tick, onRender } = {}) {
   const React = require("react");
   const { c } = require("react/compiler-runtime");
   const ink = await import("ink");
@@ -586,6 +633,7 @@ async function mountPanel(content) {
     Dc: (item) => Array.isArray(item.taskIds),
     Math,
   };
+  if (tick) context.__calicoSubagentStatusLine = tick;
   vm.createContext(context);
   vm.runInContext(panelSource, context);
   const out = new PassThrough();
@@ -593,7 +641,7 @@ async function mountPanel(content) {
   let frames = "";
   out.on("data", (chunk) => (frames += chunk));
   const errors = [];
-  const props = (tasks) => ({ tasks, names: new Map([["agent-1", "explorer"]]) });
+  const props = (tasks) => ({ tasks, names: new Map([["agent-1", "explorer"]]), onRender });
   const app = ink.render(React.createElement(context.zPanel, props([TASK])), {
     stdout: out,
     debug: true,
@@ -607,6 +655,12 @@ async function mountPanel(content) {
       app.rerender(React.createElement(context.zPanel, props(tasks)));
       return frames;
     },
+    // Everything drawn since the last rerender() or take().
+    take() {
+      const drawn = frames;
+      frames = "";
+      return drawn;
+    },
     unmount: () => app.unmount(),
     errors,
   };
@@ -617,8 +671,8 @@ test("row: decoration absent renders the default row; present renders the decora
   const panel = await mountPanel(content);
   const ticks = [];
   let map = new Map();
-  panel.context.__calicoSubagentStatusLine = (tasks, columns, names) => {
-    ticks.push({ ids: tasks.map((task) => task.id), columns, name: names.get("agent-1") });
+  panel.context.__calicoSubagentStatusLine = (tasks, group, columns, names, refresh) => {
+    ticks.push({ ids: tasks.filter((task) => !group(task)).map((task) => task.id), columns, name: names.get("agent-1"), refresh: typeof refresh });
     return map;
   };
   try {
@@ -638,21 +692,116 @@ test("row: decoration absent renders the default row; present renders the decora
   } finally {
     panel.unmount();
   }
-  // The panel ticks with its task list (idle groups dropped), the width the row
-  // text gets, and the name map.
-  assert.deepEqual(ticks.at(-1), { ids: ["agent-1"], columns: 100 - 2 - 4, name: "explorer" });
+  // The panel ticks with its task list and idle-group test, the width the row
+  // text gets, the name map and its clock setter.
+  assert.deepEqual(ticks.at(-1), { ids: ["agent-1"], columns: 100 - 2 - 4, name: "explorer", refresh: "function" });
 });
 
-test("row: an idle-agent group entry is not passed to the tick", async () => {
-  const panel = await mountPanel(patched());
-  let seen;
-  panel.context.__calicoSubagentStatusLine = (tasks) => ((seen = tasks.map((task) => task.id)), new Map());
+test("an idle-agent group entry is not sent to the command", async () => {
+  const h = harness(patched(), { settings: { subagentStatusLine: SUBAGENT } });
+  await h.mainRun();
+  h.tick([TASK, { id: "group", taskIds: ["x", "y"] }]);
+  await flush();
+  assert.deepEqual(JSON.parse(subagentExecs(h)[0].input).tasks.map((task) => task.id), ["agent-1"]);
+});
+
+// Finding: the tick used to hand back the previous run's map and nothing
+// re-rendered when a run ended, so a row lagged one run, the first decoration
+// waited for an unrelated render, and once no task ran (2.1.323 refreshes the
+// panel every second only while one does) a finished agent's row could keep a
+// stale "running" decoration. The helper now re-renders the panel through its
+// clock setter once per changed map.
+async function liveRow(content = patched()) {
+  const h = harness(content, {
+    settings: { subagentStatusLine: SUBAGENT },
+    timers: true,
+    execResult: (cfg, input) => ({
+      status: 0,
+      stderr: "",
+      aborted: false,
+      stdout: JSON.parse(input).tasks.map((task) => JSON.stringify({ id: task.id, content: `ROW-${task.status}` })).join("\n"),
+    }),
+  });
+  await h.mainRun();
+  let renders = 0;
+  const panel = await mountPanel(content, { tick: h.context.__calicoSubagentStatusLine, onRender: () => (renders += 1) });
+  return { h, panel, renders: () => renders };
+}
+
+test("re-render: the first completed run is drawn without an outside render, and an unchanged run draws nothing", async () => {
+  const { h, panel, renders } = await liveRow();
   try {
-    panel.rerender([TASK, { id: "group", taskIds: ["x", "y"] }]);
+    assert.equal(renders(), 1);
+    assert.doesNotMatch(panel.take(), /ROW-/, "the mount render has no result yet");
+    await flush();
+    assert.equal(renders(), 2, "the finished run re-rendered the panel once");
+    assert.match(panel.take(), /ROW-running/);
+    // That render handed over a new list, so one more run follows; its output
+    // is unchanged and it renders nothing, and nothing further is scheduled.
+    h.advance(300);
+    assert.equal(h.fireDebounce(), 1);
+    await flush();
+    assert.equal(subagentExecs(h).length, 2);
+    assert.equal(renders(), 2, "an unchanged map does not re-render");
+    assert.equal(h.pendingDebounce(), 0, "the loop has settled");
   } finally {
     panel.unmount();
   }
-  assert.deepEqual(seen, ["agent-1"]);
+});
+
+test("re-render: after the agent finishes, the changed final result is drawn with no further outside render", async () => {
+  const { h, panel, renders } = await liveRow();
+  try {
+    await flush();
+    h.advance(300);
+    h.fireDebounce();
+    await flush();
+    panel.take();
+    // The task-state change is the last render the panel gets on its own.
+    panel.rerender([{ ...TASK, status: "completed" }]);
+    const before = renders();
+    h.advance(300);
+    assert.equal(h.fireDebounce(), 1);
+    await flush();
+    assert.equal(renders(), before + 1);
+    assert.match(panel.take(), /ROW-completed/);
+    // The render that drew it schedules one more run; unchanged, it stops there.
+    h.advance(300);
+    h.fireDebounce();
+    await flush();
+    assert.equal(renders(), before + 1);
+    assert.equal(h.pendingDebounce(), 0);
+  } finally {
+    panel.unmount();
+  }
+});
+
+test("control: without the re-render call the first decoration needs an outside render", async () => {
+  const content = patched();
+  const call = 'if(typeof __calicoRefresh==="function")__calicoRefresh(Date.now())';
+  assert.ok(content.includes(call));
+  const { panel, renders } = await liveRow(content.replace(call, () => ""));
+  try {
+    await flush();
+    assert.equal(renders(), 1);
+    assert.doesNotMatch(panel.take(), /ROW-/);
+  } finally {
+    panel.unmount();
+  }
+});
+
+test("the re-render anchor missing patches nothing", () => {
+  for (const [from, to] of [
+    ["[er,Tn]=y(EGt)", "er=Date.now()"],
+    ["function EGt(){return Date.now()}", "function EGt(){return 0}"],
+    ["Jn=()=>Tn(Date.now()),", ""],
+  ]) {
+    assert.ok(fixture323.includes(from), from);
+    const source = fixture323.replace(from, () => to);
+    const result = patchSubagentStatusLine(source);
+    assert.equal(result.patched, 0, from);
+    assert.equal(result.content, source);
+  }
 });
 
 test("row: unpatched panel renders the same default row (no tick, no decoration)", async () => {

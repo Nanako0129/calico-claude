@@ -6246,7 +6246,10 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
 //      swapped. The runner records its last (session, payload) after its gates
 //      pass; nothing spawns before that. Only a gated tick is published on
 //      globalThis.
-//   S2 panel call site — passes `decoration` from the tick's map.
+//   S2 panel call site — passes `decoration` from the tick's map, and hands the
+//      tick the panel's clock setter; when a finished run changes the map, the
+//      helper calls it once, so the row shows that run without waiting for
+//      another render (2.1.323 re-renders the panel only while a task runs).
 //   S3 row component — returns the 2.1.322 decorated shape after its last hook.
 // Every capture is by shape and every one that fails patches nothing.
 // ---------------------------------------------------------------------------
@@ -6597,6 +6600,32 @@ function patchSubagentStatusLine(content) {
   }
   const [, panelList, , groupTest] = mapMatch;
   const [, pointerWidth, columns, padding] = widthMatch;
+  // The re-render after a run: the panel's own clock state
+  // `let[er,Tn]=y(EGt)` (`function EGt(){return Date.now()}`), whose setter
+  // the panel's 1 s interval calls while a task runs. The helper calls the
+  // same setter with Date.now() when a run changes the decorations, which
+  // re-renders the panel as one interval tick would. Nothing adds a hook: the
+  // setter is passed as an argument at the call site. It must be declared in
+  // the panel's own body (after its columns read, no function declaration in
+  // between) with the row's state hook, and the panel must call it.
+  const columnsAt = content.lastIndexOf(`{columns:${columns}}=`, callMatch.index);
+  const panelBody = content.slice(columnsAt, callMatch.index);
+  const clockMatches = [
+    ...panelBody.matchAll(new RegExp(`(?:let|,)\\[(${I}),(${I})\\]=${escapeRegExp(stateHook)}\\((${I})\\)[,;]`, "g")),
+  ].filter((match) => {
+    const definition = content.indexOf(`function ${match[3]}(){return Date.now()}`);
+    return definition !== -1 && inSameModule(content, definition, callMatch.index);
+  });
+  if (clockMatches.length !== 1) return refuse();
+  const clockSetter = clockMatches[0][2];
+  const afterClock = panelBody.slice(clockMatches[0].index + clockMatches[0][0].length);
+  if (
+    panelBody.includes(BUN_MODULE_BOUNDARY) ||
+    afterClock.includes("function ") ||
+    !new RegExp(`(?<![\\w$.])${escapeRegExp(clockSetter)}\\(`).test(afterClock)
+  ) {
+    return refuse();
+  }
   candidates += 1;
 
   // ---- Build -----------------------------------------------------------------
@@ -6627,7 +6656,7 @@ function patchSubagentStatusLine(content) {
   const execCall = `${execCallee}(${orgTag[1]}("subagentStatusLine")?${orgTag[2]}({...${cfgVar}}):${cfgVar},${execArgs.slice(1).join(",")})`;
   const contextWindow = contextWindowFn ? `${contextWindowFn}(__calicoT.model,${betasFn}())` : "void 0";
   const helper =
-    `var __calicoSL=(()=>{let __calicoState={rec:null,map:new Map,busy:!1,at:0,logged:new Set};` +
+    `var __calicoSL=(()=>{let __calicoState={rec:null,map:new Map,busy:!1,at:0,logged:new Set,last:null,seen:null,cols:void 0,again:!1,timer:null};` +
     `let __calicoLog=(__calicoKey,__calicoMsg)=>{if(__calicoState.logged.has(__calicoKey))return;__calicoState.logged.add(__calicoKey);try{${logFn}(__calicoMsg)}catch{}};` +
     `let __calicoRun=async(__calicoTasks,__calicoCols,__calicoNames)=>{let __calicoRec=__calicoState.rec;if(!__calicoRec)return null;` +
     `let __calicoBound;try{__calicoBound=${bindingCheck}}catch{__calicoBound=!1}` +
@@ -6645,14 +6674,29 @@ function patchSubagentStatusLine(content) {
     `if(__calicoRes.status!==0)return __calicoLog("exit","subagentStatusLine ["+__calicoLabel+"] exited "+__calicoRes.status),null;` +
     `let __calicoOut=new Map;for(let __calicoLine of String(__calicoRes.stdout??"").split("\\n")){if(!__calicoLine.trim())continue;let __calicoRow;try{__calicoRow=JSON.parse(__calicoLine)}catch{__calicoLog("json","subagentStatusLine ["+__calicoLabel+"] emitted a non-JSON line");continue}` +
     `if(__calicoRow&&typeof __calicoRow.id==="string"&&typeof __calicoRow.content==="string")__calicoOut.set(__calicoRow.id,{content:__calicoRow.content});else __calicoLog("schema","subagentStatusLine ["+__calicoLabel+"] emitted a line without string id and content")}return __calicoOut}finally{clearTimeout(__calicoTimer)}};` +
-    `let __calicoTick=(__calicoTasks,__calicoCols,__calicoNames)=>{let __calicoList=Array.isArray(__calicoTasks)?__calicoTasks.filter((__calicoT)=>__calicoT&&typeof __calicoT.id==="string"):[],__calicoIds=new Set(__calicoList.map((__calicoT)=>__calicoT.id));` +
+    // One run at a time, at most one start per 300 ms, always on the latest
+    // task list a render handed over. A tick that arrives while a run is in
+    // flight marks it to run again once it ends; one inside the 300 ms window
+    // arms a single timer. When a run's map differs from the drawn one, the
+    // panel's clock setter re-renders it once; an equal map changes nothing,
+    // so the loop settles when the command's output stops changing.
+    `let __calicoSame=(__calicoA,__calicoB)=>{if(__calicoA.size!==__calicoB.size)return!1;for(let __calicoK of __calicoA.keys())if(__calicoB.get(__calicoK)?.content!==__calicoA.get(__calicoK).content)return!1;return!0};` +
+    `let __calicoStart=()=>{let __calicoL=__calicoState.last;if(!__calicoL||__calicoL.list.length===0||__calicoState.busy)return;let __calicoNow=Date.now(),__calicoWait=__calicoState.at+300-__calicoNow;` +
+    `if(__calicoWait>0){if(__calicoState.timer===null)(__calicoState.timer=setTimeout(()=>{__calicoState.timer=null;__calicoStart()},__calicoWait))?.unref?.();return}` +
+    `if(__calicoState.timer!==null)clearTimeout(__calicoState.timer),__calicoState.timer=null;__calicoState.busy=!0;__calicoState.at=__calicoNow;__calicoState.again=!1;` +
+    `__calicoRun(__calicoL.list,__calicoL.cols,__calicoL.names).then((__calicoR)=>{let __calicoIds=new Set(__calicoState.last.list.map((__calicoT)=>__calicoT.id)),__calicoNext=__calicoR===null?new Map:new Map([...__calicoR].filter((__calicoE)=>__calicoIds.has(__calicoE[0])));` +
+    `if(!__calicoSame(__calicoNext,__calicoState.map)){__calicoState.map=__calicoNext;let __calicoRefresh=__calicoState.last.refresh;if(typeof __calicoRefresh==="function")__calicoRefresh(Date.now())}})` +
+    `.catch((__calicoErr)=>__calicoLog("tick","subagentStatusLine tick failed: "+__calicoErr)).finally(()=>{__calicoState.busy=!1;if(__calicoState.again)__calicoStart()})};` +
+    // Called once per row with the same list: only the first call of a render
+    // (a new list reference, or new columns) filters, prunes and schedules.
+    `let __calicoTick=(__calicoTasks,__calicoIsGroup,__calicoCols,__calicoNames,__calicoRefresh)=>{if(__calicoTasks===__calicoState.seen&&__calicoCols===__calicoState.cols)return __calicoState.map;__calicoState.seen=__calicoTasks;__calicoState.cols=__calicoCols;` +
+    `let __calicoList=Array.isArray(__calicoTasks)?__calicoTasks.filter((__calicoT)=>__calicoT&&typeof __calicoT.id==="string"&&!(typeof __calicoIsGroup==="function"&&__calicoIsGroup(__calicoT))):[],__calicoIds=new Set(__calicoList.map((__calicoT)=>__calicoT.id));` +
     `for(let __calicoK of [...__calicoState.map.keys()])if(!__calicoIds.has(__calicoK))__calicoState.map.delete(__calicoK);` +
-    `let __calicoNow=Date.now();if(__calicoList.length===0||__calicoState.busy||__calicoNow-__calicoState.at<300)return __calicoState.map;__calicoState.busy=!0;__calicoState.at=__calicoNow;` +
-    `__calicoRun(__calicoList,Number.isFinite(__calicoCols)?Math.max(0,__calicoCols):0,__calicoNames).then((__calicoR)=>{__calicoState.map=__calicoR===null?new Map:new Map([...__calicoR].filter((__calicoE)=>__calicoIds.has(__calicoE[0])))}).catch((__calicoErr)=>__calicoLog("tick","subagentStatusLine tick failed: "+__calicoErr)).finally(()=>{__calicoState.busy=!1});return __calicoState.map};` +
+    `__calicoState.last={list:__calicoList,cols:Number.isFinite(__calicoCols)?Math.max(0,__calicoCols):0,names:__calicoNames,refresh:__calicoRefresh};if(__calicoState.busy)__calicoState.again=!0;else __calicoStart();return __calicoState.map};` +
     `return{record:(__calicoE,__calicoN)=>{__calicoState.rec={e:__calicoE,n:__calicoN};globalThis.${SUBAGENT_STATUSLINE_GLOBAL}=__calicoTick}}})();`;
   const record = `__calicoSL?.record(${session},${payload});`;
   const decorationProp =
-    `decoration:globalThis.${SUBAGENT_STATUSLINE_GLOBAL}?.(${panelList}.filter((__calicoT)=>!${groupTest}(__calicoT)),Math.max(0,${columns}-${pointerWidth}()-${padding}),${nameMap})?.get(${taskVar}.id),`;
+    `decoration:globalThis.${SUBAGENT_STATUSLINE_GLOBAL}?.(${panelList},${groupTest},Math.max(0,${columns}-${pointerWidth}()-${padding}),${nameMap},${clockSetter})?.get(${taskVar}.id),`;
   const decoratedReturn =
     `if(__calicoDecoration?.content!==void 0)return ${jsxs}(${box},{onClick:${clickHandler},onMouseEnter:${onEnter},onMouseLeave:${onLeave},children:[${pointerBox[1]},${jsx}(${box},{flexGrow:1,width:0,children:${jsx}(${text},{dimColor:${dim},bold:${bold},wrap:"truncate",children:${jsx}(${ansi},{children:__calicoDecoration.content})})})]});`;
 

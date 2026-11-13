@@ -1973,6 +1973,15 @@ const CHECKS: Check[] = [
       for (const [marker, label] of gate) {
         if (!markerPresent(helperText, marker)) return `the helper lacks ${label}`;
       }
+      // The panel hands the tick its clock setter (the re-render after a run).
+      if (
+        !new RegExp(
+          `decoration:globalThis\\.__calicoSubagentStatusLine\\?\\.\\(${I},${I},Math\\.max\\(0,${I}-${I}\\(\\)-${I}\\),${I},${I}\\)\\?\\.get\\(`
+        ).test(content)
+      ) {
+        return "the panel call does not pass the task list, group test, width, name map and clock setter";
+      }
+      if (!markerPresent(helperText, "__calicoRefresh(Date.now())")) return "the helper lacks the re-render after a changed run";
       const call = content.indexOf("decoration:globalThis.__calicoSubagentStatusLine?.(");
       const row = content.indexOf("decoration:__calicoDecoration,");
       const branch = content.indexOf("if(__calicoDecoration?.content!==void 0)return ");
