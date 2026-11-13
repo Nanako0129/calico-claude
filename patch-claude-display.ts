@@ -3535,7 +3535,7 @@ function patchCustomContextWindows(content) {
   // is deliberate: an explicit mapping wins over every stock rule, including
   // the 1M checks and, from 2.1.301, the 200K cap on models that reach 1M only
   // through the beta header.
-  const resolverHead = String.raw`(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)(\)\{)`;
+  const resolverHead = String.raw`(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)((?:,[A-Za-z_$][\w$]*)?\)\{)`;
   const resolverShapes = [
     // 2.1.260 stopped reading the headers parameter directly and passes it
     // through a helper first:
@@ -3589,6 +3589,21 @@ function patchCustomContextWindows(content) {
     // enforces that for later versions.
     String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)\{[^{}]*\}let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==null\)return \6;` +
       String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);return (?:[^;{}]*:)?\7\})`,
+    // 2.1.324 gave the resolver a third parameter, threaded into the 1M check
+    // and both lookups, and put a global override ahead of everything:
+    //
+    //   2.1.323  function jC(e,n){if(X2r(e,n)){…}let r=ySa(e);if(r!==null)return r;let s=BC(e);return …:s}
+    //   2.1.324  function T1(e,n,r){let s=IC();if(s!==void 0)return s;if(RVr(e,n,r)){…}
+    //              let h=IRa(e,r);if(h!==null)return h;let y=xC(e,r);return …:y}
+    //
+    // The head accepts the optional third parameter and re-emits it inside the
+    // captured `){` group, so group numbers did not move. The injection still
+    // goes first: an explicit mapping wins over the new override too, as it
+    // does over every other stock rule. Pinned like 2.1.305: the override, the
+    // block, the non-null lookup, then the single return ending in the helper.
+    String.raw`(let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\);if\(\6!==void 0\)return \6;if\([A-Za-z_$][\w$]*\(\2,\3(?:,[A-Za-z_$][\w$]*)?\)\)\{[^{}]*\}` +
+      String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2(?:,[A-Za-z_$][\w$]*)?\);if\(\7!==null\)return \7;` +
+      String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2(?:,[A-Za-z_$][\w$]*)?\);return (?:[^;{}]*:)?\8\})`,
   ].map((body) => new RegExp(resolverHead + body, "g"));
 
   // Claude's stock pipeline subtracts an output reserve and may precompute at
@@ -3749,7 +3764,7 @@ function patchCompactTokensSaved(content) {
   // comma expression spreads its last operand, so the sequenced producer works
   // unchanged in either position.
   const callSitePattern =
-    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},(displayText:|\.\.\.)([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\2\)/g;
+    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?)((?:,[^{}]*?)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},(displayText:|\.\.\.)([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\3\)/g;
 
   // Reads the compaction result rather than the caller's `preTokens`/
   // `postTokens` locals: those are declared ~700 characters earlier and only
@@ -3803,8 +3818,8 @@ function patchCompactTokensSaved(content) {
     // `spreadExpr` is the whole spread argument as it appears upstream —
     // `<local>.result` up to 2.1.266, a bare `<local>` from 2.1.267 — so it is
     // re-emitted verbatim and never has a suffix appended to it.
-    (full, spreadExpr, displayVar, lead, renderFn, ctxVar) =>
-      `compactionResult:{...${spreadExpr},userDisplayMessage:${displayVar}},` +
+    (full, spreadExpr, extraFields, displayVar, lead, renderFn, ctxVar) =>
+      `compactionResult:{...${spreadExpr}${extraFields},userDisplayMessage:${displayVar}},` +
       `${lead}(globalThis.__calico_compact_saved=${summary}(${spreadExpr}),` +
       `${renderFn}(${ctxVar},${displayVar}))`
   );
@@ -4255,7 +4270,7 @@ function patchStatuslineCommittedUsage(content) {
   // holding a lone parenthesis, still fails closed (match 0, module skipped).
   const batchCallArgs = "(?:,(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*)?";
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*,)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\((?:[^()]|\\([^()]*\\))*\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
   // Two spellings of the terminal commit, paired rather than crossed. Through

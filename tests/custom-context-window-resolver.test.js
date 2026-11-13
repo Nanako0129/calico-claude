@@ -46,6 +46,13 @@ const blocked =
   "function pE(e,n){if(mXn(e,n)){let h=Xa(qe(Mt(e)))?.context;return Math.max(h?.maximum_window??h?.window??0,n0)}" +
   "let r=s5s(e);if(r!==null)return r;let s=o0(e);return kf(e)&&X_t(e)===null?Math.min(s,MCe):s}" +
   "function o0(e){return 200000}";
+// 2.1.324: a third parameter threaded into the 1M check and both lookups, and a
+// global override (`let s=IC();if(s!==void 0)return s;`) ahead of everything.
+const overridden =
+  "function T1(e,n,r){let s=IC();if(s!==void 0)return s;if(RVr(e,n,r)){let E=bo(lt($t(e)));" +
+  "return Math.max(xC(e,r),E?.maximum_window??E?.window??0,S1)}" +
+  "let h=IRa(e,r);if(h!==null)return h;let y=xC(e,r);return vVt(e,r)===null?Math.min(y,r_(e)):y}" +
+  "function xC(e,n){return 200000}";
 
 for (const [name, resolver] of [
   ["2.1.259 reads the headers parameter directly", bare],
@@ -53,6 +60,7 @@ for (const [name, resolver] of [
   ["2.1.295 folds both 1M checks into one helper", folded],
   ["2.1.301 splits the override lookup into a helper", split],
   ["2.1.305 blocks the 1M check and adds a second lookup", blocked],
+  ["2.1.324 adds a third parameter and a global override", overridden],
 ]) {
   test(`resolver is patched when ${name}`, () => {
     const result = patchCustomContextWindows(resolver + otherSites);
@@ -149,6 +157,50 @@ test("2.1.305 wrapper returns the mapped window and otherwise behaves as shipped
     assert.equal(run(env, looked)("other-model", []), 512000, "the new lookup");
     assert.equal(run(env, { kf: () => false })("other-model", []), 200000, "uncapped helper result");
   }
+});
+
+// 2.1.324: a mapping wins over the new global override as well as the 1M block
+// and the lookup; without one, each upstream rule behaves as shipped, and the
+// third parameter still reaches the helpers.
+test("2.1.324 resolver returns the mapped window and otherwise behaves as shipped", () => {
+  const { content } = patchCustomContextWindows(overridden + otherSites);
+  const run = (vars, stubs = {}) => {
+    const seen = [];
+    const context = {
+      process: { ["e" + "nv"]: vars },
+      IC: () => undefined,
+      RVr: () => false,
+      bo: () => ({ window: 1000000 }),
+      lt: (x) => x,
+      $t: (x) => x,
+      S1: 0,
+      IRa: (e, r) => (seen.push(r), null),
+      vVt: () => null,
+      r_: () => 150000,
+      ...stubs,
+    };
+    vm.createContext(context);
+    vm.runInContext(content, context);
+    return { call: (...args) => context.T1(...args), seen };
+  };
+  const mapped = { CALICO_MODEL_CONTEXT_WINDOWS: JSON.stringify({ "gpt-5.6-sol": 372000 }) };
+  const overrideSet = { IC: () => 640000 };
+  const oneMillion = { RVr: () => true };
+  const looked = { IRa: () => 512000 };
+
+  for (const stubs of [{}, overrideSet, oneMillion, looked]) {
+    assert.equal(run(mapped, stubs).call("gpt-5.6-sol", [], { o: 1 }), 372000);
+  }
+  for (const vars of [mapped, {}]) {
+    assert.equal(run(vars).call("other-model", [], {}), 150000, "capped helper result");
+    assert.equal(run(vars, overrideSet).call("other-model", [], {}), 640000, "global override");
+    assert.equal(run(vars, oneMillion).call("other-model", [], {}), 1000000, "catalog window from the block");
+    assert.equal(run(vars, looked).call("other-model", [], {}), 512000, "the lookup");
+  }
+  const probe = run({});
+  const overrides = { tag: "third" };
+  probe.call("other-model", [], overrides);
+  assert.equal(probe.seen[0], overrides, "the third parameter reaches the lookup");
 });
 
 // Missing or duplicated resolver: nothing is rewritten, so the status-line site
