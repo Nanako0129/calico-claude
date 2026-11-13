@@ -1389,7 +1389,8 @@ const CHECKS: Check[] = [
       // 2.1.238 appends a fifth argument to the content builder call
       // (`…messageId:Gr.id},i.storageV5)`), matched optionally so the patched
       // 2.1.237 and 2.1.238 binaries both verify.
-      const batchCallArgs = "(?:,(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*)?";
+      const batchParenRun = "(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*";
+      const batchCallArgs = `(?:,${batchParenRun})?`;
       const batchWrapperPattern = new RegExp(
         // 2.1.257 inserts statements between the destructuring and the message
         // object, and adds fields to the object before `requestId`. Kept in
@@ -1398,7 +1399,7 @@ const CHECKS: Check[] = [
         // 2.1.323 adds a callback argument to the inner content builder; both
         // argument lists accept arguments nested two parentheses deep
         // (batchCallArgs, same string as the patcher's).
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:${identifier}:${identifier}(?:\\.${identifier})*,)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1944,10 +1945,13 @@ const CHECKS: Check[] = [
       // minified name changes between versions (2.1.257 renamed the second one),
       // so pin the call shape rather than a literal `(e)`. Requiring the early
       // return keeps this a check on the wiring, not just on the helper existing.
+      // It must also be the resolver's first statement and read the resolver's
+      // first parameter: later releases put early returns at the head (2.1.324's
+      // global override), and an injection after one would never be reached.
       const injectedLookup =
-        /let __calico_window=__calico_context_window\(([A-Za-z_$][\w$]*)\);if\(__calico_window!==null\)return __calico_window;/;
+        /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*)+\)\{let __calico_window=__calico_context_window\(\1\);if\(__calico_window!==null\)return __calico_window;/;
       if (!injectedLookup.test(content)) {
-        return "custom context-window lookup is not wired into the resolver";
+        return "custom context-window lookup is not the resolver's first statement reading its model parameter";
       }
       // One resolver, one injection: a second match would declare the helper
       // twice in one module scope.
