@@ -34,6 +34,10 @@ type Check = {
   disabledMarker?: RegExp | string;
   // For custom checks: return null on success, or a failure detail string.
   run?: (content: string) => string | null;
+  // When present and false for a bundle, the module does not apply to it: the
+  // check is reported as skipped and only the disabled marker's absence is
+  // asserted, exactly as for --disable.
+  applies?: (content: string) => boolean;
   describe: string;
 };
 
@@ -1926,6 +1930,59 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "subagent-statusline",
+    kind: "custom",
+    disabledMarker: /__calicoSL\b|__calicoSubagentStatusLine|__calicoDecoration/,
+    describe: "subagentStatusLine runs through the gated statusLine runner and decorates agent-panel rows",
+    // The patcher's predicate: upstream still declares the setting (2.1.323
+    // marks it deprecated) but removed its own implementation.
+    applies: (content: string): boolean =>
+      content.includes("subagentStatusLine:()=>") && !content.includes("taskDecorations"),
+    run: (content: string): string | null => {
+      const I = "[A-Za-z_$][\\w$]*";
+      const once = (needle: string): number => countOccurrences(content, needle);
+      const markers: Array<[string, string]> = [
+        ["var __calicoSL=(()=>{", "helper"],
+        ["__calicoSL?.record(", "runner record call"],
+        ["globalThis.__calicoSubagentStatusLine=__calicoTick", "published tick"],
+        ["decoration:globalThis.__calicoSubagentStatusLine?.(", "panel decoration prop"],
+        ["decoration:__calicoDecoration,", "row decoration prop"],
+        ["if(__calicoDecoration?.content!==void 0)return ", "row decorated branch"],
+      ];
+      for (const [needle, label] of markers) {
+        const count = once(needle);
+        if (count !== 1) return `expected 1 ${label}, found ${count}`;
+      }
+      const helper = content.indexOf("var __calicoSL=(()=>{");
+      const helperText = content.slice(helper, content.indexOf("})();", helper));
+      const record = content.indexOf("__calicoSL?.record(");
+      if (!inSameModule(content, helper, record)) return "the runner record call is not in the helper's chunk";
+      if (!new RegExp(`^__calicoSL\\?\\.record\\(${I},${I}\\);let ${I}=${I}\\(${I}\\(\\)\\?\\.statusLine\\);`).test(content.slice(record, record + 200))) {
+        return "the record call does not sit right before the statusLine runner's config read";
+      }
+      // The gate: the replayed guards, the managed-only source, the org tag
+      // keyed on this setting, and the 5 s timeout.
+      const gate: Array<[RegExp | string, string]> = [
+        ["workspace trust not accepted", "the workspace-trust guard"],
+        [/\("statusLine"\)\)\{__calicoLog\(/, "the statusLine-disabled guard"],
+        [new RegExp(`=${I}\\(\\)\\?${I}\\("policySettings"\\)\\?\\.subagentStatusLine:${I}\\(\\)\\?\\.subagentStatusLine;`), "the managed-only command source"],
+        [new RegExp(`${I}\\("subagentStatusLine"\\)\\?${I}\\(\\{\\.\\.\\.${I}\\}\\):${I},"StatusLine","statusLine",`), "the organization tag keyed on subagentStatusLine"],
+        ["timeout:5}", "the 5 s timeout"],
+        ["if(!__calicoRec)return null;", "the no-payload-yet refusal"],
+      ];
+      for (const [marker, label] of gate) {
+        if (!markerPresent(helperText, marker)) return `the helper lacks ${label}`;
+      }
+      const call = content.indexOf("decoration:globalThis.__calicoSubagentStatusLine?.(");
+      const row = content.indexOf("decoration:__calicoDecoration,");
+      const branch = content.indexOf("if(__calicoDecoration?.content!==void 0)return ");
+      if (!inSameModule(content, row, branch) || !inSameModule(content, call, row)) {
+        return "the panel call site and the row component are not in one chunk";
+      }
+      return null;
+    },
+  },
+  {
     id: "custom-context-window",
     kind: "custom",
     describe: "validated opt-in context resolver and effective status-line window",
@@ -3092,6 +3149,18 @@ async function main(): Promise<void> {
       continue;
     }
 
+    if (check.applies && !check.applies(content)) {
+      const detail = evaluateDisabledPatchModule(check.id, content);
+      if (detail === null) {
+        console.log(`  skip ${check.id} (not applicable to this bundle; marker confirmed absent)`);
+        skippedCount += 1;
+      } else {
+        console.log(`  FAIL ${check.id}`);
+        failures.push({ id: check.id, detail: `not applicable to this bundle, but ${detail}` });
+      }
+      continue;
+    }
+
     const detail = evaluateCheck(check, content);
     if (detail === null) {
       console.log(`  ok   ${check.id}`);
@@ -3123,7 +3192,12 @@ async function main(): Promise<void> {
 
 function evaluatePatchModule(id: string, content: string): string | null {
   const check = CHECKS.find((candidate) => candidate.id === id);
-  return check ? evaluateCheck(check, content) : `unknown patch module: ${id}`;
+  if (!check) {
+    return `unknown patch module: ${id}`;
+  }
+  return check.applies && !check.applies(content)
+    ? evaluateDisabledPatchModule(id, content)
+    : evaluateCheck(check, content);
 }
 
 function evaluateDisabledPatchModule(id: string, content: string): string | null {

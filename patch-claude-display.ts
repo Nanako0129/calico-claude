@@ -6227,6 +6227,454 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
   return { content: output, candidates, patched };
 }
 
+// ---------------------------------------------------------------------------
+// subagent-statusline: restore the `subagentStatusLine` command that upstream
+// removed in 2.1.323 (the schema still declares the key, documented as
+// "Deprecated: no longer has any effect"; `taskDecorations`, the runner, the
+// ticker and the row's `decoration` prop are gone). Contract restored from
+// 2.1.322: the command reads `{...statusLinePayload, columns, tasks:[…]}` on
+// stdin and prints one `{"id","content"}` JSON line per agent-panel row;
+// `content` is ANSI text drawn in place of the row's label and status.
+//
+// Three injections, all or nothing:
+//   S1 runner chunk — a helper built next to upstream's own statusLine runner,
+//      so every binding it needs is in lexical scope. Its gate replays the
+//      runner's whole guard prefix (disableAllHooks, the statusLine-disabled
+//      gate, workspace trust, and anything upstream adds there later), reads
+//      the command the way the runner's managed-only reader does, and runs it
+//      through the runner's own executor call with only the config and stdin
+//      swapped. The runner records its last (session, payload) after its gates
+//      pass; nothing spawns before that. Only a gated tick is published on
+//      globalThis.
+//   S2 panel call site — passes `decoration` from the tick's map.
+//   S3 row component — returns the 2.1.322 decorated shape after its last hook.
+// Every capture is by shape and every one that fails patches nothing.
+// ---------------------------------------------------------------------------
+
+const SUBAGENT_STATUSLINE_GLOBAL = "__calicoSubagentStatusLine";
+
+// The predicate the verifier shares: upstream still declares the setting but
+// no longer implements it.
+function subagentStatusLineApplicability(content) {
+  if (!content.includes("subagentStatusLine:()=>")) {
+    return { applies: false, reason: "feature absent: the settings schema does not declare subagentStatusLine" };
+  }
+  if (content.includes("taskDecorations")) {
+    return { applies: false, reason: "upstream implements subagentStatusLine (taskDecorations present)" };
+  }
+  return { applies: true, reason: null };
+}
+
+// Top-level comma split of a call's argument text. null when the text holds a
+// template literal or does not balance: the caller then refuses to patch.
+function splitTopLevelArgs(text) {
+  const args = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === "`") return null;
+    if (char === '"' || char === "'") {
+      for (i += 1; i < text.length && text[i] !== char; i += 1) {
+        if (text[i] === "\\") i += 1;
+      }
+      if (i >= text.length) return null;
+    } else if (char === "(" || char === "[" || char === "{") {
+      depth += 1;
+    } else if (char === ")" || char === "]" || char === "}") {
+      depth -= 1;
+      if (depth < 0) return null;
+    } else if (char === "," && depth === 0) {
+      args.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  if (depth !== 0) return null;
+  args.push(text.slice(start));
+  return args;
+}
+
+// The identifiers an expression reads: `calls` are names it calls directly,
+// `refs` every other free name. Property names, object keys and string
+// contents are not free names. null for text this scan cannot judge (template
+// literals, regex-looking slashes, assignments, arrows, statements).
+const FREE_NAME_KEYWORDS = new Set(["void", "typeof", "null", "true", "false", "in", "instanceof"]);
+function freeNames(text) {
+  if (/[`;\/]|=>|\+\+|--/.test(text) || /(?<![=!<>])=(?!=)/.test(text)) {
+    return null;
+  }
+  const masked = text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""').replace(/\.\.\./g, " ");
+  const calls = new Set();
+  const refs = new Set();
+  for (const match of masked.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)(?![\w$])/g)) {
+    const name = match[1];
+    if (FREE_NAME_KEYWORDS.has(name)) continue;
+    const after = masked.slice(match.index + name.length).trimStart();
+    const before = masked.slice(0, match.index).trimEnd();
+    if (after.startsWith(":") && (before.endsWith("{") || before.endsWith(","))) continue;
+    (after.startsWith("(") ? calls : refs).add(name);
+  }
+  return { calls, refs };
+}
+
+// Free names of `text` restricted to `allowedRefs`, with no call to a runner
+// local. Returns the callees (module-scope functions) or null.
+function moduleCallees(text, allowedRefs, runnerLocals) {
+  const names = freeNames(text);
+  if (names === null) return null;
+  for (const ref of names.refs) {
+    if (!allowedRefs.has(ref)) return null;
+  }
+  for (const call of names.calls) {
+    if (runnerLocals.has(call)) return null;
+  }
+  return names.calls;
+}
+
+// The statusLine runner's guard prefix — every statement before its config
+// read — as items to replay, or null when it holds anything other than
+// `if(…)return` guards (optionally logging one string first) and the per-host
+// log-state binding `let h=X.of(<session>.host)`.
+function parseStatusLineGuardPrefix(prefix, session, payload) {
+  const identifier = "[A-Za-z_$][\\w$]*";
+  const items = [];
+  const locals = new Set();
+  const holders = new Set();
+  let i = 0;
+  while (i < prefix.length) {
+    if (prefix.startsWith("if(", i)) {
+      const close = closingParenIndex(prefix, i + 2);
+      if (close === -1) return null;
+      const cond = prefix.slice(i + 3, close);
+      const rest = prefix.slice(close + 1);
+      const logged = new RegExp(`^\\{(${identifier})\\(("[^"\\\\]*")\\);return\\}`).exec(rest);
+      let length;
+      let item;
+      if (rest.startsWith("return;")) {
+        length = "return;".length;
+        item = { kind: "guard", cond, logFn: null, message: null };
+      } else if (logged) {
+        length = logged[0].length;
+        item = { kind: "guard", cond, logFn: logged[1], message: logged[2] };
+      } else {
+        return null;
+      }
+      if (/[{}]/.test(cond)) return null;
+      items.push(item);
+      i = close + 1 + length;
+      continue;
+    }
+    const binding = new RegExp(`^let (${identifier})=(${identifier})\\.of\\(${escapeRegExp(session)}\\.host\\);`).exec(
+      prefix.slice(i)
+    );
+    if (binding) {
+      items.push({ kind: "binding", text: binding[0] });
+      locals.add(binding[1]);
+      holders.add(binding[2]);
+      i += binding[0].length;
+      continue;
+    }
+    return null;
+  }
+  const allowed = new Set([session, payload, ...locals]);
+  const callees = new Set();
+  for (const item of items) {
+    if (item.kind !== "guard") continue;
+    const names = moduleCallees(item.cond, allowed, new Set([session, payload, ...locals]));
+    if (names === null) return null;
+    for (const name of names) callees.add(name);
+  }
+  return { items, callees, holders };
+}
+
+function patchSubagentStatusLine(content) {
+  const original = content;
+  const applicability = subagentStatusLineApplicability(content);
+  if (!applicability.applies) {
+    return { content, candidates: 0, patched: 0, skipped: true, reason: applicability.reason };
+  }
+  const I = "[A-Za-z_$][\\w$]*";
+  let candidates = 0;
+  const refuse = () => ({ content: original, candidates, patched: 0 });
+
+  // ---- S1: the statusLine runner -------------------------------------------
+  // `let y=kDt(Pr()?.statusLine);if(!y||y.type!=="command")return;`
+  const configPattern = new RegExp(
+    `let (${I})=(${I})\\((${I})\\(\\)\\?\\.statusLine\\);if\\(!\\1\\|\\|\\1\\.type!=="command"\\)return;`,
+    "g"
+  );
+  const configMatches = [...content.matchAll(configPattern)];
+  if (configMatches.length !== 1) return refuse();
+  candidates += 1;
+  const configMatch = configMatches[0];
+  const [, cfgVar, reader, settingsReader] = configMatch;
+  const configIndex = configMatch.index;
+  const runnerStart = content.lastIndexOf("async function ", configIndex);
+  if (runnerStart === -1 || !inSameModule(content, runnerStart, configIndex)) return refuse();
+  const header = new RegExp(`^async function (${I})\\((${I}),(${I}),(${I})(?:,(${I})=!1)?\\)\\{`).exec(
+    content.slice(runnerStart, configIndex)
+  );
+  if (!header) return refuse();
+  const [, , session, payload, signal, verbose] = header;
+  // The helper is a statement placed right before the runner, so the runner
+  // must start one.
+  if (!";}".includes(content[runnerStart - 1])) return refuse();
+  const bodyOpen = runnerStart + header[0].length - 1;
+  const bodyClose = closingBraceIndex(content, bodyOpen);
+  if (bodyClose === -1 || !inSameModule(content, bodyOpen, bodyClose)) return refuse();
+  const body = content.slice(configIndex + configMatch[0].length, bodyClose);
+
+  const prefix = parseStatusLineGuardPrefix(content.slice(bodyOpen + 1, configIndex), session, payload);
+  if (prefix === null) return refuse();
+  const guards = prefix.items.filter((item) => item.kind === "guard");
+  // The three gates upstream's runner has today, in its order: disableAllHooks,
+  // the statusLine-disabled gate, workspace trust.
+  const hooksGate = new RegExp(`^${I}\\(\\)$`).test(guards[0]?.cond ?? "") && prefix.items[0] === guards[0] ? 0 : -1;
+  const statusLineGate = guards.findIndex((guard) => new RegExp(`^${I}\\("statusLine"\\)$`).test(guard.cond));
+  const trustGate = guards.findIndex((guard) => guard.message !== null && guard.message.includes("workspace trust not accepted"));
+  if (hooksGate !== 0 || statusLineGate <= hooksGate || trustGate <= statusLineGate) return refuse();
+  candidates += 1;
+  const logFn = guards[trustGate].logFn;
+
+  // Managed-only command source (P2-1): `function kDt(e){return lnn()?ye("policySettings")?.statusLine:e}`.
+  const readerPattern = new RegExp(
+    `function ${escapeRegExp(reader)}\\((${I})\\)\\{return (${I})\\(\\)\\?(${I})\\("policySettings"\\)\\?\\.statusLine:\\1\\}`,
+    "g"
+  );
+  const readerMatches = [...content.matchAll(readerPattern)].filter((match) => inSameModule(content, match.index, configIndex));
+  if (readerMatches.length !== 1) return refuse();
+  candidates += 1;
+  const [, , managedOnly, sourceReader] = readerMatches[0];
+
+  // Locals of the runner: a call to one of these is not a module function.
+  const runnerLocals = new Set([session, payload, signal, cfgVar, ...(verbose ? [verbose] : [])]);
+  for (const match of body.matchAll(new RegExp(`(?:let |,|\\()(${I})=(?!=)`, "g"))) runnerLocals.add(match[1]);
+
+  const inputMatch = new RegExp(`(?:let |,)(${I})=${I}\\(${escapeRegExp(payload)}\\)[,;]`).exec(body);
+  const hiddenMatch = new RegExp(
+    `(?:let |,)(${I})=(${I}\\(${escapeRegExp(session)}\\)\\?${I}\\(${escapeRegExp(cfgVar)}\\):void 0)[,;]`
+  ).exec(body);
+  const execMatch = new RegExp(`=await (${I})\\(${I}\\("statusLine"\\)\\?`).exec(body);
+  if (!inputMatch || !hiddenMatch || !execMatch) return refuse();
+  const inputVar = inputMatch[1];
+  const hiddenVar = hiddenMatch[1];
+  const hiddenExpr = hiddenMatch[2];
+  const execCallee = execMatch[1];
+  const execOpen = execMatch.index + execMatch[0].indexOf("(");
+  const execClose = closingParenIndex(body, execOpen);
+  if (execClose === -1) return refuse();
+  const execArgs = splitTopLevelArgs(body.slice(execOpen + 1, execClose));
+  if (execArgs === null || execArgs.length < 4) return refuse();
+  const orgTag = new RegExp(`^(${I})\\("statusLine"\\)\\?(${I})\\(\\{\\.\\.\\.${escapeRegExp(cfgVar)}\\}\\):${escapeRegExp(cfgVar)}$`).exec(
+    execArgs[0]
+  );
+  const count = (value) => execArgs.filter((arg) => arg === value).length;
+  const bound = [session, payload, signal, cfgVar, inputVar, hiddenVar];
+  if (
+    !orgTag ||
+    execArgs[1] !== '"StatusLine"' ||
+    execArgs[2] !== '"statusLine"' ||
+    execArgs[3] !== inputVar ||
+    count(signal) !== 1 ||
+    count(hiddenVar) !== 1 ||
+    new Set(bound).size !== bound.length ||
+    runnerLocals.has(execCallee)
+  ) {
+    return refuse();
+  }
+  // P3-1: every free name the reused text reads must be one this helper binds
+  // explicitly; anything else (the verbose flag, a runner local) refuses.
+  const execCallees = moduleCallees(execArgs.join(","), new Set(bound), runnerLocals);
+  const hiddenCallees = moduleCallees(hiddenExpr, new Set([session, cfgVar]), runnerLocals);
+  if (execCallees === null || hiddenCallees === null) return refuse();
+  candidates += 1;
+
+  // contextWindowSize: the function and its betas argument as the payload
+  // builder in this chunk calls them (`gt=R_(nt,Im()),…context_window:bbt(rt,gt)`).
+  // Optional: without it the field is omitted.
+  const windowPairs = new Set();
+  for (const use of content.matchAll(new RegExp(`context_window:${I}\\(${I},(${I})\\)`, "g"))) {
+    if (!inSameModule(content, use.index, configIndex)) continue;
+    const window = content.slice(Math.max(0, use.index - 3000), use.index);
+    const definition = [...window.matchAll(new RegExp(`[,;{]${escapeRegExp(use[1])}=(${I})\\(${I},(${I})\\(\\)\\)[,;]`, "g"))].at(-1);
+    if (definition && inSameModule(content, use.index - window.length + definition.index, use.index)) {
+      windowPairs.add(`${definition[1]} ${definition[2]}`);
+    }
+  }
+  const [contextWindowFn, betasFn] = windowPairs.size === 1 ? [...windowPairs][0].split(" ") : [null, null];
+
+  // ---- S3: the row component -----------------------------------------------
+  const rowPattern = new RegExp(
+    `function (${I})\\((${I})\\)\\{let (${I})=(${I})\\(\\d+\\),\\{(task:${I},name:${I},link:${I},labelWidth:${I},statusWidth:[^}]*)\\}=\\2,`,
+    "g"
+  );
+  const rowMatches = [...content.matchAll(rowPattern)];
+  if (rowMatches.length !== 1) return refuse();
+  const rowMatch = rowMatches[0];
+  const [, rowName, , memo, memoHook, destructure] = rowMatch;
+  const onClick = new RegExp(`(?:^|,)onClick:(${I})$`).exec(destructure)?.[1];
+  const rowOpen = rowMatch.index + rowMatch[0].indexOf("{");
+  const rowClose = closingBraceIndex(content, rowOpen);
+  if (!onClick || rowClose === -1 || !inSameModule(content, rowOpen, rowClose)) return refuse();
+  const row = content.slice(rowOpen, rowClose + 1);
+  const hooks = new RegExp(`,\\[(${I}),(${I})\\]=(${I})\\(!1\\),(${I})=(${I})\\(${escapeRegExp(onClick)}\\),`).exec(row);
+  if (!hooks) return refuse();
+  const [, , hoverSetter, stateHook, clickHandler, clickHook] = hooks;
+  const memoRef = escapeRegExp(memo);
+  const pointerBox = new RegExp(
+    `let (${I});if\\(${memoRef}\\[\\d+\\]!==(${I})\\|\\|${memoRef}\\[\\d+\\]!==(${I})\\)\\1=(${I})\\((${I}),\\{width:\\3,flexShrink:0,children:\\2\\}\\)(?:,${memoRef}\\[\\d+\\]=${I})*;else \\1=${memoRef}\\[\\d+\\];`
+  ).exec(row);
+  const description = new RegExp(
+    `(${I})\\((${I}),\\{flexGrow:1,width:0,paddingLeft:2,children:\\1\\((${I}),\\{dimColor:(${I}),bold:(${I}),wrap:"truncate",children:${I}\\}\\)\\}\\)`
+  ).exec(row);
+  const rowReturn = pointerBox
+    ? new RegExp(
+        `(${I})\\(${escapeRegExp(pointerBox[5])},\\{onClick:${escapeRegExp(clickHandler)},onMouseEnter:(${I}),onMouseLeave:(${I}),children:\\[${escapeRegExp(pointerBox[1])},`
+      ).exec(row)
+    : null;
+  if (!pointerBox || !description || !rowReturn) return refuse();
+  const [, jsx, box, text, dim, bold] = description;
+  const [, jsxs, onEnter, onLeave] = rowReturn;
+  const insertAt = pointerBox.index + pointerBox[0].length;
+  const hookCall = (name) => new RegExp(`(?<![\\w$.])${escapeRegExp(name)}\\(`);
+  // Hook order: the decorated return must follow the row's last hook call, so
+  // both branches call the same hooks. Refuse if any hook is called after it.
+  const afterInsert = row.slice(insertAt);
+  const beforeInsert = row.slice(0, insertAt);
+  if (
+    pointerBox[4] !== jsx ||
+    pointerBox[5] !== box ||
+    hooks.index + hooks[0].length > insertAt ||
+    [memoHook, stateHook, clickHook].some((name) => hookCall(name).test(afterInsert)) ||
+    // Everything the decorated branch reads is already assigned above it.
+    !beforeInsert.includes(`${onEnter}=()=>${hoverSetter}(!0)`) ||
+    !beforeInsert.includes(`${onLeave}=()=>${hoverSetter}(!1)`) ||
+    !beforeInsert.includes(`dimColor:${dim},bold:${bold}`)
+  ) {
+    return refuse();
+  }
+  // The ANSI text component the main status line draws through:
+  // `function Xao(rt,bt){return e(n,{dimColor:!0,wrap:"truncate",children:e(hi,{children:rt})},bt)}`.
+  const ansiMatches = [
+    ...content.matchAll(
+      new RegExp(
+        `function ${I}\\((${I}),(${I})\\)\\{return (${I})\\((${I}),\\{dimColor:!0,wrap:"truncate",children:\\3\\((${I}),\\{children:\\1\\}\\)\\},\\2\\)\\}`,
+        "g"
+      )
+    ),
+  ].filter((match) => inSameModule(content, match.index, rowOpen) && match[3] === jsx && match[4] === text);
+  if (ansiMatches.length !== 1) return refuse();
+  const ansi = ansiMatches[0][5];
+  candidates += 1;
+
+  // ---- S2: the panel call site ---------------------------------------------
+  const callPattern = new RegExp(
+    `(${I})\\(${escapeRegExp(rowName)},\\{task:(${I}),name:(${I})\\.get\\(\\2\\.id\\),link:`,
+    "g"
+  );
+  const callMatches = [...content.matchAll(callPattern)].filter((match) => inSameModule(content, match.index, rowOpen));
+  if (callMatches.length !== 1) return refuse();
+  const callMatch = callMatches[0];
+  const [, , taskVar, nameMap] = callMatch;
+  const before = content.slice(Math.max(0, callMatch.index - 2000), callMatch.index);
+  const mapMatch = [
+    ...before.matchAll(new RegExp(`(${I})\\.slice\\(${I},${I}\\)\\.map\\(\\((${I}),${I}\\)=>\\{(?:let ${I}=[^;{}]*;)*if\\((${I})\\(\\2\\)\\)\\{return `, "g")),
+  ].at(-1);
+  const widthMatch = [
+    ...content
+      .slice(Math.max(0, callMatch.index - 6000), callMatch.index)
+      .matchAll(new RegExp(`\\.some\\(Boolean\\)&&(${I})\\(\\)\\+${I}\\+3\\+${I}>(${I})-(${I})\\)`, "g")),
+  ].at(-1);
+  if (
+    !mapMatch ||
+    !widthMatch ||
+    !before.slice(mapMatch.index).includes(`let ${taskVar}=${mapMatch[2]};`) ||
+    before.slice(mapMatch.index).includes(BUN_MODULE_BOUNDARY) ||
+    !content.slice(Math.max(0, callMatch.index - 20000), callMatch.index).includes(`{columns:${widthMatch[2]}}=`) ||
+    !new RegExp(`=${escapeRegExp(widthMatch[1])}\\(\\)\\+${I},`).test(row)
+  ) {
+    return refuse();
+  }
+  const [, panelList, , groupTest] = mapMatch;
+  const [, pointerWidth, columns, padding] = widthMatch;
+  candidates += 1;
+
+  // ---- Build -----------------------------------------------------------------
+  const guardReplay = prefix.items
+    .map((item, index) => {
+      if (item.kind === "binding") return item.text;
+      const message = item.message
+        ? `"subagentStatusLine: "+${item.message}`
+        : JSON.stringify(`subagentStatusLine: skipped, the statusLine runner guard ${item.cond} holds`);
+      return `if(${item.cond}){__calicoLog("guard${index}",${message});return!1}`;
+    })
+    .join("");
+  const bindings = [
+    ...prefix.callees,
+    ...execCallees,
+    ...hiddenCallees,
+    execCallee,
+    managedOnly,
+    sourceReader,
+    settingsReader,
+    logFn,
+    ...(contextWindowFn ? [contextWindowFn, betasFn] : []),
+  ];
+  const bindingCheck = [
+    ...[...new Set(bindings)].map((name) => `typeof ${name}==="function"`),
+    ...[...prefix.holders].map((name) => `typeof ${name}?.of==="function"`),
+  ].join("&&");
+  const execCall = `${execCallee}(${orgTag[1]}("subagentStatusLine")?${orgTag[2]}({...${cfgVar}}):${cfgVar},${execArgs.slice(1).join(",")})`;
+  const contextWindow = contextWindowFn ? `${contextWindowFn}(__calicoT.model,${betasFn}())` : "void 0";
+  const helper =
+    `var __calicoSL=(()=>{let __calicoState={rec:null,map:new Map,busy:!1,at:0,logged:new Set};` +
+    `let __calicoLog=(__calicoKey,__calicoMsg)=>{if(__calicoState.logged.has(__calicoKey))return;__calicoState.logged.add(__calicoKey);try{${logFn}(__calicoMsg)}catch{}};` +
+    `let __calicoRun=async(__calicoTasks,__calicoCols,__calicoNames)=>{let __calicoRec=__calicoState.rec;if(!__calicoRec)return null;` +
+    `let __calicoBound;try{__calicoBound=${bindingCheck}}catch{__calicoBound=!1}` +
+    `if(!__calicoBound)return __calicoLog("bindings","subagentStatusLine: skipped, a binding it runs through is not a function"),null;` +
+    `if(!((${session},${payload})=>{${guardReplay}return!0})(__calicoRec.e,__calicoRec.n))return null;` +
+    `let __calicoRaw=${managedOnly}()?${sourceReader}("policySettings")?.subagentStatusLine:${settingsReader}()?.subagentStatusLine;` +
+    `if(!__calicoRaw||__calicoRaw.type!=="command"||typeof __calicoRaw.command!=="string"||!__calicoRaw.command)return null;` +
+    `if(__calicoRaw.command.includes("CLAUDE_PLUGIN_ROOT")||__calicoRaw.command.includes("CLAUDE_PLUGIN_DATA"))return __calicoLog("plugin","subagentStatusLine: skipped, the command references a plugin variable, which is only set for a plugin's own commands"),null;` +
+    `let __calicoCfg={...__calicoRaw,timeout:5},__calicoBase=__calicoRec.n;` +
+    `let __calicoInput=JSON.stringify({...__calicoBase,columns:__calicoCols,tasks:__calicoTasks.map((__calicoT)=>({id:__calicoT.id,name:__calicoNames?.get?.(__calicoT.id),type:__calicoT.type,agentType:__calicoT.agentType,status:__calicoT.status,description:__calicoT.description,label:("label"in __calicoT&&typeof __calicoT.label==="string"?__calicoT.label:__calicoT.progress?.summary)||__calicoT.description,startTime:__calicoT.startTime,model:__calicoT.model,effort:__calicoT.effort,contextWindowSize:__calicoT.model?${contextWindow}:void 0,tokenCount:__calicoT.progress?.tokenCount??0,tokenSamples:[],cwd:__calicoT.cwd??__calicoBase?.cwd}))});` +
+    `let __calicoHidden=((${session},${cfgVar})=>${hiddenExpr})(__calicoRec.e,__calicoCfg),__calicoLabel=__calicoHidden===void 0?__calicoCfg.command:"command left out";` +
+    `let __calicoAbort=new AbortController,__calicoTimer=setTimeout(()=>__calicoAbort.abort(),5000);__calicoTimer?.unref?.();` +
+    `try{let __calicoRes=await((${bound.join(",")})=>${execCall})(__calicoRec.e,__calicoRec.n,__calicoAbort.signal,__calicoCfg,__calicoInput,__calicoHidden);` +
+    `if(__calicoRes.aborted)return __calicoLog("aborted","subagentStatusLine ["+__calicoLabel+"] was stopped before it finished"),null;` +
+    `if(__calicoRes.status!==0)return __calicoLog("exit","subagentStatusLine ["+__calicoLabel+"] exited "+__calicoRes.status),null;` +
+    `let __calicoOut=new Map;for(let __calicoLine of String(__calicoRes.stdout??"").split("\\n")){if(!__calicoLine.trim())continue;let __calicoRow;try{__calicoRow=JSON.parse(__calicoLine)}catch{__calicoLog("json","subagentStatusLine ["+__calicoLabel+"] emitted a non-JSON line");continue}` +
+    `if(__calicoRow&&typeof __calicoRow.id==="string"&&typeof __calicoRow.content==="string")__calicoOut.set(__calicoRow.id,{content:__calicoRow.content});else __calicoLog("schema","subagentStatusLine ["+__calicoLabel+"] emitted a line without string id and content")}return __calicoOut}finally{clearTimeout(__calicoTimer)}};` +
+    `let __calicoTick=(__calicoTasks,__calicoCols,__calicoNames)=>{let __calicoList=Array.isArray(__calicoTasks)?__calicoTasks.filter((__calicoT)=>__calicoT&&typeof __calicoT.id==="string"):[],__calicoIds=new Set(__calicoList.map((__calicoT)=>__calicoT.id));` +
+    `for(let __calicoK of [...__calicoState.map.keys()])if(!__calicoIds.has(__calicoK))__calicoState.map.delete(__calicoK);` +
+    `let __calicoNow=Date.now();if(__calicoList.length===0||__calicoState.busy||__calicoNow-__calicoState.at<300)return __calicoState.map;__calicoState.busy=!0;__calicoState.at=__calicoNow;` +
+    `__calicoRun(__calicoList,Number.isFinite(__calicoCols)?Math.max(0,__calicoCols):0,__calicoNames).then((__calicoR)=>{__calicoState.map=__calicoR===null?new Map:new Map([...__calicoR].filter((__calicoE)=>__calicoIds.has(__calicoE[0])))}).catch((__calicoErr)=>__calicoLog("tick","subagentStatusLine tick failed: "+__calicoErr)).finally(()=>{__calicoState.busy=!1});return __calicoState.map};` +
+    `return{record:(__calicoE,__calicoN)=>{__calicoState.rec={e:__calicoE,n:__calicoN};globalThis.${SUBAGENT_STATUSLINE_GLOBAL}=__calicoTick}}})();`;
+  const record = `__calicoSL?.record(${session},${payload});`;
+  const decorationProp =
+    `decoration:globalThis.${SUBAGENT_STATUSLINE_GLOBAL}?.(${panelList}.filter((__calicoT)=>!${groupTest}(__calicoT)),Math.max(0,${columns}-${pointerWidth}()-${padding}),${nameMap})?.get(${taskVar}.id),`;
+  const decoratedReturn =
+    `if(__calicoDecoration?.content!==void 0)return ${jsxs}(${box},{onClick:${clickHandler},onMouseEnter:${onEnter},onMouseLeave:${onLeave},children:[${pointerBox[1]},${jsx}(${box},{flexGrow:1,width:0,children:${jsx}(${text},{dimColor:${dim},bold:${bold},wrap:"truncate",children:${jsx}(${ansi},{children:__calicoDecoration.content})})})]});`;
+
+  // Splice back to front so earlier offsets stay valid. Every inserted string
+  // carries captured minified names, so nothing here goes through a
+  // replacement-pattern string.
+  const callInsert = callMatch.index + callMatch[0].length - "link:".length;
+  const rowDestructureAt = rowMatch.index + rowMatch[0].indexOf(",{task:") + 2;
+  const edits = [
+    { at: runnerStart, text: helper },
+    { at: configIndex, text: record },
+    { at: rowDestructureAt, text: "decoration:__calicoDecoration," },
+    { at: rowOpen + insertAt, text: decoratedReturn },
+    { at: callInsert, text: decorationProp },
+  ].sort((a, b) => b.at - a.at);
+  let output = original;
+  for (const edit of edits) {
+    output = output.slice(0, edit.at) + edit.text + output.slice(edit.at);
+  }
+  return { content: output, candidates, patched: 4 };
+}
+
 const PATCH_MODULES = [
   {
     id: "gateway-fast-mode",
@@ -6269,6 +6717,11 @@ const PATCH_MODULES = [
     id: "statusline-rate-limit-windows",
     description: "Forward Fable 5 and usage-credit rate-limit windows to statusline payloads",
     apply: patchStatuslineRateLimitWindows,
+  },
+  {
+    id: "subagent-statusline",
+    description: "Restore the subagentStatusLine command for agent-panel rows, which upstream removed in 2.1.323",
+    apply: patchSubagentStatusLine,
   },
   {
     id: "sticky-prompt-header",
@@ -6637,6 +7090,8 @@ module.exports = {
   blocksOpenedBetweenClose,
   patchStatuslineCommittedUsage,
   patchStatuslineRateLimitWindows,
+  patchSubagentStatusLine,
+  subagentStatusLineApplicability,
   patchCustomContextWindows,
   patchCompactTokensSaved,
   patchDisableBashFirst,
