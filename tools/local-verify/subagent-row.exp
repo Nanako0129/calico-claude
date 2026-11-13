@@ -1,0 +1,54 @@
+#!/usr/bin/expect -f
+# Drive one turn that launches a background agent (mockapi.js MOCK_SCENARIO=agent)
+# and wait for the agent-panel row drawn by the fake subagentStatusLine.
+#
+#   subagent-row.exp <binary> <logfile> <config-dir> <base-url> <home-dir>
+if {[llength $argv] < 5} {
+    puts "usage: subagent-row.exp <binary> <logfile> <config-dir> <base-url> <home-dir>"
+    exit 2
+}
+set binary [lindex $argv 0]
+set logfile [lindex $argv 1]
+set configdir [lindex $argv 2]
+set baseurl [lindex $argv 3]
+
+set homedir [lindex $argv 4]
+
+set timeout 60
+log_file -noappend $logfile
+# Run hermetically: when this harness is itself started from a Claude Code
+# session, its CLAUDE_*/ANTHROPIC_* variables (session ids, a messaging socket,
+# plugin dirs) would otherwise reach the binary under test. HOME points at a
+# throwaway directory so nothing under the real ~/.claude is read.
+foreach name [array names env] {
+    if {[string match -nocase *CLAUDE* $name] || [string match ANTHROPIC_* $name] || [string match ORCA_* $name]} {
+        unset env($name)
+    }
+}
+set env(HOME) $homedir
+set env(ANTHROPIC_BASE_URL) $baseurl
+set env(ANTHROPIC_API_KEY) "sk-ant-mock"
+set env(CLAUDE_CONFIG_DIR) $configdir
+set env(NO_PROXY) "127.0.0.1,localhost"
+set env(no_proxy) "127.0.0.1,localhost"
+
+spawn -noecho $binary
+# The fake main status line prints MAIN-BAR once the renderer is up.
+expect {
+    -re {MAIN-BAR} {}
+    timeout { puts "\nHARNESS: main status line never rendered"; exit 2 }
+}
+sleep 2
+send "launch the probe agent\r"
+set rc 0
+expect {
+    -re {CALICO-SL-ROW} {}
+    timeout { set rc 3 }
+}
+# Let a few more panel refreshes land in the log.
+sleep 3
+send \003
+sleep 1
+send \003
+expect eof
+exit $rc

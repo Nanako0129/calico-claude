@@ -1257,6 +1257,13 @@ those is called after the insertion point, or when the hover handlers it reuses 
 it. The test mounts the row through React (ink) and renders it undecorated, decorated, undecorated;
 a control moves the return above the last hook and shows React reporting "fewer hooks".
 
+Observed end to end: `bash tools/local-verify/subagent-row.sh <binary>` runs a canned turn whose
+Agent tool call launches a background agent (mock `MOCK_SCENARIO=agent` holds the agent's own request
+open for 40 s so its row stays running), with a fake `statusLine` and a fake `subagentStatusLine`
+in a throwaway config and HOME, and the parent's `CLAUDE_*`/`ANTHROPIC_*` variables scrubbed. It
+passes when the row shows the command's text and the command's stdin carries the contract fields.
+`… <unpatched 2.1.323> expect-default` is the control: the default row, and the command never runs.
+
 Non-goals: re-adding `taskDecorations` to app state; plugin-supplied commands; hiding rows with
 `content:""` (an empty string draws an empty decorated row); recomputing the panel's label width for
 decorated rows.
