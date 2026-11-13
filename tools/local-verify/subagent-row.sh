@@ -6,9 +6,14 @@
 #
 #   bash tools/local-verify/subagent-row.sh <claude-binary> [expect-decorated|expect-default]
 #
-# expect-decorated (the default) passes when the row shows the command's text
-# and the command got the documented stdin; expect-default passes when the row
-# stays undecorated (an unpatched 2.1.323, the control).
+# expect-decorated (the default) passes when the agent-panel row shows the
+# command's text and the command got the documented stdin; expect-default
+# passes when that row is drawn in the default look and the command never ran
+# (an unpatched 2.1.323, the control). Both judge the panel row itself on
+# replayed screen lines, never the transcript, which also names the agent.
+# The control of the control: MOCK_AGENT_NAME=probe-name names the agent, so
+# its panel row reads "probe-name" instead of the agent type and
+# expect-default must fail.
 set -uo pipefail
 
 BINARY="${1:-}"
@@ -80,10 +85,12 @@ STATUS=$?
 
 LC_ALL=C perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\e\][^\a]*(?:\a|\e\\)//g; s/\e[()][A-Za-z0-9]//g' \
   "$WORK/tui.raw" 2>/dev/null | LC_ALL=C tr -cd '\11\12\15\40-\176' > "$WORK/tui.clean"
+node "$HERE/screen-lines.js" "$WORK/tui.raw" > "$WORK/screen.txt" 2>/dev/null
 
-# SUBAGENT_ROW_KEEP=<dir> keeps the cleaned TUI log and the mock log there.
+# SUBAGENT_ROW_KEEP=<dir> keeps the raw and cleaned TUI logs, the replayed
+# screen lines and the mock log there.
 if [ -n "${SUBAGENT_ROW_KEEP:-}" ]; then
-  mkdir -p "$SUBAGENT_ROW_KEEP" && cp "$WORK/tui.clean" "$WORK/mock.err" "$SUBAGENT_ROW_KEEP/" 2>/dev/null
+  mkdir -p "$SUBAGENT_ROW_KEEP" && cp "$WORK/tui.raw" "$WORK/tui.clean" "$WORK/mock.err" "$WORK/screen.txt" "$SUBAGENT_ROW_KEEP/" 2>/dev/null
 fi
 
 AGENT_REQUESTS="$(grep -c AGENT_REQUEST "$WORK/mock.err" 2>/dev/null)"
@@ -93,16 +100,25 @@ grep -aq "MAIN-BAR" "$WORK/tui.clean" && echo "main bar      : RENDERED" || echo
 ERR="$(LC_ALL=C grep -aoE "([A-Za-z_.$]*(is not defined|is not a function)|(Type|Reference|Range|Syntax)Error[^|]{0,60}|Cannot read propert[^|]{0,50}|Rendered (fewer|more) hooks[^|]{0,40})" "$WORK/tui.clean" | head -2)"
 [ -n "$ERR" ] && echo "errors        : $ERR" || echo "errors        : none"
 
+# The description also appears in the transcript ("Agent(Calico row probe)",
+# 'Agent "Calico row probe" finished'), so the row is judged on whole screen
+# lines replayed from the raw log: the agent-panel row starts with the row's own
+# glyph (the selection pointer optional) and carries, on that same line, either
+# the agent type, the description and the elapsed time (the default look) or
+# the command's text (decorated).
+PANEL_ROW_PREFIX='^(❯ +)?◯ '
 DECORATED=0
-grep -aq "CALICO-SL-ROW Calico row probe" "$WORK/tui.clean" && DECORATED=1
+grep -aqE "${PANEL_ROW_PREFIX}CALICO-SL-ROW Calico row probe" "$WORK/screen.txt" && DECORATED=1
 DEFAULT_ROW=0
-grep -aq "Calico row probe" "$WORK/tui.clean" && DEFAULT_ROW=1
+grep -aqE "${PANEL_ROW_PREFIX}general-purpose +Calico row probe +[0-9]+s\$" "$WORK/screen.txt" && DEFAULT_ROW=1
+ANY_COMMAND_TEXT=0
+grep -aq "CALICO-SL-ROW" "$WORK/tui.clean" && ANY_COMMAND_TEXT=1
 if [ "$DECORATED" -eq 1 ]; then
   echo "agent row     : DECORATED by subagentStatusLine"
 elif [ "$DEFAULT_ROW" -eq 1 ]; then
   echo "agent row     : DEFAULT look"
 else
-  echo "agent row     : NOT SEEN"
+  echo "agent row     : NOT SEEN on the agent panel"
 fi
 
 FIELDS_OK=0
@@ -125,7 +141,7 @@ fi
 [ -z "$ERR" ] || exit 1
 [ "${AGENT_REQUESTS:-0}" -gt 0 ] || exit 1
 if [ "$MODE" = "expect-default" ]; then
-  [ "$DECORATED" -eq 0 ] && [ "$DEFAULT_ROW" -eq 1 ] && [ ! -f "$WORK/stdin.json" ] || exit 1
+  [ "$DECORATED" -eq 0 ] && [ "$ANY_COMMAND_TEXT" -eq 0 ] && [ "$DEFAULT_ROW" -eq 1 ] && [ ! -f "$WORK/stdin.json" ] || exit 1
   exit 0
 fi
 [ "$STATUS" -eq 0 ] || { echo "harness       : expect exited $STATUS" >&2; exit 1; }

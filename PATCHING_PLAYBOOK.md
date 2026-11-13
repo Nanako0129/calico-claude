@@ -1284,9 +1284,15 @@ a control moves the return above the last hook and shows React reporting "fewer 
 Observed end to end: `bash tools/local-verify/subagent-row.sh <binary>` runs a canned turn whose
 Agent tool call launches a background agent (mock `MOCK_SCENARIO=agent` holds the agent's own request
 open for 40 s so its row stays running), with a fake `statusLine` and a fake `subagentStatusLine`
-in a throwaway config and HOME, and the parent's `CLAUDE_*`/`ANTHROPIC_*` variables scrubbed. It
-passes when the row shows the command's text and the command's stdin carries the contract fields.
-`… <unpatched 2.1.323> expect-default` is the control: the default row, and the command never runs.
+in a throwaway config and HOME, and the parent's `CLAUDE_*`/`ANTHROPIC_*` variables scrubbed. The
+row is judged on whole screen lines: `tools/local-verify/screen-lines.js` replays the raw pty log
+(Claude Code redraws by diff, so a row's text is rarely contiguous in it) and the check needs a line
+starting with the panel row's own `◯` glyph (selection pointer optional). It passes when that line
+carries the command's text and the command's stdin carries the contract fields.
+`… <unpatched 2.1.323> expect-default` is the control: a panel line `◯ general-purpose  Calico row
+probe  Ns`, no command text anywhere, and the command never runs. The transcript's
+`Agent(Calico row probe)` does not count; with `MOCK_AGENT_NAME=probe-name` the row reads
+`◯ probe-name …` and the control fails, as it must.
 
 Non-goals: re-adding `taskDecorations` to app state; plugin-supplied commands; hiding rows with
 `content:""` (an empty string draws an empty decorated row); recomputing the panel's label width for

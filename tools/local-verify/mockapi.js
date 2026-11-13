@@ -173,7 +173,15 @@ function agentScenario(parsed, res) {
         type: "tool_use",
         id: "toolu_calico_probe",
         name: "Agent",
-        input: { description: "Calico row probe", prompt: `${AGENT_MARKER}: wait`, subagent_type: "general-purpose", run_in_background: true },
+        input: {
+          description: "Calico row probe",
+          prompt: `${AGENT_MARKER}: wait`,
+          subagent_type: "general-purpose",
+          run_in_background: true,
+          // MOCK_AGENT_NAME names the agent, so its panel row shows that name
+          // instead of the agent type (subagent-row.sh's negative control).
+          ...(process.env.MOCK_AGENT_NAME ? { name: process.env.MOCK_AGENT_NAME } : {}),
+        },
       },
     ],
     "tool_use"
