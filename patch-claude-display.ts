@@ -3528,10 +3528,12 @@ function patchCustomContextWindows(content) {
   // --assert-all, since it only fails at zero — a silent loss of coverage.
   // Capture both and emit the captures.
   //
-  // Upstream has since reshaped the resolver four more times. Each known
-  // shape is a separate pattern below; all share the same head and the same
-  // injection, which goes at the head of the function that takes both the
-  // model and the headers parameter, before any upstream rule. That placement
+  // Upstream has since reshaped the resolver five more times. Each known
+  // shape is a separate pattern below. The four two-parameter shapes share
+  // `resolverHead`; 2.1.324's three-parameter shape builds its own head (a head
+  // drift has to be fixed in both places). All share the same injection, which
+  // goes at the head of the function that takes the model and the headers
+  // parameter, before any upstream rule. That placement
   // is deliberate: an explicit mapping wins over every stock rule, including
   // the 1M checks and, from 2.1.301, the 200K cap on models that reach 1M only
   // through the beta header.
@@ -3599,17 +3601,21 @@ function patchCustomContextWindows(content) {
   //
   // It has its own head so the older shapes stay pinned to exactly two
   // parameters, and the third parameter is captured and required in the 1M
-  // check and both lookups. `IC()` returns CLAUDE_CODE_MAX_CONTEXT_TOKENS only
-  // when DISABLE_COMPACT is set; 2.1.323 read the same variable inside its
-  // helper, after the point where calico's lookup was already injected, so
-  // putting the lookup ahead of `IC()` keeps the 2.1.323 precedence: an explicit
-  // per-model mapping wins over the global token cap.
+  // check and both lookups; every reference is a named backreference so a
+  // group added later cannot shift them. `IC()` returns
+  // CLAUDE_CODE_MAX_CONTEXT_TOKENS when DISABLE_COMPACT is set. 2.1.323 read the
+  // same variable inside its helper (behind a model gate rather than
+  // DISABLE_COMPACT), after the point where calico's lookup was already
+  // injected. So the gate around the cap changed upstream, but calico's
+  // precedence did not: an explicit per-model mapping wins over the global
+  // token cap on both releases.
   resolverShapes.push(
     new RegExp(
       String.raw`(?<open>function [A-Za-z_$][\w$]*\()(?<model>[A-Za-z_$][\w$]*),(?<headers>[A-Za-z_$][\w$]*)(?<brace>,(?<third>[A-Za-z_$][\w$]*)\)\{)` +
-        String.raw`(?<body>let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\);if\(\7!==void 0\)return \7;if\([A-Za-z_$][\w$]*\(\2,\3,\5\)\)\{[^{}]*\}` +
-        String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2,\5\);if\(\8!==null\)return \8;` +
-        String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2,\5\);return (?:[^;{}]*:)?\9\})`,
+        String.raw`(?<body>let (?<override>[A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\);if\(\k<override>!==void 0\)return \k<override>;` +
+        String.raw`if\([A-Za-z_$][\w$]*\(\k<model>,\k<headers>,\k<third>\)\)\{[^{}]*\}` +
+        String.raw`let (?<looked>[A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\k<model>,\k<third>\);if\(\k<looked>!==null\)return \k<looked>;` +
+        String.raw`let (?<base>[A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\k<model>,\k<third>\);return (?:[^;{}]*:)?\k<base>\})`,
       "g"
     )
   );
@@ -3775,7 +3781,7 @@ function patchCompactTokensSaved(content) {
   // comma expression spreads its last operand, so the sequenced producer works
   // unchanged in either position.
   const callSitePattern =
-    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?)((?:,[A-Za-z_$][\w$]*:[^{}]*?)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},(displayText:|\.\.\.)([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\3\)/g;
+    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?)((?:,(?:[^{}]|\{[^{}]*\})*?)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},(displayText:|\.\.\.)([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\3\)/g;
 
   // Reads the compaction result rather than the caller's `preTokens`/
   // `postTokens` locals: those are declared ~700 characters earlier and only
@@ -3818,10 +3824,7 @@ function patchCompactTokensSaved(content) {
   const callMatches = [...content.matchAll(callSitePattern)];
   const renderMatches = [...content.matchAll(renderPattern)];
   const candidates = callMatches.length + renderMatches.length;
-  // Exactly one call site: the extra-field run added for 2.1.324 widens the
-  // pattern, and a second match would add a second producer feeding the one
-  // consumer.
-  if (callMatches.length !== 1 || renderMatches.length === 0) {
+  if (callMatches.length === 0 || renderMatches.length === 0) {
     // Non-zero candidates with zero patched is the loud form: --assert-all
     // fails on `patched === 0` and names this module.
     return { content, candidates, patched: 0 };
@@ -4282,9 +4285,12 @@ function patchStatuslineCommittedUsage(content) {
   // cannot cross an unbalanced `)`, so each run still stops at its own call's
   // closing parenthesis. Ceilings: a third nesting level, or a string literal
   // holding a lone parenthesis, still fails closed (match 0, module skipped).
-  const batchCallArgs = "(?:,(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*)?";
+  // Any run nested up to two parentheses deep; the argument lists and the
+  // spread call between requestId and the attribution spread share it.
+  const batchParenRun = "(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*";
+  const batchCallArgs = `(?:,${batchParenRun})?`;
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
   // Two spellings of the terminal commit, paired rather than crossed. Through

@@ -224,7 +224,7 @@ test("the verifier requires the lookup to be the resolver's first statement", ()
     "function T1(e,n,r){let s=IC();if(s!==void 0)return s;let __calico_window=__calico_context_window(e);if(__calico_window!==null)return __calico_window;"
   );
   assert.notEqual(late, content);
-  assert.match(String(evaluatePatchModule("custom-context-window", late)), /first statement/);
+  assert.match(String(evaluatePatchModule("custom-context-window", late)), /first statement reading its model parameter/);
 });
 
 // Missing or duplicated resolver: nothing is rewritten, so the status-line site
