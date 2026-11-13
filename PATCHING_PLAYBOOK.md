@@ -1202,7 +1202,8 @@ What the module injects, all or nothing (`patched: 4`):
    `async function aho(e,n,r,s=!1)`), so every binding it uses is the runner chunk's own. The runner
    gets `__calicoSL?.record(e,n);` after its guard prefix, which records the last session and payload
    the main status line was run with. Only the gated tick is published, as
-   `globalThis.__calicoSubagentStatusLine`, and only once a record exists.
+   `globalThis.__calicoSubagentStatusLine`, when the runner chunk loads; without a record it spawns
+   nothing.
 2. **Panel call site** (`e(xue,{task:Vs,name:Ts.get(Vs.id),link:…`): adds
    `decoration:globalThis.__calicoSubagentStatusLine?.(yo,Dc,Math.max(0,Dt-tk()-SN),Ts,Tn)?.get(Vs.id)`.
    `Tn` is the setter of the panel's own clock state `let[er,Tn]=y(EGt)` (`function EGt(){return
@@ -1243,8 +1244,11 @@ The gate, re-evaluated on every tick (only its log lines are once per condition)
   command text, and the helper's log lines use the same label. Any other free name in the reused text
   (the verbose flag, a runner local, a global) or a call to a runner local patches nothing.
 - **Other refusals.** Any captured binding that is not a function at call time; no recorded payload
-  yet (nothing spawns until a main status-line run has passed its gates, so a `subagentStatusLine`
-  without a `statusLine` does nothing); a non-`command` config; any mention of `CLAUDE_PLUGIN_ROOT`
+  yet (nothing spawns until a main status-line run has passed its gates). **Requirement on 2.1.323+:
+  `subagentStatusLine` needs a `statusLine` command configured**; without one, no record ever
+  exists, and the tick logs once per process, through the runner's debug log function and whether
+  or not a record later appears, `subagentStatusLine: nothing runs until a statusLine command is
+  configured and has run…` (only when a `subagentStatusLine` is set); a non-`command` config; any mention of `CLAUDE_PLUGIN_ROOT`
   or `CLAUDE_PLUGIN_DATA`, in every spelling (those are set only for a plugin's own commands).
 - **Timeout.** The config is `{...cfg,timeout:5}`: the deprecated schema strips `timeout`, the
   executor's default is 600 s, and its local path honours `timeout` (2.1.323

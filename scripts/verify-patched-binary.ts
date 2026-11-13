@@ -1968,7 +1968,7 @@ const CHECKS: Check[] = [
         [new RegExp(`=${I}\\(\\)\\?${I}\\("policySettings"\\)\\?\\.subagentStatusLine:${I}\\(\\)\\?\\.subagentStatusLine;`), "the managed-only command source"],
         [new RegExp(`${I}\\("subagentStatusLine"\\)\\?${I}\\(\\{\\.\\.\\.${I}\\}\\):${I},"StatusLine","statusLine",`), "the organization tag keyed on subagentStatusLine"],
         ["timeout:5}", "the 5 s timeout"],
-        ["if(!__calicoRec)return null;", "the no-payload-yet refusal"],
+        ["if(!__calicoRec)return __calicoNoRecord(),null;", "the no-payload-yet refusal"],
       ];
       for (const [marker, label] of gate) {
         if (!markerPresent(helperText, marker)) return `the helper lacks ${label}`;

@@ -364,12 +364,40 @@ test("P3-4: a guard upstream adds to the runner's prefix is inherited", async ()
 
 test("P3-2: nothing spawns before a main status-line run has recorded a payload", async () => {
   const h = harness(patched(), { settings: { subagentStatusLine: SUBAGENT } });
-  assert.equal(h.tick(), undefined, "no tick is published before a record");
+  // Published when the runner chunk loads, before any record.
+  assert.equal(h.tick().size, 0);
+  await flush();
   // Gates closed on the main run: no record either.
   h.run("FLAGS").untrusted = true;
   await h.mainRun();
-  assert.equal(h.tick(), undefined);
+  h.advance(1000);
+  assert.equal(h.tick().size, 0);
+  await flush();
   assert.equal(subagentExecs(h).length, 0);
+});
+
+test("subagentStatusLine without a recorded statusLine run logs once that it needs a statusLine command", async () => {
+  const needs = (h) => h.logs.filter((line) => line.includes("nothing runs until a statusLine command is configured"));
+  const h = harness(patched(), { settings: { subagentStatusLine: SUBAGENT } });
+  for (let tick = 0; tick < 3; tick += 1) {
+    h.tick();
+    await flush();
+    h.advance(1000);
+  }
+  assert.equal(subagentExecs(h).length, 0);
+  assert.equal(needs(h).length, 1, JSON.stringify(h.logs));
+  assert.match(needs(h)[0], /2\.1\.323\+/);
+  // Nobody asked for subagentStatusLine: nothing to say.
+  const quiet = harness(patched());
+  quiet.tick();
+  await flush();
+  assert.equal(needs(quiet).length, 0);
+  // Once the main status line has run, the command runs and nothing more is logged.
+  await h.mainRun();
+  h.tick();
+  await flush();
+  assert.equal(subagentExecs(h).length, 1);
+  assert.equal(needs(h).length, 1);
 });
 
 test("captured binding not a function at call time: nothing spawns", async () => {
@@ -556,7 +584,7 @@ test("controls: removing a gate from the patched helper lets the blocked scenari
 
   // The no-payload-yet refusal (P3-2) and the 5 s timeout (P3-3).
   assert.match(content, /timeout:5\}/);
-  assert.match(content, /if\(!__calicoRec\)return null;/);
+  assert.match(content, /if\(!__calicoRec\)return __calicoNoRecord\(\),null;/);
 });
 
 // ---------------------------------------------------------------------------

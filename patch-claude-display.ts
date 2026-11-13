@@ -6244,8 +6244,9 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
 //      the command the way the runner's managed-only reader does, and runs it
 //      through the runner's own executor call with only the config and stdin
 //      swapped. The runner records its last (session, payload) after its gates
-//      pass; nothing spawns before that. Only a gated tick is published on
-//      globalThis.
+//      pass; nothing spawns before that (a subagentStatusLine with no
+//      statusLine command logs that once). Only a gated tick is published on
+//      globalThis, when the runner chunk loads.
 //   S2 panel call site — passes `decoration` from the tick's map, and hands the
 //      tick the panel's clock setter; when a finished run changes the map, the
 //      helper calls it once, so the row shows that run without waiting for
@@ -6255,6 +6256,8 @@ function __calicoCompactStripContentLength(e){if(e==null)return e;if(typeof Head
 // ---------------------------------------------------------------------------
 
 const SUBAGENT_STATUSLINE_GLOBAL = "__calicoSubagentStatusLine";
+const SUBAGENT_STATUSLINE_NEEDS_STATUSLINE =
+  "subagentStatusLine: nothing runs until a statusLine command is configured and has run: on Claude Code 2.1.323+ calico runs subagentStatusLine with the main status line's payload";
 
 // The predicate the verifier shares: upstream still declares the setting but
 // no longer implements it.
@@ -6658,7 +6661,7 @@ function patchSubagentStatusLine(content) {
   const helper =
     `var __calicoSL=(()=>{let __calicoState={rec:null,map:new Map,busy:!1,at:0,logged:new Set,last:null,seen:null,cols:void 0,again:!1,timer:null};` +
     `let __calicoLog=(__calicoKey,__calicoMsg)=>{if(__calicoState.logged.has(__calicoKey))return;__calicoState.logged.add(__calicoKey);try{${logFn}(__calicoMsg)}catch{}};` +
-    `let __calicoRun=async(__calicoTasks,__calicoCols,__calicoNames)=>{let __calicoRec=__calicoState.rec;if(!__calicoRec)return null;` +
+    `let __calicoRun=async(__calicoTasks,__calicoCols,__calicoNames)=>{let __calicoRec=__calicoState.rec;if(!__calicoRec)return __calicoNoRecord(),null;` +
     `let __calicoBound;try{__calicoBound=${bindingCheck}}catch{__calicoBound=!1}` +
     `if(!__calicoBound)return __calicoLog("bindings","subagentStatusLine: skipped, a binding it runs through is not a function"),null;` +
     `if(!((${session},${payload})=>{${guardReplay}return!0})(__calicoRec.e,__calicoRec.n))return null;` +
@@ -6674,6 +6677,10 @@ function patchSubagentStatusLine(content) {
     `if(__calicoRes.status!==0)return __calicoLog("exit","subagentStatusLine ["+__calicoLabel+"] exited "+__calicoRes.status),null;` +
     `let __calicoOut=new Map;for(let __calicoLine of String(__calicoRes.stdout??"").split("\\n")){if(!__calicoLine.trim())continue;let __calicoRow;try{__calicoRow=JSON.parse(__calicoLine)}catch{__calicoLog("json","subagentStatusLine ["+__calicoLabel+"] emitted a non-JSON line");continue}` +
     `if(__calicoRow&&typeof __calicoRow.id==="string"&&typeof __calicoRow.content==="string")__calicoOut.set(__calicoRow.id,{content:__calicoRow.content});else __calicoLog("schema","subagentStatusLine ["+__calicoLabel+"] emitted a line without string id and content")}return __calicoOut}finally{clearTimeout(__calicoTimer)}};` +
+    // Nothing spawns before a main status-line run has recorded a payload, so a
+    // subagentStatusLine without a statusLine command would do nothing
+    // silently; say so once, whether or not a record ever appears.
+    `let __calicoNoRecord=()=>{try{if(typeof ${managedOnly}==="function"&&typeof ${sourceReader}==="function"&&typeof ${settingsReader}==="function"&&(${managedOnly}()?${sourceReader}("policySettings")?.subagentStatusLine:${settingsReader}()?.subagentStatusLine))__calicoLog("norecord",${JSON.stringify(SUBAGENT_STATUSLINE_NEEDS_STATUSLINE)})}catch{}};` +
     // One run at a time, at most one start per 300 ms, always on the latest
     // task list a render handed over. A tick that arrives while a run is in
     // flight marks it to run again once it ends; one inside the 300 ms window
@@ -6693,7 +6700,7 @@ function patchSubagentStatusLine(content) {
     `let __calicoList=Array.isArray(__calicoTasks)?__calicoTasks.filter((__calicoT)=>__calicoT&&typeof __calicoT.id==="string"&&!(typeof __calicoIsGroup==="function"&&__calicoIsGroup(__calicoT))):[],__calicoIds=new Set(__calicoList.map((__calicoT)=>__calicoT.id));` +
     `for(let __calicoK of [...__calicoState.map.keys()])if(!__calicoIds.has(__calicoK))__calicoState.map.delete(__calicoK);` +
     `__calicoState.last={list:__calicoList,cols:Number.isFinite(__calicoCols)?Math.max(0,__calicoCols):0,names:__calicoNames,refresh:__calicoRefresh};if(__calicoState.busy)__calicoState.again=!0;else __calicoStart();return __calicoState.map};` +
-    `return{record:(__calicoE,__calicoN)=>{__calicoState.rec={e:__calicoE,n:__calicoN};globalThis.${SUBAGENT_STATUSLINE_GLOBAL}=__calicoTick}}})();`;
+    `globalThis.${SUBAGENT_STATUSLINE_GLOBAL}=__calicoTick;return{record:(__calicoE,__calicoN)=>{__calicoState.rec={e:__calicoE,n:__calicoN}}}})();`;
   const record = `__calicoSL?.record(${session},${payload});`;
   const decorationProp =
     `decoration:globalThis.${SUBAGENT_STATUSLINE_GLOBAL}?.(${panelList},${groupTest},Math.max(0,${columns}-${pointerWidth}()-${padding}),${nameMap},${clockSetter})?.get(${taskVar}.id),`;
