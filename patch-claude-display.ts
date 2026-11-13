@@ -6259,8 +6259,10 @@ const SUBAGENT_STATUSLINE_GLOBAL = "__calicoSubagentStatusLine";
 const SUBAGENT_STATUSLINE_NEEDS_STATUSLINE =
   "subagentStatusLine: nothing runs until a statusLine command is configured and has run: on Claude Code 2.1.323+ calico runs subagentStatusLine with the main status line's payload";
 
-// The predicate the verifier shares: upstream still declares the setting but
-// no longer implements it.
+// Applicability: upstream still declares the setting but no longer implements
+// it. The verifier keeps its own copy (subagentStatusLineApplies; it does not
+// import the patcher), kept in lockstep with this one; a test runs both on the
+// pre-feature, 2.1.322 and 2.1.323 fixtures.
 function subagentStatusLineApplicability(content) {
   if (!content.includes("subagentStatusLine:()=>")) {
     return { applies: false, reason: "feature absent: the settings schema does not declare subagentStatusLine" };

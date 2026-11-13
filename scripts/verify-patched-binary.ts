@@ -428,6 +428,14 @@ function bundleAtLeast(content: string, micro: number): boolean {
   return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= micro)));
 }
 
+// subagent-statusline applies when upstream still declares the setting (2.1.323
+// marks it deprecated) but removed its own implementation. Kept in lockstep
+// with subagentStatusLineApplicability in patch-claude-display.ts (this script
+// does not import the patcher); a test runs both on the same fixtures.
+function subagentStatusLineApplies(content: string): boolean {
+  return content.includes("subagentStatusLine:()=>") && !content.includes("taskDecorations");
+}
+
 const CHECKS: Check[] = [
   {
     id: "gateway-fast-mode",
@@ -1934,10 +1942,7 @@ const CHECKS: Check[] = [
     kind: "custom",
     disabledMarker: /__calicoSL\b|__calicoSubagentStatusLine|__calicoDecoration/,
     describe: "subagentStatusLine runs through the gated statusLine runner and decorates agent-panel rows",
-    // The patcher's predicate: upstream still declares the setting (2.1.323
-    // marks it deprecated) but removed its own implementation.
-    applies: (content: string): boolean =>
-      content.includes("subagentStatusLine:()=>") && !content.includes("taskDecorations"),
+    applies: subagentStatusLineApplies,
     run: (content: string): string | null => {
       const I = "[A-Za-z_$][\\w$]*";
       const once = (needle: string): number => countOccurrences(content, needle);
@@ -3225,6 +3230,7 @@ module.exports = {
   boundedToModule,
   evaluateDisabledPatchModule,
   evaluatePatchModule,
+  subagentStatusLineApplies,
 };
 
 if (require.main === module) {

@@ -12,8 +12,8 @@ const test = require("node:test");
 const vm = require("node:vm");
 const path = require("node:path");
 
-const { patchSubagentStatusLine } = require("../patch-claude-display.ts");
-const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
+const { patchSubagentStatusLine, subagentStatusLineApplicability } = require("../patch-claude-display.ts");
+const { evaluatePatchModule, subagentStatusLineApplies } = require("../scripts/verify-patched-binary.ts");
 const { BUN_MODULE_BOUNDARY } = require("../scripts/native-bun.ts");
 
 // ---------------------------------------------------------------------------
@@ -201,6 +201,17 @@ test("2.1.322 and pre-feature fixtures report skipped and the verifier is green 
   }
   // A not-applicable bundle that nonetheless carries the helper fails.
   assert.notEqual(evaluatePatchModule("subagent-statusline", patched() + "var appState={taskDecorations:{}};"), null);
+});
+
+test("the patcher's and the verifier's applicability predicates, kept in lockstep, agree on every fixture", () => {
+  for (const [label, source, applies] of [
+    ["pre-feature", fixturePreFeature, false],
+    ["2.1.322", fixture322, false],
+    ["2.1.323", fixture323, true],
+  ]) {
+    assert.equal(subagentStatusLineApplicability(source).applies, applies, `patcher on ${label}`);
+    assert.equal(subagentStatusLineApplies(source), applies, `verifier on ${label}`);
+  }
 });
 
 // ---------------------------------------------------------------------------

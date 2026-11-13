@@ -1190,8 +1190,10 @@ the row's label and status. Each task carries `id, name, type, agentType, status
 label, startTime, model, effort, contextWindowSize, tokenCount, tokenSamples, cwd`. `tokenSamples`
 is always `[]` (the history 2.1.322 kept lived in the removed ticker).
 
-Applicability, shared with the verifier: the schema still declares `subagentStatusLine:()=>` (2.1.323
-keeps it, described as "Deprecated: no longer has any effect") and `taskDecorations` is absent.
+Applicability, kept in lockstep with the verifier's own copy (`subagentStatusLineApplies`; the
+verifier does not import the patcher) and tested to agree on all three fixtures: the schema still
+declares `subagentStatusLine:()=>` (2.1.323 keeps it, described as "Deprecated: no longer has any
+effect") and `taskDecorations` is absent.
 2.1.322 and older report `skipped: upstream implements subagentStatusLine`; a bundle without the key
 reports `skipped: feature absent`, and the verifier prints `skip (not applicable to this bundle;
 marker confirmed absent)` through the check's `applies` predicate.
