@@ -6659,8 +6659,11 @@ function patchSubagentStatusLine(content) {
   const execCall = `${execCallee}(${orgTag[1]}("subagentStatusLine")?${orgTag[2]}({...${cfgVar}}):${cfgVar},${execArgs.slice(1).join(",")})`;
   const contextWindow = contextWindowFn ? `${contextWindowFn}(__calicoT.model,${betasFn}())` : "void 0";
   const helper =
-    `var __calicoSL=(()=>{let __calicoState={rec:null,map:new Map,busy:!1,at:0,logged:new Set,last:null,seen:null,cols:void 0,again:!1,timer:null};` +
-    `let __calicoLog=(__calicoKey,__calicoMsg)=>{if(__calicoState.logged.has(__calicoKey))return;__calicoState.logged.add(__calicoKey);try{${logFn}(__calicoMsg)}catch{}};` +
+    `var __calicoSL=(()=>{let __calicoState={rec:null,map:new Map,busy:!1,at:0,logged:new Map,last:null,seen:null,cols:void 0,again:!1,timer:null};` +
+    // Deduped per key on the last message logged for it: a repeat is
+    // silent, a different message for the same key (another exit status,
+    // another error) is logged. One entry per key, and the keys are fixed.
+    `let __calicoLog=(__calicoKey,__calicoMsg)=>{if(__calicoState.logged.get(__calicoKey)===__calicoMsg)return;__calicoState.logged.set(__calicoKey,__calicoMsg);try{${logFn}(__calicoMsg)}catch{}};` +
     `let __calicoRun=async(__calicoTasks,__calicoCols,__calicoNames)=>{let __calicoRec=__calicoState.rec;if(!__calicoRec)return __calicoNoRecord(),null;` +
     `let __calicoBound;try{__calicoBound=${bindingCheck}}catch{__calicoBound=!1}` +
     `if(!__calicoBound)return __calicoLog("bindings","subagentStatusLine: skipped, a binding it runs through is not a function"),null;` +

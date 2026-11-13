@@ -471,6 +471,23 @@ test("P3-3: the helper aborts its own signal after 5 s", async () => {
   assert.equal(call.signal.aborted, true);
 });
 
+test("log dedupe: a repeated message is silent, a different one for the same key is logged", async () => {
+  const statuses = [3, 3, 4, 4, 3];
+  const h = harness(patched(), {
+    settings: { subagentStatusLine: SUBAGENT },
+    execResult: (cfg) => ({ status: cfg.command === "main-bar" ? 0 : statuses.shift(), stdout: "", stderr: "", aborted: false }),
+  });
+  await h.mainRun();
+  for (let run = 0; run < 5; run += 1) {
+    h.tick();
+    await flush();
+    h.advance(1000);
+  }
+  assert.equal(subagentExecs(h).length, 5);
+  const exits = h.logs.filter((line) => line.startsWith("subagentStatusLine [") && line.includes("exited"));
+  assert.deepEqual(plain(exits.map((line) => line.split(" exited ")[1])), ["3", "4", "3"]);
+});
+
 test("P4: commands referencing plugin variables are refused in every spelling", async () => {
   for (const command of ["${CLAUDE_PLUGIN_ROOT}/s.sh", "$CLAUDE_PLUGIN_DATA/s.sh", "%CLAUDE_PLUGIN_ROOT%\\s.cmd"]) {
     const h = await scenario(patched(), { settings: { subagentStatusLine: { type: "command", command } } });

@@ -1222,7 +1222,7 @@ What the module injects, all or nothing (`patched: 4`):
    line's per-line helper `function Xao(rt,bt){return e(n,{dimColor:!0,wrap:"truncate",children:e(hi,{children:rt})},bt)}`),
    truncated.
 
-The gate, re-evaluated on every tick (only its log lines are once per condition):
+The gate, re-evaluated on every tick (only its log lines are deduped, see Logging):
 
 - **Guard prefix replayed verbatim.** Every statement of the runner before its config read: today
   `if(ng())return;` (disableAllHooks), `let h=Ius.of(e.host);`, `if(br("statusLine"))return;`, and the
@@ -1261,11 +1261,17 @@ called once per row with the same list; only the first call of a render (a new l
 columns) filters, prunes and schedules, and the rest return the cached map. A tick that arrives during
 a run makes the helper run again on the latest list when it ends; one inside the 300 ms window arms a
 single timer, so the last list a render handed over is always run. stdout is parsed line by line;
-non-JSON lines and lines without string `id` and `content` are dropped (logged once). Results are an
+non-JSON lines and lines without string `id` and `content` are dropped (logged). Results are an
 id → `{content}` map, pruned to the ids still on the panel. `contextWindowSize` uses the
 context-window function and its betas argument as the payload builder in the runner chunk calls them
 (`gt=R_(nt,Im())…context_window:bbt(rt,gt)`); if that use site is not found, the field is omitted and
 the rest still patches. Each tick counts as a StatusLine hook event in upstream telemetry.
+
+Logging: every helper line goes through the runner chunk's debug log function, keyed per condition
+(each replayed guard, bindings, plugin variable, aborted, exit, non-JSON, schema, tick failure, no
+statusLine). A key logs again only when its message differs from the last one logged for it, so a
+repeat stays silent while a later, different failure (another exit status, another error) shows up;
+the map holds one entry per fixed key.
 
 Hook order: the decorated return sits after the row's last hook call (memo cache `E(73)`, `y(!1)`,
 `aM(rt)`, captured by shape), so both branches call the same hooks. The patcher refuses when any of
