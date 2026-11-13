@@ -206,6 +206,38 @@ test("handles the 2.1.314 spread renderer result", () => {
   assert.match(withMessage.displayText, /saved 256\.3k tokens/);
 });
 
+// 2.1.324 puts another field between the spread and userDisplayMessage
+// (`{...g,attachments:[...g.attachments,...P?[b(P)]:[]],userDisplayMessage:p}`).
+// The field is re-emitted verbatim and the saving still renders.
+test("handles the 2.1.324 field between the spread and userDisplayMessage", () => {
+  const source = fixture("_", "v314").replace(
+    "compactionResult:{..._,userDisplayMessage:y}",
+    "compactionResult:{..._,attachments:[..._.attachments,...P?[b(P)]:[]],userDisplayMessage:y}"
+  );
+  assert.notEqual(source, fixture("_", "v314"));
+  const result = patchCompactTokensSaved("var P=null,b=(x)=>x;" + source);
+  assert.equal(result.patched, 2);
+  assert.match(result.content, /compactionResult:\{\.\.\._,attachments:\[\.\.\._\.attachments,\.\.\.P\?\[b\(P\)\]:\[\]\],userDisplayMessage:y\}/);
+  const context = { tipText: undefined };
+  vm.createContext(context);
+  vm.runInContext(result.content, context);
+  const out = context.finish({ ...outcome267(300000, 43700), attachments: ["a"] }, { options: { verbose: false } }, undefined);
+  assert.equal(out.displayText, "DIM(Compacted · saved 256.3k tokens (ctrl+o to see full summary))");
+  assert.equal(JSON.stringify(out.compactionResult.attachments), '["a"]');
+});
+
+test("accepts spreads and object literals between the spread and userDisplayMessage", () => {
+  for (const extra of [",...extra", ",meta:{kind:\"x\"},attachments:[]"]) {
+    const source = fixture("_", "v314").replace(
+      "compactionResult:{..._,userDisplayMessage:y}",
+      `compactionResult:{..._${extra},userDisplayMessage:y}`
+    );
+    const result = patchCompactTokensSaved(source);
+    assert.equal(result.patched, 2, extra);
+    assert.ok(result.content.includes(`compactionResult:{..._${extra},userDisplayMessage:y}`), extra);
+  }
+});
+
 // preCompactTokenCount wins when both are present, so a bundle carrying the old
 // field keeps reading it rather than silently switching source.
 test("prefers preCompactTokenCount over compactMetadata.preTokens", () => {

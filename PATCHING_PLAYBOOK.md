@@ -546,6 +546,17 @@ Source of truth:
   any arguments nested up to two parentheses deep (`batchCallArgs`, same string in the patcher and
   the verifier). A third nesting level or a string literal holding a lone parenthesis still fails
   closed
+- Claude Code 2.1.324 put a spread call between `requestId` and the attribution spread
+  (`requestId:Xu??void 0,...qIo(Nm,tS,NC.changes),requestedModel:…`). That run now accepts plain
+  `name:value` fields and `...fn(…)` spreads, in the patcher and the verifier alike
+  (the spread's arguments share `batchParenRun` with `batchCallArgs`, two parentheses deep)
+- compact-tokens-saved: 2.1.324 inserts `attachments:[…]` between the result spread and
+  `userDisplayMessage`. Anything there (fields, spreads, one level of braces) is re-emitted
+  verbatim; one or more call sites are patched, as before
+- custom-context-window: 2.1.324's resolver takes a third parameter and starts with a global
+  override (`IC()`, CLAUDE_CODE_MAX_CONTEXT_TOKENS under DISABLE_COMPACT). That shape has its own
+  head; the calico lookup stays the first statement, and the verifier requires that and that it
+  reads the resolver's first parameter
 - production app state shallow-copies the wrapper before the terminal event; the shared object cell
   survives that copy, unlike the old primitive top-level boolean which remained stale `false`
 - the normal terminal `message_delta` mutation loop is the only path that can set `committed:!0`
