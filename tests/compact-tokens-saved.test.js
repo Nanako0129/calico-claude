@@ -226,6 +226,17 @@ test("handles the 2.1.324 field between the spread and userDisplayMessage", () =
   assert.equal(JSON.stringify(out.compactionResult.attachments), '["a"]');
 });
 
+test("refuses a second 2.1.324-shaped call site", () => {
+  const one = fixture("_", "v314").replace(
+    "compactionResult:{..._,userDisplayMessage:y}",
+    "compactionResult:{..._,attachments:[],userDisplayMessage:y}"
+  );
+  const second = one.replace("function finish(", "function finishAgain(").replace("function renderOnly(", "function renderOnly2(");
+  const result = patchCompactTokensSaved(one + second);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, one + second);
+});
+
 // preCompactTokenCount wins when both are present, so a bundle carrying the old
 // field keeps reading it rather than silently switching source.
 test("prefers preCompactTokenCount over compactMetadata.preTokens", () => {

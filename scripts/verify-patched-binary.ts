@@ -1398,7 +1398,7 @@ const CHECKS: Check[] = [
         // 2.1.323 adds a callback argument to the inner content builder; both
         // argument lists accept arguments nested two parentheses deep
         // (batchCallArgs, same string as the patcher's).
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\((?:[^()]|\\([^()]*\\))*\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1948,6 +1948,14 @@ const CHECKS: Check[] = [
         /let __calico_window=__calico_context_window\(([A-Za-z_$][\w$]*)\);if\(__calico_window!==null\)return __calico_window;/;
       if (!injectedLookup.test(content)) {
         return "custom context-window lookup is not wired into the resolver";
+      }
+      // The lookup must be the resolver's first statement. Later releases put
+      // early returns at the head (2.1.324's global override); an injection
+      // after one of them would pass the check above and never be reached.
+      const firstStatement =
+        /function [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*(?:,[A-Za-z_$][\w$]*)*\)\{let __calico_window=__calico_context_window\(/;
+      if (!firstStatement.test(content)) {
+        return "custom context-window lookup is not the resolver's first statement";
       }
       // One resolver, one injection: a second match would declare the helper
       // twice in one module scope.

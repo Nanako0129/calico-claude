@@ -3535,7 +3535,7 @@ function patchCustomContextWindows(content) {
   // is deliberate: an explicit mapping wins over every stock rule, including
   // the 1M checks and, from 2.1.301, the 200K cap on models that reach 1M only
   // through the beta header.
-  const resolverHead = String.raw`(function [A-Za-z_$][\w$]*\()([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)((?:,[A-Za-z_$][\w$]*)?\)\{)`;
+  const resolverHead = String.raw`(?<open>function [A-Za-z_$][\w$]*\()(?<model>[A-Za-z_$][\w$]*),(?<headers>[A-Za-z_$][\w$]*)(?<brace>\)\{)`;
   const resolverShapes = [
     // 2.1.260 stopped reading the headers parameter directly and passes it
     // through a helper first:
@@ -3546,7 +3546,7 @@ function patchCustomContextWindows(content) {
     // Pinning `\3?.includes(` lost the resolver site (4 candidates to 3), and
     // with it both injected markers; the verifier is what failed the build.
     // Accept the parameter bare or wrapped in one call.
-    String.raw`(if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\()`,
+    String.raw`(?<body>if\([A-Za-z_$][\w$]*\(\2\)\)return 1e6;if\((?:\3|[A-Za-z_$][\w$]*\(\3\))\?\.includes\()`,
     // 2.1.295 folded both 1M checks into one helper taking both parameters:
     //
     //   2.1.289  function vv(e,n){if(Kd(e))return 1e6;if(Hbt(n)?.includes(YU.header)&&X2(e))return 1e6;let r=I5r(e);…
@@ -3555,7 +3555,7 @@ function patchCustomContextWindows(content) {
     // The helper call alone says nothing about headers, so this shape is also
     // pinned to the override lookup that follows it
     // (`let r=…(e);if(r!==void 0)return`).
-    String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==void 0\)return )`,
+    String.raw`(?<body>if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==void 0\)return )`,
     // 2.1.301 moved that lookup out into a one-parameter helper and left the
     // two-parameter function as a thin wrapper around it:
     //
@@ -3572,7 +3572,7 @@ function patchCustomContextWindows(content) {
     // five 2.1.301 platform bundles it is called only from the wrapper and is
     // not exported from its chunk, and the wrapper's opening is unique in the
     // bundle. Nothing here enforces that for later versions.
-    String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);return (?:[^;{}]*:)?\6\})`,
+    String.raw`(?<body>if\([A-Za-z_$][\w$]*\(\2,\3\)\)return 1e6;let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);return (?:[^;{}]*:)?\6\})`,
     // 2.1.305 turned the 1M check into a block returning the catalog window
     // and put a second one-parameter lookup ahead of the helper:
     //
@@ -3587,24 +3587,32 @@ function patchCustomContextWindows(content) {
     // called twice in its module as 2.1.304's was, and the lookup and the
     // helper are each called only from it and not exported. Nothing here
     // enforces that for later versions.
-    String.raw`(if\([A-Za-z_$][\w$]*\(\2,\3\)\)\{[^{}]*\}let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==null\)return \6;` +
+    String.raw`(?<body>if\([A-Za-z_$][\w$]*\(\2,\3\)\)\{[^{}]*\}let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);if\(\6!==null\)return \6;` +
       String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2\);return (?:[^;{}]*:)?\7\})`,
-    // 2.1.324 gave the resolver a third parameter, threaded into the 1M check
-    // and both lookups, and put a global override ahead of everything:
-    //
-    //   2.1.323  function jC(e,n){if(X2r(e,n)){…}let r=ySa(e);if(r!==null)return r;let s=BC(e);return …:s}
-    //   2.1.324  function T1(e,n,r){let s=IC();if(s!==void 0)return s;if(RVr(e,n,r)){…}
-    //              let h=IRa(e,r);if(h!==null)return h;let y=xC(e,r);return …:y}
-    //
-    // The head accepts the optional third parameter and re-emits it inside the
-    // captured `){` group, so group numbers did not move. The injection still
-    // goes first: an explicit mapping wins over the new override too, as it
-    // does over every other stock rule. Pinned like 2.1.305: the override, the
-    // block, the non-null lookup, then the single return ending in the helper.
-    String.raw`(let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\);if\(\6!==void 0\)return \6;if\([A-Za-z_$][\w$]*\(\2,\3(?:,[A-Za-z_$][\w$]*)?\)\)\{[^{}]*\}` +
-      String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2(?:,[A-Za-z_$][\w$]*)?\);if\(\7!==null\)return \7;` +
-      String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2(?:,[A-Za-z_$][\w$]*)?\);return (?:[^;{}]*:)?\8\})`,
   ].map((body) => new RegExp(resolverHead + body, "g"));
+  // 2.1.324 gave the resolver a third parameter, threaded into the 1M check and
+  // both lookups, and put a global override ahead of everything:
+  //
+  //   2.1.323  function jC(e,n){if(X2r(e,n)){…}let r=ySa(e);if(r!==null)return r;let s=BC(e);return …:s}
+  //   2.1.324  function T1(e,n,r){let s=IC();if(s!==void 0)return s;if(RVr(e,n,r)){…}
+  //              let h=IRa(e,r);if(h!==null)return h;let y=xC(e,r);return …:y}
+  //
+  // It has its own head so the older shapes stay pinned to exactly two
+  // parameters, and the third parameter is captured and required in the 1M
+  // check and both lookups. `IC()` returns CLAUDE_CODE_MAX_CONTEXT_TOKENS only
+  // when DISABLE_COMPACT is set; 2.1.323 read the same variable inside its
+  // helper, after the point where calico's lookup was already injected, so
+  // putting the lookup ahead of `IC()` keeps the 2.1.323 precedence: an explicit
+  // per-model mapping wins over the global token cap.
+  resolverShapes.push(
+    new RegExp(
+      String.raw`(?<open>function [A-Za-z_$][\w$]*\()(?<model>[A-Za-z_$][\w$]*),(?<headers>[A-Za-z_$][\w$]*)(?<brace>,(?<third>[A-Za-z_$][\w$]*)\)\{)` +
+        String.raw`(?<body>let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\);if\(\7!==void 0\)return \7;if\([A-Za-z_$][\w$]*\(\2,\3,\5\)\)\{[^{}]*\}` +
+        String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2,\5\);if\(\8!==null\)return \8;` +
+        String.raw`let ([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\(\2,\5\);return (?:[^;{}]*:)?\9\})`,
+      "g"
+    )
+  );
 
   // Claude's stock pipeline subtracts an output reserve and may precompute at
   // a separate buffer fraction. In opt-in Calico mode, use the raw mapped
@@ -3666,12 +3674,15 @@ function patchCustomContextWindows(content) {
   let output = content;
 
   for (const resolverPattern of resolverShapes) {
-    output = output.replace(resolverPattern, (full, functionOpen, modelParam, headersParam, brace, originalBody) => {
+    output = output.replace(resolverPattern, (...args) => {
+      // Named groups, because the 2.1.324 shape captures the third parameter
+      // ahead of the body and so numbers its groups differently.
+      const { open, model, headers, brace, body } = args[args.length - 1];
       patched += 1;
       return (
-        `${helpers}${functionOpen}${modelParam},${headersParam}${brace}` +
-        `let __calico_window=__calico_context_window(${modelParam});` +
-        `if(__calico_window!==null)return __calico_window;${originalBody}`
+        `${helpers}${open}${model},${headers}${brace}` +
+        `let __calico_window=__calico_context_window(${model});` +
+        `if(__calico_window!==null)return __calico_window;${body}`
       );
     });
   }
@@ -3764,7 +3775,7 @@ function patchCompactTokensSaved(content) {
   // comma expression spreads its last operand, so the sequenced producer works
   // unchanged in either position.
   const callSitePattern =
-    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?)((?:,[^{}]*?)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},(displayText:|\.\.\.)([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\3\)/g;
+    /compactionResult:\{\.\.\.([A-Za-z_$][\w$]*(?:\.result)?)((?:,[A-Za-z_$][\w$]*:[^{}]*?)?),userDisplayMessage:([A-Za-z_$][\w$]*)\},(displayText:|\.\.\.)([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\3\)/g;
 
   // Reads the compaction result rather than the caller's `preTokens`/
   // `postTokens` locals: those are declared ~700 characters earlier and only
@@ -3807,7 +3818,10 @@ function patchCompactTokensSaved(content) {
   const callMatches = [...content.matchAll(callSitePattern)];
   const renderMatches = [...content.matchAll(renderPattern)];
   const candidates = callMatches.length + renderMatches.length;
-  if (callMatches.length === 0 || renderMatches.length === 0) {
+  // Exactly one call site: the extra-field run added for 2.1.324 widens the
+  // pattern, and a second match would add a second producer feeding the one
+  // consumer.
+  if (callMatches.length !== 1 || renderMatches.length === 0) {
     // Non-zero candidates with zero patched is the loud form: --assert-all
     // fails on `patched === 0` and names this module.
     return { content, candidates, patched: 0 };
@@ -4270,7 +4284,7 @@ function patchStatuslineCommittedUsage(content) {
   // holding a lone parenthesis, still fails closed (match 0, module skipped).
   const batchCallArgs = "(?:,(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*)?";
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\((?:[^()]|\\([^()]*\\))*\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
   // Two spellings of the terminal commit, paired rather than crossed. Through

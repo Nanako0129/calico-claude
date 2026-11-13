@@ -682,16 +682,16 @@ test("matches the 2.1.324 batch wrapper with a spread call after requestId", () 
   // 2.1.324: `requestId:Xu??void 0,...qIo(Nm,tS,NC.changes),requestedModel:…`.
   const base = storageV5BatchFixture();
   const source =
-    "function qIo(){return{}}\n" +
+    "function qIo(){return{}}function f(x){return x}function g(x){return x}\n" +
     base.replace(
       "{batchToolUses:Bt},requestId:ge??void 0,",
-      "{batchToolUses:Bt},requestId:ge??void 0,...qIo(ge,n,i.changes),requestedModel:i.model,"
+      "{batchToolUses:Bt},requestId:ge??void 0,...qIo(ge,n,i.changes),...qIo(ge,f(g(n))),requestedModel:i.model,"
     );
-  assert.notEqual(source, "function qIo(){return{}}\n" + base);
+  assert.notEqual(source, base);
   const { context, result } = loadCommittedFixture(source);
   const completed = context.query(usage(210, 31), "end_turn");
 
-  assert.match(result.content, /requestId:ge\?\?void 0,\.\.\.qIo\(ge,n,i\.changes\),requestedModel:i\.model,/);
+  assert.match(result.content, /requestId:ge\?\?void 0,\.\.\.qIo\(ge,n,i\.changes\),\.\.\.qIo\(ge,f\(g\(n\)\)\),requestedModel:i\.model,/);
   assert.equal(completed[0].__calicoUsageState.committed, true);
   assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
   assert.equal(

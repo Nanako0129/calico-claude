@@ -14,6 +14,7 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const { patchCustomContextWindows } = require("../patch-claude-display.ts");
+const { evaluatePatchModule } = require("../scripts/verify-patched-binary.ts");
 
 // The module's other three sites, so each resolver fixture is patchable as a
 // whole: the effective-window gate, the precompute bypass and the status-line
@@ -201,6 +202,29 @@ test("2.1.324 resolver returns the mapped window and otherwise behaves as shippe
   const overrides = { tag: "third" };
   probe.call("other-model", [], overrides);
   assert.equal(probe.seen[0], overrides, "the third parameter reaches the lookup");
+});
+
+// Review of PR #94: the third parameter belongs to the 2.1.324 shape only, and
+// it must be the one threaded into the 1M check and both lookups.
+test("only the 2.1.324 shape takes a third parameter, and it must be threaded through", () => {
+  const threeParamOld = blocked.replace("function pE(e,n){", "function pE(e,n,r){");
+  assert.equal(patchCustomContextWindows(threeParamOld + otherSites).patched, 0);
+  const twoParamNew = overridden.replace("function T1(e,n,r){", "function T1(e,n){");
+  assert.equal(patchCustomContextWindows(twoParamNew + otherSites).patched, 0);
+  const otherLocal = overridden.replace("let h=IRa(e,r);", "let h=IRa(e,t);");
+  assert.notEqual(otherLocal, overridden);
+  assert.equal(patchCustomContextWindows(otherLocal + otherSites).patched, 0);
+});
+
+test("the verifier requires the lookup to be the resolver's first statement", () => {
+  const { content } = patchCustomContextWindows(overridden + otherSites);
+  assert.equal(evaluatePatchModule("custom-context-window", content), null);
+  const late = content.replace(
+    "function T1(e,n,r){let __calico_window=__calico_context_window(e);if(__calico_window!==null)return __calico_window;let s=IC();if(s!==void 0)return s;",
+    "function T1(e,n,r){let s=IC();if(s!==void 0)return s;let __calico_window=__calico_context_window(e);if(__calico_window!==null)return __calico_window;"
+  );
+  assert.notEqual(late, content);
+  assert.match(String(evaluatePatchModule("custom-context-window", late)), /first statement/);
 });
 
 // Missing or duplicated resolver: nothing is rewritten, so the status-line site
