@@ -53,6 +53,7 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 | `background-agent-usage` | Accounts terminal stream usage in the background agent progress row |
 | `statusline-committed-usage` | Exposes only committed terminal assistant usage to status-line payloads |
 | `statusline-rate-limit-windows` | Forwards the Fable 5 and usage-credit rate-limit windows to status-line payloads |
+| `subagent-statusline` | Restores the `subagentStatusLine` setting, which upstream removed in 2.1.323: your command draws the agent-panel rows, as in 2.1.322. It runs under the main status line's gates (hooks disabled, `statusLine` disabled, workspace trust, managed-only settings). On 2.1.323+ it needs a `statusLine` command too: nothing runs until the main status line has run once (a `subagentStatusLine`-only setup logs that once in the debug log). Skipped on 2.1.322 and older, where upstream still implements it |
 | `version-output` | Appends `(patched)` to plain `--version` output |
 | `disable-official-updater` | Never runs Anthropic's embedded updater, in the background or through `claude update`, and disables `claude install`, which would put the official build over a Calico one; plugin and marketplace auto-update keep working |
 | `welcome-badge` | Renames the startup and help titles to `Calico Claude` |

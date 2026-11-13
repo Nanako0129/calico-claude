@@ -55,6 +55,11 @@ const server = http.createServer((req, res) => {
       connection: "keep-alive",
     });
 
+    if (process.env.MOCK_SCENARIO === "agent") {
+      agentScenario(parsed, res);
+      return;
+    }
+
     const wantsThinking =
       parsed.thinking && (parsed.thinking.type === "enabled" || parsed.thinking.type === "adaptive");
     let index = 0;
@@ -118,6 +123,70 @@ const server = http.createServer((req, res) => {
     res.end();
   });
 });
+
+// MOCK_SCENARIO=agent (subagent-row.sh): the main turn launches one background
+// agent through the Agent tool, the agent's own request is held open so its
+// row stays on the panel as running, and the main turn then ends with text.
+const AGENT_MARKER = "CALICO-SUBAGENT-PROBE";
+function firstUserText(parsed) {
+  const first = (parsed.messages ?? []).find((message) => message.role === "user");
+  const content = first?.content;
+  return typeof content === "string" ? content : (content ?? []).map((block) => block.text ?? "").join(" ");
+}
+function streamMessage(res, blocks, stopReason) {
+  sse(res, "message_start", {
+    type: "message_start",
+    message: { id: `msg_${Date.now()}`, type: "message", role: "assistant", model: MODEL, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } },
+  });
+  blocks.forEach((block, index) => {
+    if (block.type === "tool_use") {
+      sse(res, "content_block_start", { type: "content_block_start", index, content_block: { type: "tool_use", id: block.id, name: block.name, input: {} } });
+      sse(res, "content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) } });
+    } else {
+      sse(res, "content_block_start", { type: "content_block_start", index, content_block: { type: "text", text: "" } });
+      sse(res, "content_block_delta", { type: "content_block_delta", index, delta: { type: "text_delta", text: block.text } });
+    }
+    sse(res, "content_block_stop", { type: "content_block_stop", index });
+  });
+  sse(res, "message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 12 } });
+  sse(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+function agentScenario(parsed, res) {
+  if (firstUserText(parsed).includes(AGENT_MARKER)) {
+    process.stderr.write("AGENT_REQUEST\n");
+    // Keep the agent running long enough for the panel to tick several times.
+    setTimeout(() => streamMessage(res, [{ type: "text", text: "agent finished" }], "end_turn"), 40_000);
+    return;
+  }
+  const hasToolResult = (parsed.messages ?? []).some(
+    (message) => Array.isArray(message.content) && message.content.some((block) => block.type === "tool_result")
+  );
+  if (hasToolResult) {
+    streamMessage(res, [{ type: "text", text: "agent launched" }], "end_turn");
+    return;
+  }
+  streamMessage(
+    res,
+    [
+      {
+        type: "tool_use",
+        id: "toolu_calico_probe",
+        name: "Agent",
+        input: {
+          description: "Calico row probe",
+          prompt: `${AGENT_MARKER}: wait`,
+          subagent_type: "general-purpose",
+          run_in_background: true,
+          // MOCK_AGENT_NAME names the agent, so its panel row shows that name
+          // instead of the agent type (subagent-row.sh's negative control).
+          ...(process.env.MOCK_AGENT_NAME ? { name: process.env.MOCK_AGENT_NAME } : {}),
+        },
+      },
+    ],
+    "tool_use"
+  );
+}
 
 server.listen(Number(process.argv[2] || 8787), "127.0.0.1", () => {
   process.stderr.write(`mock listening on ${server.address().port}\n`);

@@ -1190,6 +1190,133 @@ should not run with the env on.
 Likely break signs: candidates 1 with nothing patched means the bundle is already patched. Candidates 0 (the key was reshaped or renamed off the `viewport?.columns` shape) or
 2 (a second value key with the same shape). The verifier fails on any key still hashing raw props.
 
+### `subagent-statusline`
+
+Intent: restore the `subagentStatusLine` setting, which upstream removed in 2.1.323. coralline's
+`statusline.sh --subagent` draws the agent-panel rows through it.
+
+Contract (2.1.322's, unchanged): the command reads `{...statusLinePayload, columns, tasks:[…]}` on
+stdin and prints one `{"id","content"}` JSON line per row; `content` is ANSI text drawn in place of
+the row's label and status. Each task carries `id, name, type, agentType, status, description,
+label, startTime, model, effort, contextWindowSize, tokenCount, tokenSamples, cwd`. `tokenSamples`
+is always `[]` (the history 2.1.322 kept lived in the removed ticker).
+
+Applicability, kept in lockstep with the verifier's own copy (`subagentStatusLineApplies`; the
+verifier does not import the patcher) and tested to agree on all three fixtures: the schema still
+declares `subagentStatusLine:()=>` (2.1.323 keeps it, described as "Deprecated: no longer has any
+effect") and `taskDecorations` is absent.
+2.1.322 and older report `skipped: upstream implements subagentStatusLine`; a bundle without the key
+reports `skipped: feature absent`, and the verifier prints `skip (not applicable to this bundle;
+marker confirmed absent)` through the check's `applies` predicate.
+
+What the module injects, all or nothing (`patched: 4`):
+
+1. **Runner chunk.** `var __calicoSL=(()=>{…})()` right before upstream's statusLine runner (2.1.323
+   `async function aho(e,n,r,s=!1)`), so every binding it uses is the runner chunk's own. The runner
+   gets `__calicoSL?.record(e,n);` after its guard prefix, which records the last session and payload
+   the main status line was run with. Only the gated tick is published, as
+   `globalThis.__calicoSubagentStatusLine`, when the runner chunk loads; without a record it spawns
+   nothing.
+2. **Panel call site** (`e(xue,{task:Vs,name:Ts.get(Vs.id),link:…`): adds
+   `decoration:globalThis.__calicoSubagentStatusLine?.(yo,Dc,Math.max(0,Dt-tk()-SN),Ts,Tn)?.get(Vs.id)`.
+   `Tn` is the setter of the panel's own clock state `let[er,Tn]=y(EGt)` (`function EGt(){return
+   Date.now()}`), the one its 1 s interval `El(Jn,To||tn?1000:null)` calls while a task runs. When a
+   finished run changes the id → content map, the helper calls `Tn(Date.now())` once, which re-renders
+   the panel exactly as an interval tick does; an unchanged map calls nothing, so the loop settles.
+   Without it the row showed the previous run's result, the first decoration waited for an unrelated
+   render, and once no task ran the panel stopped refreshing. No hook is added anywhere: the setter
+   is an argument. The setter is captured by shape: declared with the row's state hook between the
+   panel's `{columns:Dt}=` read and the call site (no function declaration in between), its init
+   function returning `Date.now()` in the same chunk, and called again in the panel body; otherwise
+   the module patches nothing.
+3. **Row component** (`{task,name,link,labelWidth,statusWidth,…}=h`): destructures `decoration` and,
+   after the fixed-width pointer box, returns the 2.1.322 decorated shape: pointer box, then a
+   `flexGrow` box with the ANSI component the main status line uses (`hi`, captured from the status
+   line's per-line helper `function Xao(rt,bt){return e(n,{dimColor:!0,wrap:"truncate",children:e(hi,{children:rt})},bt)}`),
+   truncated.
+
+The gate, re-evaluated on every tick (only its log lines are deduped, see Logging):
+
+- **Guard prefix replayed verbatim.** Every statement of the runner before its config read: today
+  `if(ng())return;` (disableAllHooks), `let h=Ius.of(e.host);`, `if(br("statusLine"))return;`, and the
+  workspace-trust guard. A guard upstream adds there later is inherited. A prefix holding anything
+  other than `if(…)return` guards (optionally logging one string) and the per-host binding patches
+  nothing, as does one whose conditions read a name other than the session, the payload or that
+  binding.
+- **Managed-only command source.** The runner's config reader is upstream's managed-only gate, not a
+  normaliser: `function kDt(e){return lnn()?ye("policySettings")?.statusLine:e}` (`lnn` covers safe
+  mode, policy `allowManagedHooksOnly`, user `disableAllHooks`). The command is
+  `lnn()?ye("policySettings")?.subagentStatusLine:Pr()?.subagentStatusLine`, so under any of those
+  only a policy command runs.
+- **Executor call reused, free names bound.** The runner's call
+  `zz(J8e("statusLine")?QW({...y}):y,"StatusLine","statusLine",E,void 0,zRe(n),Qo(e),n.cwd,r,hE(),H)`
+  is re-emitted inside `((e,n,r,y,E,H)=>…)(session,payload,ownSignal,cfg,stdin,hidden)` with the
+  organization tag keyed on `"subagentStatusLine"` (it marks a policy-origin command; keyed on
+  `statusLine`, a project command would be tagged whenever policy sets the main status line). `H` is
+  recomputed with the runner's own `qxs(e)?k4(y):void 0`, so remote and bridged sessions hide the
+  command text, and the helper's log lines use the same label. Any other free name in the reused text
+  (the verbose flag, a runner local, a global) or a call to a runner local patches nothing.
+- **Other refusals.** Any captured binding that is not a function at call time; no recorded payload
+  yet (nothing spawns until a main status-line run has passed its gates). **Requirement on 2.1.323+:
+  `subagentStatusLine` needs a `statusLine` command configured**; without one, no record ever
+  exists, and the tick logs once per process, through the runner's debug log function and whether
+  or not a record later appears, `subagentStatusLine: nothing runs until a statusLine command is
+  configured and has run…` (only when a `subagentStatusLine` is set); a non-`command` config; any mention of `CLAUDE_PLUGIN_ROOT`
+  or `CLAUDE_PLUGIN_DATA`, in every spelling (those are set only for a plugin's own commands).
+- **Timeout.** The config is `{...cfg,timeout:5}`: the deprecated schema strips `timeout`, the
+  executor's default is 600 s, and its local path honours `timeout` (2.1.323
+  `$o=e.timeout?e.timeout*1000:Bu`, passed to the process watcher; read from the bundle, not
+  measured). The helper also aborts its own signal after 5 s, so a stuck command cannot hold the
+  single-flight slot.
+
+Runtime: single flight, at most one start per 300 ms, no spawn for an empty panel. The tick is
+called once per row with the same list; only the first call of a render (a new list reference or new
+columns) filters, prunes and schedules, and the rest return the cached map. A tick that arrives during
+a run makes the helper run again on the latest list when it ends; one inside the 300 ms window arms a
+single timer, so the last list a render handed over is always run. stdout is parsed line by line;
+non-JSON lines and lines without string `id` and `content` are dropped (logged). Results are an
+id → `{content}` map, pruned to the ids still on the panel. `contextWindowSize` uses the
+context-window function and its betas argument as the payload builder in the runner chunk calls them
+(`gt=R_(nt,Im())…context_window:bbt(rt,gt)`); if that use site is not found, the field is omitted and
+the rest still patches. Each tick counts as a StatusLine hook event in upstream telemetry.
+
+Logging: every helper line goes through the runner chunk's debug log function, keyed per condition
+(each replayed guard, bindings, plugin variable, aborted, exit, non-JSON, schema, tick failure, no
+statusLine). A key logs again only when its message differs from the last one logged for it, so a
+repeat stays silent while a later, different failure (another exit status, another error) shows up;
+the map holds one entry per fixed key.
+
+Hook order: the decorated return sits after the row's last hook call (memo cache `E(73)`, `y(!1)`,
+`aM(rt)`, captured by shape), so both branches call the same hooks. The patcher refuses when any of
+those is called after the insertion point, or when the hover handlers it reuses are assigned after
+it. The test mounts the row through React (ink) and renders it undecorated, decorated, undecorated;
+a control moves the return above the last hook and shows React reporting "fewer hooks".
+
+Observed end to end: `bash tools/local-verify/subagent-row.sh <binary>` runs a canned turn whose
+Agent tool call launches a background agent (mock `MOCK_SCENARIO=agent` holds the agent's own request
+open for 40 s so its row stays running), with a fake `statusLine` and a fake `subagentStatusLine`
+in a throwaway config and HOME, and the parent's `CLAUDE_*`/`ANTHROPIC_*` variables scrubbed. The
+row is judged on whole screen lines: `tools/local-verify/screen-lines.js` replays the raw pty log
+(Claude Code redraws by diff, so a row's text is rarely contiguous in it) and the check needs a line
+starting with the panel row's own `◯` glyph (selection pointer optional). It passes when that line
+carries the command's text and the command's stdin carries the contract fields.
+`… <unpatched 2.1.323> expect-default` is the control: a panel line `◯ general-purpose  Calico row
+probe  Ns`, no command text anywhere, and the command never runs. The transcript's
+`Agent(Calico row probe)` does not count; with `MOCK_AGENT_NAME=probe-name` the row reads
+`◯ probe-name …` and the control fails, as it must.
+
+Non-goals: re-adding `taskDecorations` to app state; plugin-supplied commands; hiding rows with
+`content:""` (an empty string draws an empty decorated row); recomputing the panel's label width for
+decorated rows.
+
+Rollback: `--disable subagent-statusline`; nothing else depends on it.
+
+Likely break signs: `patched: 0` with `candidates: N` means the first N anchors matched and the next
+one failed, in this order: config read, guard prefix, managed-only reader, executor call, row
+component (with the ANSI helper), panel call site (with the clock setter). Upstream deleting the schema key turns the module
+into `skipped: feature absent`; upstream restoring `taskDecorations` turns it into `skipped: upstream
+implements`. Both are the intended exits.
+
 ## Updating A Broken Patch
 
 When a Claude update breaks a patch, do this in order.
