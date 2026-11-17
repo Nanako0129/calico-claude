@@ -32,8 +32,8 @@ function request(e){if(e===void 0||!gt()||!_bt()||!z3t()||em())return{outcome:"d
 function unrelatedDialog(){return em()}
 `;
 
-function run({ bridge = false, background = false, teammate = undefined } = {}, { patch = true } = {}) {
-  const source = patch ? patchUsageLimitUnderRemoteControl(fixture).content : fixture;
+function run({ bridge = false, background = false, teammate = undefined } = {}, { patch = true, base = fixture } = {}) {
+  const source = patch ? patchUsageLimitUnderRemoteControl(base).content : base;
   const context = {
     host: { surfaceCapabilities: { replBridgeActive: () => bridge } },
     state: { background, teammate, armed: false, resetsAt: 1790000000 },
@@ -87,6 +87,18 @@ test("patched: background sessions and teammate agents stay suppressed", () => {
 
 test("patched: without Remote Control nothing changes", () => {
   assert.deepEqual(run({}), run({}, { patch: false }));
+});
+
+// 2.1.327 destructures `draft` ahead of `onSubmit` after the auto-open gate:
+// `let{draft:L,onSubmit:te,session:De}=this._requireHost()`.
+test("2.1.327: a field ahead of onSubmit in the auto-open destructure still patches", () => {
+  const base = fixture.replace("let{onSubmit:v}=this._requireHost()", "let{draft:d,onSubmit:v,session:w}=this._requireHost()");
+  assert.notEqual(base, fixture);
+  const result = patchUsageLimitUnderRemoteControl(base);
+  assert.equal(result.patched, 5);
+  assert.equal(evaluatePatchModule("usage-limit-under-remote-control", result.content), null);
+  assert.equal(run({ bridge: true }, { base }).opened, true);
+  assert.equal(run({ bridge: true }, { base, patch: false }).opened, false);
 });
 
 test("the module applies all five edits and the verifier accepts them", () => {

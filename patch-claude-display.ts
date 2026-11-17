@@ -2664,8 +2664,11 @@ function patchUsageLimitUnderRemoteControl(content) {
   const definitions = [...content.matchAll(definitionPattern)].filter((match) =>
     bridgeNames.has(match[2])
   );
+  // The destructure after the gate is matched by `onSubmit:` anywhere in it:
+  // 2.1.327 put `draft:` ahead of it (`let{draft:L,onSubmit:te,session:De}=`),
+  // and the pinned `let{onSubmit:` dropped the auto-open site.
   const openPattern = new RegExp(
-    `(return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\()(${I})\\(\\)(\\)return!1;let\\{onSubmit:)`,
+    `(return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\()(${I})\\(\\)(\\)return!1;let\\{[^{}]*?onSubmit:)`,
     "g"
   );
   const armPattern = new RegExp(
@@ -2916,15 +2919,26 @@ function patchThinkingFolded(content) {
   if (componentStart === -1 || componentStart >= call.index) {
     return { content, candidates: 1, patched: 0 };
   }
+  // The wrapper needs the Box and Text components. They are read off the
+  // component's text column, `S=<Box>;N="column";F=1;q=Q?e(<Markdown>,
+  // {dimColor:!0,capProseWidth:!0,…}):e(<Text>,{dimColor:!0,italic:!0,…})`,
+  // present once in every version measured, 2.1.284 through 2.1.327. Through
+  // 2.1.326 they were read off the `∴` glyph box (`e(<Box>,{minWidth:2,
+  // children:e(<Text>,{"aria-label":"thinking:"…`), which 2.1.327 moved into a
+  // shared row component; on 2.1.284–2.1.326 both anchors name the same Box
+  // and Text, measured.
   const body = content.slice(componentStart, componentStart + 1500);
-  const glyph = body.match(
-    new RegExp(`${escapeRegExp(jsx)}\\((${identifier}),\\{minWidth:2,children:${escapeRegExp(jsx)}\\((${identifier}),\\{"aria-label":"thinking:"`)
+  const column = body.match(
+    new RegExp(
+      `${identifier}=(${identifier});${identifier}="column";${identifier}=1;${identifier}=${identifier}\\?${escapeRegExp(jsx)}\\(${identifier},` +
+        `\\{dimColor:!0,capProseWidth:!0,children:${identifier}\\.trim\\(\\)\\}\\):${escapeRegExp(jsx)}\\((${identifier}),\\{dimColor:!0,italic:!0,children:`
+    )
   );
   const useState = resolveUseStateName(content, moduleStart, moduleEnd);
-  if (!glyph || !useState) {
+  if (!column || !useState) {
     return { content, candidates: 1, patched: 0 };
   }
-  const [, box, text] = glyph;
+  const [, box, text] = column;
   // Locals carry a __ prefix: the wrapper sits in the chunk's top-level scope,
   // where a short name like `s` is the Box component it renders.
   // A block without a signature is not finished: thinking-streaming's live

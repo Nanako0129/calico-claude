@@ -2304,7 +2304,9 @@ const CHECKS: Check[] = [
       }
       const call = `${escapeRegExp(name)}\\(!0\\)`;
       const sites = {
-        "auto-open": new RegExp(`return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\(${call}\\)return!1;let\\{onSubmit:`),
+        // `onSubmit:` anywhere in the destructure, as in the patcher (2.1.327
+        // put `draft:` ahead of it).
+        "auto-open": new RegExp(`return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\(${call}\\)return!1;let\\{[^{}]*?onSubmit:`),
         arm: new RegExp(`if\\(!${I}\\(${I}\\)\\|\\|!${I}\\(\\)\\)return!1;if\\(${call}\\)return!1;let ${I}=${I}\\.resetsAt\\?\\?0;`),
         "UI arm": new RegExp(`armRateLimitAutoContinue=\\(${I}\\)=>\\{if\\(${I}===this\\._autoContinueResetsAt\\)return!1;if\\(${call}\\)return!1;`),
         // 2.1.288 moved this gate into a private method shared with wouldWait();
@@ -2968,13 +2970,20 @@ const CHECKS: Check[] = [
   {
     id: "welcome-badge",
     kind: "custom",
-    describe: '"Calico Claude" branding present (>=3) and "Welcome to Claude Code" gone',
+    describe: '"Calico Claude" branding present, no bold "Claude Code" title left, and "Welcome to Claude Code" gone',
     run: (content: string): string | null => {
+      // Checked on what is left over, not on a site count: the count of bold
+      // titles is upstream's to change, and 2.1.327 merged the version row's
+      // truncate and wrap branches into one, taking three titles to two.
       const calicoCount = countOccurrences(content, '"Calico Claude"');
+      const residualTitles = (content.match(/\{bold:!0(?:,children:"Claude Code"\}|\},"Claude Code")/g) ?? []).length;
       const oldWelcome = content.includes('"Welcome to Claude Code"');
       const problems: string[] = [];
-      if (calicoCount < 3) {
-        problems.push(`expected >=3 occurrences of "Calico Claude", found ${calicoCount}`);
+      if (calicoCount < 1) {
+        problems.push('no "Calico Claude" branding found');
+      }
+      if (residualTitles > 0) {
+        problems.push(`found ${residualTitles} residual bold "Claude Code" title(s)`);
       }
       if (oldWelcome) {
         problems.push('found residual "Welcome to Claude Code"');
