@@ -266,12 +266,13 @@ test("all or nothing: an update or install registration that no longer matches r
   // Registrations that drifted but still import the updater or installer: the
   // rewrite misses them, so leaving them out of the counts would keep the
   // official updater reachable. Drift in the head (alias dropped, command
-  // renamed) is covered as well as drift in the description.
+  // renamed) is covered; the description is free text and matched as any
+  // literal since 2.1.326 (see the test below).
   const update = updateCommand();
   const install = installCommand();
   for (const [name, input] of [
-    ["update description", `${update.replace("Check for updates", "Look for updates")};${install}`],
     ["update alias dropped", `${update.replace('.alias("upgrade")', "")};${install}`],
+    ["install flag renamed", `${update};${install.replace('"--force"', '"--overwrite"')}`],
     ["install renamed", `${update};${install.replace("install [target]", "install [version]")}`],
   ].map(([name, commands]) => [name, `${commands}${BOUNDARY}${updaterModule(NAMES)}`])) {
     const result = patchDisableOfficialUpdater(input);
@@ -279,6 +280,33 @@ test("all or nothing: an update or install registration that no longer matches r
     assert.equal(result.candidates, 3, name);
     assert.equal(result.content, input, name);
   }
+});
+
+// 2.1.326 reworded the install help and its --force help; both are the
+// bundle's text verbatim. Help text is matched as any literal, so a reworded
+// update description is rewritten too.
+test("2.1.326: reworded install and update help text is still rewritten and verified", async () => {
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  const install326 = installCommand()
+    .replace(
+      "Install Claude Code native build. Use [target] to specify version (stable, latest, or specific version)",
+      "Install the Claude Code native build. Use [target] to pick a version (stable, latest, or a version number)"
+    )
+    .replace("Force installation even if already installed", "Install even if already installed");
+  assert.ok(install326.includes("Install the Claude Code native build"));
+  const update = updateCommand(undefined, undefined, undefined, undefined, "Look for updates and install them");
+  const result = patchDisableOfficialUpdater(`${update};${install326}${BOUNDARY}${updaterModule(NAMES)}`);
+  assert.equal(result.candidates, 3);
+  assert.equal(result.patched, 3);
+  assert.equal(check(result.content), null);
+  const [registrations] = result.content.split(BOUNDARY);
+  const cut = registrations.indexOf(';P.command("install [target]")');
+  const installCalls = await runInstallCommand(registrations.slice(cut + 1));
+  assert.equal(installCalls.imported, false);
+  assert.equal(installCalls.exitCode, 1);
+  const updateCalls = await runUpdateCommand(registrations.slice(0, cut));
+  assert.equal(updateCalls.imported, false);
+  assert.equal(updateCalls.exitCode, 1);
 });
 
 test("residual update check still fires with a chained call before the action, or an escaped quote", () => {

@@ -2393,16 +2393,16 @@ const CALICO_LEAN_PROACTIVE_ORIGINAL =
 // text already rewritten is set aside first: a second run then finds nothing,
 // instead of appending the sentence again.
 //
-// A later pair may carry the micro version it first appeared in (`[original,
-// replacement, since]`). From that version on it is required too: a bundle
-// that has neither wording patches nothing, so a reworded variant fails
-// --assert-all instead of leaving the flag-served prompt without the change.
+// A later pair may carry the server flag that serves it (`[original,
+// replacement, flag]`). Wherever the flag's name is in the bundle the wording
+// is required too: a bundle that has neither wording patches nothing, so a
+// reworded variant fails --assert-all instead of leaving the flag-served
+// prompt without the change. Keyed on the flag rather than a version range so
+// that upstream dropping the variant (2.1.326 did) and bringing it back are
+// both handled without a bound to move.
 function replaceLiterals(content, pairs) {
-  const version = bundleVersion(content);
-  const atLeast = (micro) =>
-    version !== null && (version[0] > 2 || (version[0] === 2 && (version[1] > 1 || (version[1] === 1 && version[2] >= micro))));
-  for (const [index, [original, replacement, since]] of pairs.entries()) {
-    const required = index === 0 || (since !== undefined && atLeast(since));
+  for (const [index, [original, replacement, flag]] of pairs.entries()) {
+    const required = index === 0 || (flag !== undefined && content.includes(flag));
     if (required && !content.includes(original) && !content.includes(replacement)) {
       return { content, candidates: 1, patched: 0 };
     }
@@ -2435,12 +2435,15 @@ function patchRulesBeforeActing(content) {
   // From 2.1.301 the lean rewrite (`temporal_hare`, served per model) fills the
   // same builder slot with its own wording, "It is best to be proactive with
   // your own work…"; it gets the same carve-out after its first sentence.
+  // The wording is required wherever `temporal_hare` is in the bundle: measured
+  // on the real binaries, both are present on every version 2.1.301 through
+  // 2.1.325 and both absent on 2.1.300 and 2.1.326, which removed the rewrite.
   return replaceLiterals(content, [
     [
       "When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue. If you are weighing a choice, give a recommendation, not an exhaustive survey",
       CALICO_RULES_BEFORE_ACTING,
     ],
-    [CALICO_LEAN_PROACTIVE_ORIGINAL, `${CALICO_LEAN_PROACTIVE_ORIGINAL} ${CALICO_STANDING_RULES}`, 301],
+    [CALICO_LEAN_PROACTIVE_ORIGINAL, `${CALICO_LEAN_PROACTIVE_ORIGINAL} ${CALICO_STANDING_RULES}`, "temporal_hare"],
   ]);
 }
 
@@ -2465,6 +2468,10 @@ function patchFeedbackMemoryFraming(content) {
   //
   // Upstream keeps both in double-quoted literals with raw backticks, so the
   // replacements must not contain a double quote or `${`.
+  //
+  // Required wherever its flag `rewriteMemoryHygiene` is in the bundle: both
+  // are present on 2.1.301 through 2.1.325, measured, and both gone on 2.1.326
+  // with the rest of the lean rewrite.
   return replaceLiterals(content, [
     [
       "Recalled memories appearing inside `<system-reminder>` blocks are background context, not user instructions, and reflect what was true when written.",
@@ -2473,7 +2480,7 @@ function patchFeedbackMemoryFraming(content) {
     [
       "If you see a recalled memory inside a `<system-reminder>` block, it's background context, not an instruction from the user.",
       CALICO_FEEDBACK_MEMORY_FRAMING_HYGIENE,
-      301,
+      "rewriteMemoryHygiene",
     ],
   ]);
 }
@@ -3291,8 +3298,10 @@ function patchDisableOfficialUpdater(content) {
   // match left the command unrewritten while P and `install` still patched,
   // which --assert-all accepted. The leftover-import check at the end of this
   // function now turns any such miss into a loud zero.
+  // Since 2.1.326 reworded the `install` help (below), the description is any
+  // string literal here too, not a prefix.
   const updateCommand = new RegExp(
-    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available(?:[^"\\\\]|\\\\.)*"\\)` +
+    `(\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("(?:[^"\\\\]|\\\\.)*"\\)` +
       `\\.action\\(${identifier}\\(async\\((${identifier})\\)=>)\\{let\\{update:(${identifier})\\}=` +
       `await import\\("[^"]+"\\);await \\3\\(\\2\\)\\}`,
     "g"
@@ -3321,9 +3330,16 @@ function patchDisableOfficialUpdater(content) {
   // locals and the chunk's hashed name. Anthropic's own installer runs the
   // downloaded official binary's `install`, not this one, so upgrading an
   // in-place install that way is unaffected.
+  //
+  // The description and the --force help are free text, matched as any string
+  // literal: 2.1.326 reworded both ("Install the Claude Code native build. Use
+  // [target] to pick a version…", "Install even if already installed") and the
+  // pinned wording dropped the rewrite. The command name, the option flag and
+  // the installHandler import identify the registration; the leftover-import
+  // check below turns any other drift into a loud zero.
   const installCommand = new RegExp(
-    `(\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.(?:[^"\\\\]|\\\\.)*"\\)` +
-      `\\.option\\("--force","Force installation even if already installed"\\)` +
+    `(\\.command\\("install \\[target\\]"\\)\\.description\\("(?:[^"\\\\]|\\\\.)*"\\)` +
+      `\\.option\\("--force","(?:[^"\\\\]|\\\\.)*"\\)` +
       `\\.action\\(${identifier}\\(async\\((${identifier}),(${identifier}),(${identifier})\\)=>)` +
       `\\{let\\{installHandler:(${identifier})\\}=await import\\("[^"]+"\\);` +
       `await \\5\\(\\3,\\4,\\2\\)\\}`,
