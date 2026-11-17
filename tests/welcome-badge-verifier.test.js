@@ -17,13 +17,28 @@ test("two rewritten titles pass", () => {
 
 test("a title left unrewritten fails", () => {
   const half = patched.replace('children:"Calico Claude"', 'children:"Claude Code"');
-  assert.match(check(half), /1 residual bold "Claude Code" title/);
-  assert.match(check(patched.replace('{bold:!0,children:"Calico Claude"}', '{bold:!0},"Claude Code"')), /residual bold/);
+  assert.match(check(half), /1 residual "Claude Code" title/);
+  assert.match(check(patched.replace('{bold:!0,children:"Calico Claude"}', '{bold:!0},"Claude Code"')), /residual "Claude Code" title/);
+});
+
+// A title that drifted out of the patcher's own patterns still fails here,
+// even with another "Calico Claude" literal elsewhere in the bundle.
+test("a drifted title shape left unrewritten fails", () => {
+  for (const title of [
+    'e(n,{bold:!0,wrap:"truncate",children:"Claude Code"})',
+    'e(n,{wrap:"truncate",bold:!0,children:"Claude Code"})',
+    'r(n,{color:"claude",bold:!0,children:["Claude Code"," "]})',
+    'u("claude",t)("Claude Code")',
+    'u("claude",t)(" Claude Code ")',
+  ]) {
+    assert.match(check(`${patched}${title};`), /1 residual "Claude Code" title/, title);
+  }
+  assert.match(check(`${patched}x="Welcome to Claude Code for ";`), /residual "Welcome to Claude Code"/);
 });
 
 test("the unpatched bundle fails on titles and the welcome line", () => {
   const problems = check(v327);
   assert.match(problems, /no "Calico Claude" branding/);
-  assert.match(problems, /2 residual bold/);
+  assert.match(problems, /2 residual "Claude Code" title/);
   assert.match(problems, /residual "Welcome to Claude Code"/);
 });

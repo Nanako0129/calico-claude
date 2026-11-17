@@ -99,6 +99,9 @@ test("2.1.327: a field ahead of onSubmit in the auto-open destructure still patc
   assert.equal(evaluatePatchModule("usage-limit-under-remote-control", result.content), null);
   assert.equal(run({ bridge: true }, { base }).opened, true);
   assert.equal(run({ bridge: true }, { base, patch: false }).opened, false);
+  // A key that merely ends in `onSubmit` is not the host's submit callback.
+  const lookalike = fixture.replace("let{onSubmit:v}=this._requireHost()", "let{handleonSubmit:v}=this._requireHost()");
+  assert.equal(patchUsageLimitUnderRemoteControl(lookalike).patched, 0);
 });
 
 test("the module applies all five edits and the verifier accepts them", () => {

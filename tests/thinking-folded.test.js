@@ -99,6 +99,17 @@ test("a live block without a signature renders in full", () => {
   assert.equal(tree.props.children[0].type, Ir);
 });
 
+// 2.1.284 through 2.1.326 draw the `∴` glyph box ahead of the text column;
+// the column anchor must still find the same Box and Text past it.
+test("the pre-2.1.327 component, with the glyph box ahead of the column, still folds", () => {
+  const glyphBox = 'W=e(s,{minWidth:2,children:e(n,{"aria-label":"thinking:",dimColor:!0,italic:!0,children:"\\u2234"})});';
+  const older = fixture.replace("Q=g||f;S=s;", `Q=g||f,W;${glyphBox}S=s;`);
+  assert.notEqual(older, fixture);
+  const result = patchThinkingFolded(older);
+  assert.equal(result.patched, 1);
+  assert.match(result.content, /function __calicoFoldedThinking\(__p\)\{[\s\S]*?return e\(s,\{marginTop:[\s\S]*?e\(n,\{dimColor:!0,wrap:"truncate-end"/);
+});
+
 test("a component declared after its call site is left unpatched", () => {
   const [react, renderer] = fixture.split(BOUNDARY);
   const component = renderer.match(/function Ir\(m\)\{.*?\}(?=function render)/)[0];

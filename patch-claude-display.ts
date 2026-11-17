@@ -2640,6 +2640,7 @@ function patchUsageLimitUnderRemoteControl(content) {
   // the four usage-limit sites pass it:
   //
   //   auto-open   …add(h),!1;if(em())return!1;let{onSubmit:…
+  //               (2.1.327: let{draft:L,onSubmit:te,session:De}=…, see openPattern)
   //   arm         if(!U(n)||!z3t())return!1;if(em())return!1;let s=e.resetsAt??0;
   //   request     …||!_bt()||!z3t()||em())return{outcome:"declined",…}
   //               (2.1.288: …&&nnn()&&!hm()}wouldWait(…, see requestMethodPattern)
@@ -2664,11 +2665,12 @@ function patchUsageLimitUnderRemoteControl(content) {
   const definitions = [...content.matchAll(definitionPattern)].filter((match) =>
     bridgeNames.has(match[2])
   );
-  // The destructure after the gate is matched by `onSubmit:` anywhere in it:
-  // 2.1.327 put `draft:` ahead of it (`let{draft:L,onSubmit:te,session:De}=`),
-  // and the pinned `let{onSubmit:` dropped the auto-open site.
+  // The destructure after the gate is matched by an `onSubmit:` key anywhere
+  // in it (first, or after a comma): 2.1.327 put `draft:` ahead of it
+  // (`let{draft:L,onSubmit:te,session:De}=`), and the pinned `let{onSubmit:`
+  // dropped the auto-open site.
   const openPattern = new RegExp(
-    `(return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\()(${I})\\(\\)(\\)return!1;let\\{[^{}]*?onSubmit:)`,
+    `(return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\()(${I})\\(\\)(\\)return!1;let\\{(?:[^{}]*?,)?onSubmit:)`,
     "g"
   );
   const armPattern = new RegExp(
@@ -2888,7 +2890,10 @@ function resolveUseStateName(content, moduleStart, moduleEnd) {
 // because thinking-inline, which runs next, forces `isTranscriptMode` on.
 //
 //   2.1.284  case"thinking":{…ue=e(Ir,{addMargin:h,param:l,isTranscriptMode:E,verbose:R})…}
-//            function Ir(m){…e(s,{minWidth:2,children:e(n,{"aria-label":"thinking:",…
+//            function Ir(m){…S=s;N="column";F=1;G=Y?e(vd,{dimColor:!0,capProseWidth:!0,…}):e(n,{dimColor:!0,italic:!0,…
+//
+// The Box (`s`) and Text (`n`) the wrapper renders are read off that text
+// column; see patchThinkingFolded for why not off the `∴` glyph box.
 const FOLDED_THINKING_COMPONENT = "__calicoFoldedThinking";
 
 function patchThinkingFolded(content) {
@@ -2913,7 +2918,8 @@ function patchThinkingFolded(content) {
   const nextBoundary = content.indexOf(BUN_MODULE_BOUNDARY, call.index);
   const moduleEnd = nextBoundary === -1 ? content.length : nextBoundary;
   // The wrapper is spliced in ahead of the component, and the slicing below
-  // assumes the declaration precedes the call, as it does in 2.1.283-2.1.285.
+  // assumes the declaration precedes the call, as it does in 2.1.283 through
+  // 2.1.327.
   // Any other layout is left unpatched rather than spliced out of order.
   const componentStart = content.indexOf(`function ${component}(`, moduleStart);
   if (componentStart === -1 || componentStart >= call.index) {
