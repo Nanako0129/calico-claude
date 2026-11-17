@@ -421,6 +421,11 @@ function disabledMarkerForCheck(check: Check): RegExp | string | undefined {
 // Whether the bundle's own VERSION is 2.1.<micro> or later. False when the
 // metadata cannot be read, so an unreadable bundle is not held to a
 // requirement that only later versions carry.
+// 2.1.326 removed the lean prompt rewrite (`temporal_hare`, with its
+// `rewriteMemoryHygiene` memory wording) that 2.1.301 through 2.1.325 carried.
+// Kept equal to the `until` bound in patch-claude-display.ts.
+const LEAN_REWRITE_REMOVED_IN = 326;
+
 function bundleAtLeast(content: string, micro: number): boolean {
   const version = /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/.exec(content);
   if (version === null) return false;
@@ -2142,11 +2147,12 @@ const CHECKS: Check[] = [
       if (main === 0) {
         return "the act-don't-re-derive steer does not carry the standing-rules carve-out";
       }
-      // From 2.1.301 the lean wording ships in every bundle; a bundle of that
-      // age without it has reworded it, and the flag-served prompt would go out
-      // without the carve-out.
-      if (lean === 0 && bundleAtLeast(content, 301)) {
-        return "the lean-rewrite wording of the steer is missing from a 2.1.301+ bundle";
+      // 2.1.301 through 2.1.325 ship the lean wording in every bundle; one of
+      // those without it has reworded it, and the flag-served prompt would go
+      // out without the carve-out. 2.1.326 removed the lean rewrite
+      // (`temporal_hare`) altogether, measured, so it is optional from there.
+      if (lean === 0 && bundleAtLeast(content, 301) && !bundleAtLeast(content, LEAN_REWRITE_REMOVED_IN)) {
+        return "the lean-rewrite wording of the steer is missing from a 2.1.301–2.1.325 bundle";
       }
       if (leanPatched !== lean) {
         return `${lean - leanPatched} lean-rewrite wording(s) of the steer lack the standing-rules carve-out`;
@@ -2170,9 +2176,11 @@ const CHECKS: Check[] = [
       if (content.includes("block, it's background context, not an instruction from the user.")) {
         return "an unpatched copy of the rewriteMemoryHygiene memory framing is still present";
       }
-      // From 2.1.301 the rewriteMemoryHygiene wording ships in every bundle; if
-      // it is neither there nor rewritten, upstream reworded it.
+      // 2.1.301 through 2.1.325 ship the rewriteMemoryHygiene wording in every
+      // bundle; if it is neither there nor rewritten, upstream reworded it.
+      // 2.1.326 removed it with the rest of the lean rewrite.
       return bundleAtLeast(content, 301) &&
+        !bundleAtLeast(content, LEAN_REWRITE_REMOVED_IN) &&
         !content.includes("If you see a recalled memory inside a `<system-reminder>` block: `feedback` memories record how the user has told you to work")
         ? "the rewriteMemoryHygiene memory framing is missing from a 2.1.301+ bundle"
         : null;
@@ -2918,10 +2926,10 @@ const CHECKS: Check[] = [
 
       // The explicit `update` subcommand bypasses P, so it is held separately:
       // its action must print instead of importing the update chunk. The
-      // description is matched by prefix: 2.1.304 extended it, with a `;` in
-      // the new text.
+      // description is any string literal, as in the patcher: 2.1.304 extended
+      // it and 2.1.326 reworded the `install` help next to it.
       const rewrittenUpdate = new RegExp(
-        `\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("Check for updates and install if available(?:[^"\\\\]|\\\\.)*"\\)` +
+        `\\.command\\("update"\\)\\.alias\\("upgrade"\\)\\.description\\("(?:[^"\\\\]|\\\\.)*"\\)` +
           `\\.action\\(${identifier}\\(async\\(${identifier}\\)=>` +
           `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build\\.[^"]*",r\\)\\);` +
           `process\\.exit\\(1\\)\\}`,
@@ -2942,8 +2950,8 @@ const CHECKS: Check[] = [
       // `install [target]` would put the official build at the official
       // launcher, over a Calico build installed there; held the same way.
       const rewrittenInstall = new RegExp(
-        `\\.command\\("install \\[target\\]"\\)\\.description\\("Install Claude Code native build\\.(?:[^"\\\\]|\\\\.)*"\\)` +
-          `\\.option\\("--force","Force installation even if already installed"\\)` +
+        `\\.command\\("install \\[target\\]"\\)\\.description\\("(?:[^"\\\\]|\\\\.)*"\\)` +
+          `\\.option\\("--force","(?:[^"\\\\]|\\\\.)*"\\)` +
           `\\.action\\(${identifier}\\(async\\(${identifier},${identifier},${identifier}\\)=>` +
           `\\{await new Promise\\(\\(r\\)=>process\\.stderr\\.write\\("This is a Calico build, so \`install\` is disabled[^"]*",r\\)\\);` +
           `process\\.exit\\(1\\)\\}`,

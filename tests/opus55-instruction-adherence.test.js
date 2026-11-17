@@ -306,7 +306,25 @@ test("a 2.1.301+ bundle without the server-flag wording patches nothing", () => 
   assert.equal(evaluatePatchModule("feedback-memory-framing", olderMemory.content), null);
   // The verifier holds a 2.1.301+ bundle to the same rule.
   const half = `${meta("2.1.320")}` + patchRulesBeforeActing(`var a="${REDERIVE}";`).content;
-  assert.match(evaluatePatchModule("rules-before-acting", half), /missing from a 2\.1\.301\+ bundle/);
+  assert.match(evaluatePatchModule("rules-before-acting", half), /missing from a 2\.1\.301–2\.1\.325 bundle/);
+});
+
+// 2.1.326 removed the lean rewrite (`temporal_hare`) and its memory wording,
+// measured: neither string is in the bundle. Only the main wordings remain to
+// patch, in the patcher and in the verifier.
+test("a 2.1.326+ bundle without the removed lean wordings patches the main ones", () => {
+  const meta = (v) => `var meta={PACKAGE_URL:"@anthropic-ai/claude-code",VERSION:"${v}"};`;
+  const mainOnly = `${meta("2.1.326")}var a="${REDERIVE}",c="${MEMORY} x";`;
+  const rules = patchRulesBeforeActing(mainOnly);
+  assert.equal(rules.patched, 1);
+  assert.equal(evaluatePatchModule("rules-before-acting", rules.content), null);
+  const memory = patchFeedbackMemoryFraming(mainOnly);
+  assert.equal(memory.patched, 1);
+  assert.equal(evaluatePatchModule("feedback-memory-framing", memory.content), null);
+  // One micro below still requires them.
+  const v325 = `${meta("2.1.325")}var a="${REDERIVE}",c="${MEMORY} x";`;
+  assert.equal(patchRulesBeforeActing(v325).patched, 0);
+  assert.equal(patchFeedbackMemoryFraming(v325).patched, 0);
 });
 
 // The patcher only touches the collector's own site; another site elsewhere
