@@ -3,8 +3,9 @@
 // chunk plus the renderer chunk from 2.1.285, reduced to what the module reads:
 // the useState export, the `case"thinking":` call site (as thinking-inline
 // leaves it, without the hidden-outside-transcript guard) and the thinking
-// component's glyph box. The wrapper it injects is then rendered with stub JSX,
-// so the assertions are on the element tree, not on the patched source text.
+// component's text column (2.1.327's shape; 2.1.284–2.1.326 carry the same
+// run). The wrapper it injects is then rendered with stub JSX, so the
+// assertions are on the element tree, not on the patched source text.
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const vm = require("node:vm");
@@ -16,8 +17,8 @@ const BOUNDARY = "\n/*@@calico-bun-module-boundary@@*/\n";
 const reactChunk =
   'var Rx={H:null};var g=function(t){return Rx.H.useState(t)},T=function(t,e){return Rx.H.useEffect(t,e)};\nexport{g,T};';
 const rendererChunk =
-  'import{g,T}from"/$bunfs/root/chunk-react.js";import{e,s,n}from"/$bunfs/root/chunk-ui.js";' +
-  'function Ir(m){let{param:l}=m;return e(s,{children:[e(s,{minWidth:2,children:e(n,{"aria-label":"thinking:",dimColor:!0,italic:!0,children:"\\u2234"})}),e(n,{children:l.thinking})]})}' +
+  'import{g,T}from"/$bunfs/root/chunk-react.js";import{e,s,n,Vd}from"/$bunfs/root/chunk-ui.js";' +
+  'function Ir(m){let{param:l,isTranscriptMode:g,verbose:f}=m,K=l.thinking,S,N,F,q,Q=g||f;S=s;N="column";F=1;q=Q?e(Vd,{dimColor:!0,capProseWidth:!0,children:K.trim()}):e(n,{dimColor:!0,italic:!0,children:K.trim().replace(/\\s+/g," ")});return e(S,{flexDirection:N,flexGrow:F,children:q})}' +
   'function render(l,h,E,R){switch(l.type){case"thinking":{return e(Ir,{addMargin:h,param:l,isTranscriptMode:E,verbose:R})}default:return null}}';
 const fixture = reactChunk + BOUNDARY + rendererChunk;
 
@@ -96,6 +97,17 @@ test("without a resolvable useState the bundle is left untouched", () => {
 test("a live block without a signature renders in full", () => {
   const { tree, Ir } = draw({ type: "thinking", thinking: "Still thinking. More to come." }, { ms: 3000 });
   assert.equal(tree.props.children[0].type, Ir);
+});
+
+// 2.1.284 through 2.1.326 draw the `∴` glyph box ahead of the text column;
+// the column anchor must still find the same Box and Text past it.
+test("the pre-2.1.327 component, with the glyph box ahead of the column, still folds", () => {
+  const glyphBox = 'W=e(s,{minWidth:2,children:e(n,{"aria-label":"thinking:",dimColor:!0,italic:!0,children:"\\u2234"})});';
+  const older = fixture.replace("Q=g||f;S=s;", `Q=g||f,W;${glyphBox}S=s;`);
+  assert.notEqual(older, fixture);
+  const result = patchThinkingFolded(older);
+  assert.equal(result.patched, 1);
+  assert.match(result.content, /function __calicoFoldedThinking\(__p\)\{[\s\S]*?return e\(s,\{marginTop:[\s\S]*?e\(n,\{dimColor:!0,wrap:"truncate-end"/);
 });
 
 test("a component declared after its call site is left unpatched", () => {

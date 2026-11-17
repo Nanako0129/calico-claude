@@ -2304,7 +2304,9 @@ const CHECKS: Check[] = [
       }
       const call = `${escapeRegExp(name)}\\(!0\\)`;
       const sites = {
-        "auto-open": new RegExp(`return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\(${call}\\)return!1;let\\{onSubmit:`),
+        // `onSubmit:` anywhere in the destructure, as in the patcher (2.1.327
+        // put `draft:` ahead of it).
+        "auto-open": new RegExp(`return this\\._autoOpenedRateLimitKeys\\.add\\(${I}\\),!1;if\\(${call}\\)return!1;let\\{(?:[^{}]*?,)?onSubmit:`),
         arm: new RegExp(`if\\(!${I}\\(${I}\\)\\|\\|!${I}\\(\\)\\)return!1;if\\(${call}\\)return!1;let ${I}=${I}\\.resetsAt\\?\\?0;`),
         "UI arm": new RegExp(`armRateLimitAutoContinue=\\(${I}\\)=>\\{if\\(${I}===this\\._autoContinueResetsAt\\)return!1;if\\(${call}\\)return!1;`),
         // 2.1.288 moved this gate into a private method shared with wouldWait();
@@ -2968,13 +2970,32 @@ const CHECKS: Check[] = [
   {
     id: "welcome-badge",
     kind: "custom",
-    describe: '"Calico Claude" branding present (>=3) and "Welcome to Claude Code" gone',
+    describe: '"Calico Claude" branding present, no "Claude Code" title left in any branded shape, and no "Welcome to Claude Code" line',
     run: (content: string): string | null => {
+      // Checked on what is left over, not on a site count: the count of titles
+      // is upstream's to change, and 2.1.327 merged the version row's truncate
+      // and wrap branches into one, taking three bold titles to two. The
+      // residual scan is wider than the patcher's own patterns so that a title
+      // which drifted out of them (an extra prop, a moved `bold`) still fails
+      // here: any prop object carrying `bold:!0` with a "Claude Code" child, in
+      // either JSX spelling or as the head of a `["Claude Code"," "]` array,
+      // and the chalk-coloured `("claude",T)("Claude Code")`. Measured: the
+      // unpatched 2.1.326 / 2.1.327 bundles match 3 / 2 titles and 5 / 5
+      // welcome lines; the patched ones match none.
       const calicoCount = countOccurrences(content, '"Calico Claude"');
-      const oldWelcome = content.includes('"Welcome to Claude Code"');
+      const residualTitles = [
+        /\{[^{}]*bold:!0[^{}]*children:"Claude Code"\}/g,
+        /\{[^{}]*bold:!0[^{}]*\},"Claude Code"\)/g,
+        /\{[^{}]*bold:!0[^{}]*children:\["Claude Code"," "\]/g,
+        /\("claude",[A-Za-z_$][\w$]*\)\(" ?Claude Code ?"\)/g,
+      ].reduce((total, pattern) => total + (content.match(pattern) ?? []).length, 0);
+      const oldWelcome = content.includes('"Welcome to Claude Code');
       const problems: string[] = [];
-      if (calicoCount < 3) {
-        problems.push(`expected >=3 occurrences of "Calico Claude", found ${calicoCount}`);
+      if (calicoCount < 1) {
+        problems.push('no "Calico Claude" branding found');
+      }
+      if (residualTitles > 0) {
+        problems.push(`found ${residualTitles} residual "Claude Code" title(s)`);
       }
       if (oldWelcome) {
         problems.push('found residual "Welcome to Claude Code"');
