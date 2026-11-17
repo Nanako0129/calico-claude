@@ -418,21 +418,6 @@ function disabledMarkerForCheck(check: Check): RegExp | string | undefined {
   return check.disabledMarker ?? (check.kind === "presence" ? check.marker : undefined);
 }
 
-// Whether the bundle's own VERSION is 2.1.<micro> or later. False when the
-// metadata cannot be read, so an unreadable bundle is not held to a
-// requirement that only later versions carry.
-// 2.1.326 removed the lean prompt rewrite (`temporal_hare`, with its
-// `rewriteMemoryHygiene` memory wording) that 2.1.301 through 2.1.325 carried.
-// Kept equal to the `until` bound in patch-claude-display.ts.
-const LEAN_REWRITE_REMOVED_IN = 326;
-
-function bundleAtLeast(content: string, micro: number): boolean {
-  const version = /PACKAGE_URL:"@anthropic-ai\/claude-code"[\s\S]{0,500}?VERSION:"(\d+)\.(\d+)\.(\d+)"/.exec(content);
-  if (version === null) return false;
-  const [major, minor, patch] = version.slice(1).map(Number);
-  return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= micro)));
-}
-
 // subagent-statusline applies when upstream still declares the setting (2.1.323
 // marks it deprecated) but removed its own implementation. Kept in lockstep
 // with subagentStatusLineApplicability in patch-claude-display.ts (this script
@@ -2147,12 +2132,13 @@ const CHECKS: Check[] = [
       if (main === 0) {
         return "the act-don't-re-derive steer does not carry the standing-rules carve-out";
       }
-      // 2.1.301 through 2.1.325 ship the lean wording in every bundle; one of
-      // those without it has reworded it, and the flag-served prompt would go
-      // out without the carve-out. 2.1.326 removed the lean rewrite
-      // (`temporal_hare`) altogether, measured, so it is optional from there.
-      if (lean === 0 && bundleAtLeast(content, 301) && !bundleAtLeast(content, LEAN_REWRITE_REMOVED_IN)) {
-        return "the lean-rewrite wording of the steer is missing from a 2.1.301–2.1.325 bundle";
+      // Where the lean rewrite's flag `temporal_hare` ships, so does its
+      // wording (2.1.301 through 2.1.325, measured; 2.1.326 removed both). A
+      // bundle with the flag but not the wording has reworded it, and the
+      // flag-served prompt would go out without the carve-out. Same key as the
+      // patcher.
+      if (lean === 0 && content.includes("temporal_hare")) {
+        return "the lean-rewrite wording of the steer is missing from a bundle that ships temporal_hare";
       }
       if (leanPatched !== lean) {
         return `${lean - leanPatched} lean-rewrite wording(s) of the steer lack the standing-rules carve-out`;
@@ -2176,13 +2162,13 @@ const CHECKS: Check[] = [
       if (content.includes("block, it's background context, not an instruction from the user.")) {
         return "an unpatched copy of the rewriteMemoryHygiene memory framing is still present";
       }
-      // 2.1.301 through 2.1.325 ship the rewriteMemoryHygiene wording in every
-      // bundle; if it is neither there nor rewritten, upstream reworded it.
-      // 2.1.326 removed it with the rest of the lean rewrite.
-      return bundleAtLeast(content, 301) &&
-        !bundleAtLeast(content, LEAN_REWRITE_REMOVED_IN) &&
+      // Where the `rewriteMemoryHygiene` flag ships, so does its wording
+      // (2.1.301 through 2.1.325, measured; 2.1.326 removed both); if it is
+      // neither there nor rewritten, upstream reworded it. Same key as the
+      // patcher.
+      return content.includes("rewriteMemoryHygiene") &&
         !content.includes("If you see a recalled memory inside a `<system-reminder>` block: `feedback` memories record how the user has told you to work")
-        ? "the rewriteMemoryHygiene memory framing is missing from a 2.1.301+ bundle"
+        ? "the rewriteMemoryHygiene memory framing is missing from a bundle that ships rewriteMemoryHygiene"
         : null;
     },
   },

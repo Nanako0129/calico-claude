@@ -286,45 +286,38 @@ test("a steer whose main wording is gone fails in the patcher, not only the veri
   assert.equal(patchFeedbackMemoryFraming(hygieneOnly).patched, 0);
 });
 
-// From 2.1.301 the server-flag wordings ship in every bundle; one that has
-// gone missing is a rewording, and must fail rather than patch only the main
-// wording.
-test("a 2.1.301+ bundle without the server-flag wording patches nothing", () => {
-  const meta = (v) => `var meta={PACKAGE_URL:"@anthropic-ai/claude-code",VERSION:"${v}"};`;
-  const mainOnly = `${meta("2.1.320")}var a="${REDERIVE}",c="${MEMORY} x";`;
+// Where a server flag ships (`temporal_hare`, `rewriteMemoryHygiene`; 2.1.301
+// through 2.1.325, measured) its wording ships too; one that has gone missing
+// is a rewording, and must fail rather than patch only the main wording.
+const FLAGS = 'var f={temporal_hare:!1,rewriteMemoryHygiene:!1};';
+test("a bundle with the server flags but without their wordings patches nothing", () => {
+  const mainOnly = `${FLAGS}var a="${REDERIVE}",c="${MEMORY} x";`;
   const rules = patchRulesBeforeActing(mainOnly);
   assert.equal(rules.patched, 0);
   assert.equal(rules.content, mainOnly);
   assert.equal(patchFeedbackMemoryFraming(mainOnly).patched, 0);
-  // The same bundle before 2.1.301 had no variant to require.
-  const older = `${meta("2.1.300")}var a="${REDERIVE}",c="${MEMORY} x";`;
-  const olderRules = patchRulesBeforeActing(older);
-  assert.equal(olderRules.patched, 1);
-  assert.equal(evaluatePatchModule("rules-before-acting", olderRules.content), null);
-  const olderMemory = patchFeedbackMemoryFraming(older);
-  assert.equal(olderMemory.patched, 1);
-  assert.equal(evaluatePatchModule("feedback-memory-framing", olderMemory.content), null);
-  // The verifier holds a 2.1.301+ bundle to the same rule.
-  const half = `${meta("2.1.320")}` + patchRulesBeforeActing(`var a="${REDERIVE}";`).content;
-  assert.match(evaluatePatchModule("rules-before-acting", half), /missing from a 2\.1\.301–2\.1\.325 bundle/);
+  // The verifier holds such a bundle to the same rule, one flag at a time.
+  const half = `var f={temporal_hare:!1};` + patchRulesBeforeActing(`var a="${REDERIVE}";`).content;
+  assert.match(evaluatePatchModule("rules-before-acting", half), /missing from a bundle that ships temporal_hare/);
+  const memoryHalf =
+    `var f={rewriteMemoryHygiene:!1};` + patchFeedbackMemoryFraming(`var c="${MEMORY} x";`).content;
+  assert.match(evaluatePatchModule("feedback-memory-framing", memoryHalf), /missing from a bundle that ships rewriteMemoryHygiene/);
 });
 
-// 2.1.326 removed the lean rewrite (`temporal_hare`) and its memory wording,
-// measured: neither string is in the bundle. Only the main wordings remain to
-// patch, in the patcher and in the verifier.
-test("a 2.1.326+ bundle without the removed lean wordings patches the main ones", () => {
-  const meta = (v) => `var meta={PACKAGE_URL:"@anthropic-ai/claude-code",VERSION:"${v}"};`;
-  const mainOnly = `${meta("2.1.326")}var a="${REDERIVE}",c="${MEMORY} x";`;
+// Without the flags (2.1.300 and older; 2.1.326, which removed the lean
+// rewrite with both flags, measured) only the main wordings are required, in
+// the patcher and in the verifier.
+test("a bundle without the server flags patches the main wordings alone", () => {
+  const mainOnly = `var a="${REDERIVE}",c="${MEMORY} x";`;
   const rules = patchRulesBeforeActing(mainOnly);
   assert.equal(rules.patched, 1);
   assert.equal(evaluatePatchModule("rules-before-acting", rules.content), null);
   const memory = patchFeedbackMemoryFraming(mainOnly);
   assert.equal(memory.patched, 1);
   assert.equal(evaluatePatchModule("feedback-memory-framing", memory.content), null);
-  // One micro below still requires them.
-  const v325 = `${meta("2.1.325")}var a="${REDERIVE}",c="${MEMORY} x";`;
-  assert.equal(patchRulesBeforeActing(v325).patched, 0);
-  assert.equal(patchFeedbackMemoryFraming(v325).patched, 0);
+  // Upstream bringing a flag back makes its wording required again.
+  assert.equal(patchRulesBeforeActing(`var f={temporal_hare:!1};${mainOnly}`).patched, 0);
+  assert.equal(patchFeedbackMemoryFraming(`var f={rewriteMemoryHygiene:!1};${mainOnly}`).patched, 0);
 });
 
 // The patcher only touches the collector's own site; another site elsewhere
