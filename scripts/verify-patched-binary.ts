@@ -1576,10 +1576,10 @@ const CHECKS: Check[] = [
       // block rest must reach the message through `.message.`; one left as `X.`
       // reads the row and silently copies nothing (2.1.284 context_management,
       // 2.1.328 pausedResponses). The head `for(…)` is the only bare use.
-      const cloneSyncLoopBody = cloneSync[0].slice(cloneSync[0].indexOf(")") + 1);
-      const cloneLocals = [cloneSource, cloneDestination]
-        .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-        .join("|");
+      const cloneSyncLoopBody = cloneSync[0].slice(
+        cloneSync[0].indexOf(")", cloneSync[0].indexOf("}of ")) + 1
+      );
+      const cloneLocals = [cloneSource, cloneDestination].map(escapeRegExp).join("|");
       if (
         new RegExp(
           `(?<![\\w$.])(?:${cloneLocals})(?![\\w$])(?!\\.(?:message\\.|__calicoUsageState(?![\\w$])))`

@@ -299,9 +299,10 @@ Applies through 2.1.327 only. 2.1.328 replaced the tracker
 `message_start` usage as `response_start` and terminal `message_delta` usage as `tokens` through
 `onStreamTokenEstimate`, forcing an emit at `message_stop`, and the assistant-wrapper path assigns
 `latestOutputTokens` from finalized usage only. Nothing can be summed twice any more, so
-`backgroundAgentUsageApplicability` skips the module when that tracker is present and no
-`cumulativeOutputTokens` remains (keyed on shape, not version), and the verifier confirms the
-helpers are absent. Runtime check:
+`backgroundAgentUsageApplicability` skips the module when the new tracker initialiser is present
+and the old `{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0…}` one is not (keyed on
+shape, not version; an unrelated `cumulativeOutputTokens` elsewhere does not count), and the
+verifier confirms the helpers are absent. Runtime check:
 `MOCK_AGENT_USAGE=gateway bash tools/local-verify/subagent-row.sh <binary>` sends 0/0 at
 `message_start` and 1234/56 only in `message_delta`, then holds the connection open for 40 s;
 2.1.329's agent row reported `tokenCount` 1290 (the subagentStatusLine stdin) while running.

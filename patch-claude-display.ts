@@ -3939,7 +3939,8 @@ function blocksOpenedBetweenClose(text, start, end, allowOuterClose = true) {
 }
 
 // Applicability: 2.1.328 replaced the tracker's running output total. Read
-// from the 2.1.328 and 2.1.329 bundles: the tracker is
+// from the 2.1.328 and 2.1.329 bundle code (the call order below is not traced
+// at runtime; only the final totals are, see PATCHING_PLAYBOOK.md): the tracker is
 // `{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0,recentActivities:[],…}`,
 // the token count is `latestInputTokens+latestOutputTokens`, and its one
 // updater is reached two ways. The agent runner's onStreamTokenEstimate sends
