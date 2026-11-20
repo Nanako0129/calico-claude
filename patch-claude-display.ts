@@ -3938,19 +3938,22 @@ function blocksOpenedBetweenClose(text, start, end, allowOuterClose = true) {
   return open === 0;
 }
 
-// Applicability: 2.1.328 replaced the tracker's running output total. Measured
-// on 2.1.328 and 2.1.329: the tracker is
+// Applicability: 2.1.328 replaced the tracker's running output total. Read
+// from the 2.1.328 and 2.1.329 bundles: the tracker is
 // `{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0,recentActivities:[],…}`,
-// the token count is `latestInputTokens+latestOutputTokens`, and the only token
-// event fires through a screen that requires `stop_reason`, metered usage and
-// `output_tokens>0`, then ASSIGNS `latestOutputTokens` rather than adding to
-// it. A streamed partial can no longer be summed twice, which is the defect this
-// module fixed, so there is nothing left to patch. Keyed on the tracker shape,
-// not a version: a bundle with neither shape still applies and fails loudly.
+// the token count is `latestInputTokens+latestOutputTokens`, and its one
+// updater is reached two ways. The agent runner's onStreamTokenEstimate sends
+// `response_start` at message_start (which first folds the previous total into
+// latestInputTokens) and `tokens` on message_delta, forced at message_stop; the
+// assistant-wrapper path sends `tokens` only for finalized usage (stop_reason,
+// metered, output_tokens>0). Both ASSIGN latestOutputTokens rather than adding
+// to it, so a streamed partial can no longer be summed twice, which is the
+// defect this module fixed. Keyed on the tracker initialisers, not a version: a
+// bundle with neither still applies and fails loudly.
 // The verifier keeps its own copy (backgroundAgentUsageApplies), in lockstep.
 function backgroundAgentUsageApplicability(content) {
   if (
-    !content.includes("cumulativeOutputTokens") &&
+    !/\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0[,}]/.test(content) &&
     /\{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0[,}]/.test(content)
   ) {
     return {

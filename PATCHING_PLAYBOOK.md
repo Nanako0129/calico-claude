@@ -303,9 +303,13 @@ Applies through 2.1.327 only. 2.1.328 replaced the tracker
 `cumulativeOutputTokens` remains (keyed on shape, not version), and the verifier confirms the
 helpers are absent. Runtime check:
 `MOCK_AGENT_USAGE=gateway bash tools/local-verify/subagent-row.sh <binary>` sends 0/0 at
-`message_start` and 1234/56 only in `message_delta`; 2.1.329's agent row reported `tokenCount`
-1290 (the subagentStatusLine stdin). Patched 2.1.327 reported 3 in the same run, so this mode
-only measures 2.1.328+.
+`message_start` and 1234/56 only in `message_delta`, then holds the connection open for 40 s;
+2.1.329's agent row reported `tokenCount` 1290 (the subagentStatusLine stdin) while running.
+Patched 2.1.327 stays at 3 (the streamed text estimate) while the connection is open, because
+its tracker reads usage from the assistant message, which is yielded once the stream closes:
+with `MOCK_HOLD_END_MS=2000` its row went from 3 while running to 1293 on completion
+(1234 input + 56 output + the 3-token streamed estimate). 2.1.329 under the same timing showed
+1290 both while running and on completion.
 
 Intent:
 

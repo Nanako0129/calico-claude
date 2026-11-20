@@ -470,7 +470,8 @@ plus cumulative output across the background agent's turns. This changes local a
 into it directly and forces an update at `message_stop`, and the total became latest input plus
 latest output. The module skips itself there. Measured on 2.1.329 with the mock's gateway-style
 usage (`MOCK_AGENT_USAGE=gateway`, 0/0 at `message_start`, 1234/56 only in `message_delta`): the
-agent row's `tokenCount` reached 1290 with no Calico code involved.
+agent row's `tokenCount` reached 1290 while the stream was still open, with no Calico code
+involved.
 
 | Verifier requires | Regression tests cover |
 |---|---|

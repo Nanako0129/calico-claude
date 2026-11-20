@@ -160,12 +160,12 @@ function agentScenario(parsed, res) {
     // send it, 0/0 at message_start and the real totals only in the terminal
     // message_delta. The connection is held open after message_stop so the row
     // stays on the panel and its tokenCount (1234 input + 56 output) reaches
-    // the subagentStatusLine stdin.
+    // the subagentStatusLine stdin. MOCK_HOLD_END_MS shortens the hold.
     if (process.env.MOCK_AGENT_USAGE === "gateway") {
       streamMessage(res, [{ type: "text", text: "agent finished" }], "end_turn", {
         start: { input_tokens: 0, output_tokens: 0 },
         delta: { input_tokens: 1234, output_tokens: 56 },
-        holdEndMs: 40_000,
+        holdEndMs: Number(process.env.MOCK_HOLD_END_MS ?? 40_000),
       });
       return;
     }

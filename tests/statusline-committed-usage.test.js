@@ -309,6 +309,23 @@ test("2.1.328 block-form clone sync still copies pausedResponses onto the clone 
   assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
 });
 
+test("verifier rejects a block-form sync whose condition or rest still reads the row", () => {
+  const { result } = loadCommittedFixture(blockSyncFixture());
+  for (const [from, to] of [
+    ["_i.message.pausedResponses!==void 0", "_i.pausedResponses!==void 0"],
+    ["Ii.message.pausedResponses=_i.message.pausedResponses", "Ii.pausedResponses=_i.pausedResponses"],
+    ["_i.message.context_management!==void 0", "_i.context_management!==void 0"],
+  ]) {
+    assert.equal(result.content.split(from).length, 2, from);
+    const broken = result.content.replace(from, to);
+    assert.match(
+      evaluatePatchModule("statusline-committed-usage", broken),
+      /reads a row local other than through \.message/,
+      to
+    );
+  }
+});
+
 test("a block-form sync whose rest uses a loop local other than by member access is not touched", () => {
   assert.equal(patchStatuslineCommittedUsage(blockSyncFixture("log(_i)")).patched, 0);
 });

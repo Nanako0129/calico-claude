@@ -437,7 +437,7 @@ function subagentStatusLineApplies(content: string): boolean {
 // backgroundAgentUsageApplicability in patch-claude-display.ts; a test runs both.
 function backgroundAgentUsageApplies(content: string): boolean {
   return (
-    content.includes("cumulativeOutputTokens") ||
+    /\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0[,}]/.test(content) ||
     !/\{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0[,}]/.test(content)
   );
 }
@@ -1572,6 +1572,21 @@ const CHECKS: Check[] = [
       const cloneSource = cloneSync[1];
       const cloneDestination = cloneSync[2];
       const cloneArray = cloneSync[3];
+      // The loop walks rows after the rewrite, so upstream's condition, body and
+      // block rest must reach the message through `.message.`; one left as `X.`
+      // reads the row and silently copies nothing (2.1.284 context_management,
+      // 2.1.328 pausedResponses). The head `for(…)` is the only bare use.
+      const cloneSyncLoopBody = cloneSync[0].slice(cloneSync[0].indexOf(")") + 1);
+      const cloneLocals = [cloneSource, cloneDestination]
+        .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("|");
+      if (
+        new RegExp(
+          `(?<![\\w$.])(?:${cloneLocals})(?![\\w$])(?!\\.(?:message\\.|__calicoUsageState(?![\\w$])))`
+        ).test(cloneSyncLoopBody)
+      ) {
+        return "clone-sync loop reads a row local other than through .message or __calicoUsageState";
+      }
       // No name-based aliasing check here. It was a proxy for "the clone list
       // is not the terminal list", it is not sound across a minified bundle
       // (2.1.261 reuses one name for both), and lexical scope cannot be

@@ -542,6 +542,7 @@ test("2.1.328 finalized-response tracker: module skips, patcher and verifier agr
     [finalizedTrackerFixture, false],
     ["function x(){}", true], // neither shape: still applies, so drift fails loudly
     [`${finalizedTrackerFixture}${fixture}`, true], // an old tracker anywhere keeps it on
+    [`${finalizedTrackerFixture}x.cumulativeOutputTokens=1;`, false], // an unrelated use does not
   ]) {
     assert.equal(backgroundAgentUsageApplicability(source).applies, applies, `patcher: ${source.slice(0, 40)}`);
     assert.equal(backgroundAgentUsageApplies(source), applies, `verifier: ${source.slice(0, 40)}`);
