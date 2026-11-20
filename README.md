@@ -50,7 +50,7 @@ binary's own rendering and request-building code; nothing is proxied, and no pro
 | `strip-user-email-context` | (All models) Leaves the signed-in account's email out of the model context, so the model cannot send it to a third party (for example in a `curl` User-Agent, [anthropics/claude-code#107757](https://github.com/anthropics/claude-code/issues/107757)); `CALICO_KEEP_USER_EMAIL=1` restores the upstream block |
 | `thinking-summaries-default` | Defaults `showThinkingSummaries` on, so thinking is requested unredacted and shows up; `"showThinkingSummaries": false` opts out |
 | `usage-limit-under-remote-control` | With Remote Control on, a claude.ai usage limit still opens the `/rate-limit-options` menu and lets automatic continue arm; upstream silences both whenever the Remote Control bridge is active |
-| `background-agent-usage` | Accounts terminal stream usage in the background agent progress row |
+| `background-agent-usage` | Accounts terminal stream usage in the background agent progress row. Skipped on 2.1.328+, where upstream reads that usage from the stream itself |
 | `statusline-committed-usage` | Exposes only committed terminal assistant usage to status-line payloads |
 | `statusline-rate-limit-windows` | Forwards the Fable 5 and usage-credit rate-limit windows to status-line payloads |
 | `subagent-statusline` | Restores the `subagentStatusLine` setting, which upstream removed in 2.1.323: your command draws the agent-panel rows, as in 2.1.322. It runs under the main status line's gates (hooks disabled, `statusLine` disabled, workspace trust, managed-only settings). On 2.1.323+ it needs a `statusLine` command too: nothing runs until the main status line has run once (a `subagentStatusLine`-only setup logs that once in the debug log). Skipped on 2.1.322 and older, where upstream still implements it |
@@ -425,7 +425,8 @@ node scripts/verify-patched-binary.ts \
 > **A `(patched)` version label alone is not sufficient.** The banner comes from one module; the
 > adapters are separate ones. Treat the verifier's per-module report as the capability check —
 > `active-turn-prompt-id`, `background-agent-usage`, `statusline-committed-usage` and
-> `custom-context-window` must all report `ok`.
+> `custom-context-window` must all report `ok` (`background-agent-usage` reports `skip … not
+> applicable` on 2.1.328+, where upstream does that accounting itself).
 
 remora users can run `remora doctor --online` instead.
 
@@ -464,6 +465,12 @@ completion seam, deduplicating output tokens seen through more than one path.
 
 The displayed total preserves Claude Code's native semantics: latest response input and cache tokens,
 plus cumulative output across the background agent's turns. This changes local accounting only.
+
+2.1.328 rebuilt the tracker: the agent runner feeds `message_start` and the terminal `message_delta`
+into it directly and forces an update at `message_stop`, and the total became latest input plus
+latest output. The module skips itself there. Measured on 2.1.329 with the mock's gateway-style
+usage (`MOCK_AGENT_USAGE=gateway`, 0/0 at `message_start`, 1234/56 only in `message_delta`): the
+agent row's `tokenCount` reached 1290 with no Calico code involved.
 
 | Verifier requires | Regression tests cover |
 |---|---|

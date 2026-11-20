@@ -3157,6 +3157,11 @@ function patchDisableOfficialUpdater(content) {
   // The plugin gate now reads P twice, once through the wrapper and once
   // directly on the host-pin path; both reads exclude the Calico reason so
   // plugin auto-update behaves exactly as it did before the P rewrite.
+  //
+  // 2.1.329 reads the host flag into a local and tests its value, paired with
+  // the 2.1.295 spelling (the test itself is upstream's and is not rewritten):
+  //
+  //   let e=s.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST;if(!Oe(e)&&e!=="managed")return bje();
   const predicateStart = new RegExp(
     `function (${identifier})\\((${identifier})?\\)\\{if\\((${identifier})\\.DISABLE_UPDATES\\)` +
       `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
@@ -3235,7 +3240,8 @@ function patchDisableOfficialUpdater(content) {
       if (!wrapper) continue;
       const gate = new RegExp(
         `function ${identifier}\\(\\)\\{if\\(${escape(envObject)}\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;` +
-          `if\\(!${escape(envObject)}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)(return ${escape(wrapper[1])}\\(\\);)([^{}]*?)` +
+          `(?:if\\(!${escape(envObject)}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)|let ${identifier}=${escape(envObject)}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST;if\\([^{};]*\\))` +
+          `(return ${escape(wrapper[1])}\\(\\);)([^{}]*?)` +
           `(if\\(${escape(predicateName)}\\(!1\\)!==null\\)return!0;)`
       ).exec(moduleText);
       if (!gate) continue;
@@ -3904,8 +3910,13 @@ function patchCompactTokensSaved(content) {
 // progress call alone is not detected; and an expression-bodied arrow is not a
 // block. The latter is safe only because every completion pattern starts with
 // `let `, which an expression body cannot contain.
+// With allowOuterClose false, a `}` that closes a block opened before `start`
+// refuses too, so the site at `end` sits directly in the block that `start`
+// opens. statusline-committed-usage uses that form: its loops must stay in the
+// message_delta block, not merely outside any nested one. A `for` loop is a
+// statement, so no expression-bodied arrow can enclose it either.
 // Mirrored in scripts/verify-patched-binary.ts; a test runs both on the same inputs.
-function blocksOpenedBetweenClose(text, start, end) {
+function blocksOpenedBetweenClose(text, start, end, allowOuterClose = true) {
   let open = 0;
   for (let i = start; i < end; i += 1) {
     const char = text[i];
@@ -3919,15 +3930,44 @@ function blocksOpenedBetweenClose(text, start, end) {
       if (i >= end) return false;
     } else if (char === "{") {
       open += 1;
-    } else if (char === "}" && open > 0) {
-      open -= 1;
+    } else if (char === "}") {
+      if (open > 0) open -= 1;
+      else if (!allowOuterClose) return false;
     }
   }
   return open === 0;
 }
 
+// Applicability: 2.1.328 replaced the tracker's running output total. Measured
+// on 2.1.328 and 2.1.329: the tracker is
+// `{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0,recentActivities:[],…}`,
+// the token count is `latestInputTokens+latestOutputTokens`, and the only token
+// event fires through a screen that requires `stop_reason`, metered usage and
+// `output_tokens>0`, then ASSIGNS `latestOutputTokens` rather than adding to
+// it. A streamed partial can no longer be summed twice, which is the defect this
+// module fixed, so there is nothing left to patch. Keyed on the tracker shape,
+// not a version: a bundle with neither shape still applies and fails loudly.
+// The verifier keeps its own copy (backgroundAgentUsageApplies), in lockstep.
+function backgroundAgentUsageApplicability(content) {
+  if (
+    !content.includes("cumulativeOutputTokens") &&
+    /\{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0[,}]/.test(content)
+  ) {
+    return {
+      applies: false,
+      reason:
+        "upstream tracks only the latest finalized response (latestOutputTokens, 2.1.328+): no running output total to double-count",
+    };
+  }
+  return { applies: true, reason: null };
+}
+
 function patchBackgroundAgentUsage(content) {
   const original = content;
+  const applicability = backgroundAgentUsageApplicability(content);
+  if (!applicability.applies) {
+    return { content, candidates: 0, patched: 0, skipped: true, reason: applicability.reason };
+  }
   const identifierPattern = "[A-Za-z_$][\\w$]*";
   // The replacement rewrites this initialiser, so any field upstream adds has to
   // be carried across rather than silently dropped: 2.1.246 appended
@@ -4306,7 +4346,9 @@ function patchStatuslineCommittedUsage(content) {
   //     ...pd.length>0&&{batchToolUses:pd},…
   //
   // Spreads there are accepted without a capture group, so the group numbers
-  // read below do not move.
+  // read below do not move. 2.1.329 added a call-valued spread among them
+  // (`...iBn(_f,ie.agentId),...Q_.length>0&&{batchToolUses:Q_}`), accepted
+  // with the same batchParenRun as the spread call after requestId.
   //
   // 2.1.295 added a member-valued field after requestRef
   // (`requestRef:nJ,requestedModel:X.model,...Nne(…)`), so the plain fields
@@ -4326,7 +4368,7 @@ function patchStatuslineCommittedUsage(content) {
   const batchParenRun = "(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*";
   const batchCallArgs = `(?:,${batchParenRun})?`;
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.(?:[^{},]*\\{[^{}]*\\}|${identifierPattern}\\(${batchParenRun}\\)))*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
   // Two spellings of the terminal commit, paired rather than crossed. Through
@@ -4382,8 +4424,17 @@ function patchStatuslineCommittedUsage(content) {
   // Groups 4 and 5 capture that condition and body. They are re-emitted after
   // the registrations are rewritten to push rows, so their src/dst references
   // are rewritten from `X.` to `X.message.` (see cloneSyncMessageAccess).
+  //
+  // 2.1.328 gave the loop a block and appended a pausedResponses copy:
+  //
+  //   for(let{src:Me,dst:ot}of Tt){if(ot.usage=Me.usage,…,ot.stop_details=Me.stop_details,
+  //     Me.context_management!==void 0)ot.context_management=Me.context_management;
+  //     if(Me.pausedResponses!==void 0)ot.pausedResponses=Me.pausedResponses}
+  //
+  // Groups 6–8 capture that form's condition, body and the rest of the block,
+  // rewritten the same way. A brace in the rest fails closed (match 0).
   const cloneSyncPattern = new RegExp(
-    `for\\(let\\{src:(${identifierPattern}),dst:(${identifierPattern})\\}of (${identifierPattern})\\)(?:\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details;|if\\(\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details,((?:[^()]|\\([^()]*\\))*)\\)([^;{}]*);)`,
+    `for\\(let\\{src:(${identifierPattern}),dst:(${identifierPattern})\\}of (${identifierPattern})\\)(?:\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details;|if\\(\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details,((?:[^()]|\\([^()]*\\))*)\\)([^;{}]*);|\\{if\\(\\2\\.usage=\\1\\.usage,\\2\\.stop_reason=\\1\\.stop_reason,\\2\\.stop_details=\\1\\.stop_details,((?:[^()]|\\([^()]*\\))*)\\)([^;{}]*);([^{}]*)\\})`,
     "g"
   );
   const reducerMatches = [
@@ -4512,14 +4563,19 @@ function patchStatuslineCommittedUsage(content) {
     terminalFunctionStart === -1 || canonicalAggregation?.index === undefined
       ? -1
       : terminalFunctionStart + canonicalAggregation.index;
-  const terminalDirectSegment =
-    canonicalAggregationIndex === -1
-      ? ""
-      : content.slice(canonicalAggregationIndex, terminalIndex);
+  // Direct = the loop sits in the message_delta block itself: every block
+  // opened after `case"message_delta":{` closes before the loop, and none
+  // before it is closed. A `=>` text scan stood in for this until 2.1.328 put
+  // an expression-bodied arrow in the case (`B(fk,(vm)=>jf.has(vm))`), which
+  // cannot enclose a `for` statement but failed the scan.
   const terminalCommitIsDirect =
     canonicalAggregationIndex !== -1 &&
-    !terminalDirectSegment.includes("=>") &&
-    !terminalDirectSegment.includes("function ");
+    blocksOpenedBetweenClose(
+      content,
+      canonicalAggregationIndex + 'case"message_delta":{'.length,
+      terminalIndex,
+      false
+    );
   const cloneSyncMatches = [...content.matchAll(cloneSyncPattern)];
   const selectorCandidates = selectorPattern ? [...content.matchAll(selectorPattern)] : [];
   const selectorMatches = selectorCandidates.filter((match) => {
@@ -4589,12 +4645,15 @@ function patchStatuslineCommittedUsage(content) {
     cloneSyncFunctionStart === -1 || cloneEventMatch?.index === undefined
       ? -1
       : cloneSyncFunctionStart + cloneEventMatch.index;
-  const cloneSyncDirectSegment =
-    cloneEventIndex === -1 ? "" : content.slice(cloneEventIndex, cloneSyncIndex);
+  // Same directness test as the terminal commit, from inside the event block.
   const cloneSyncIsDirect =
     cloneEventIndex !== -1 &&
-    !cloneSyncDirectSegment.includes("=>") &&
-    !cloneSyncDirectSegment.includes("function ");
+    blocksOpenedBetweenClose(
+      content,
+      cloneEventIndex + cloneEventMatch[0].length,
+      cloneSyncIndex,
+      false
+    );
   const cloneRegistrationFunctionStarts = cloneMatches.map((match) => {
     const index = match.index ?? -1;
     return index === -1 ? -1 : content.lastIndexOf("function ", index);
@@ -4744,19 +4803,29 @@ function patchStatuslineCommittedUsage(content) {
     }
     return rewritten;
   };
-  const cloneSyncCondition = cloneSyncMatches[0][4];
-  const cloneSyncBody = cloneSyncMatches[0][5];
+  const cloneSyncCondition = cloneSyncMatches[0][4] ?? cloneSyncMatches[0][6];
+  const cloneSyncBody = cloneSyncMatches[0][5] ?? cloneSyncMatches[0][7];
+  const cloneSyncRest = cloneSyncMatches[0][8];
   const cloneSyncConditionAsMessage =
     cloneSyncCondition === undefined ? undefined : cloneSyncMessageAccess(cloneSyncCondition);
   const cloneSyncBodyAsMessage =
     cloneSyncBody === undefined ? undefined : cloneSyncMessageAccess(cloneSyncBody);
-  if (cloneSyncConditionAsMessage === null || cloneSyncBodyAsMessage === null) {
+  const cloneSyncRestAsMessage =
+    cloneSyncRest === undefined ? undefined : cloneSyncMessageAccess(cloneSyncRest);
+  if (
+    cloneSyncConditionAsMessage === null ||
+    cloneSyncBodyAsMessage === null ||
+    cloneSyncRestAsMessage === null
+  ) {
     return { content: original, candidates, patched: 0 };
   }
+  const cloneSyncHead = `for(let{src:${cloneSyncSource},dst:${cloneSyncDestination}}of ${cloneArray})`;
   const cloneSyncReplacement =
     cloneSyncCondition === undefined
-      ? `for(let{src:${cloneSyncSource},dst:${cloneSyncDestination}}of ${cloneArray})${cloneSyncAssignments};`
-      : `for(let{src:${cloneSyncSource},dst:${cloneSyncDestination}}of ${cloneArray})if(${cloneSyncAssignments},${cloneSyncConditionAsMessage})${cloneSyncBodyAsMessage};`;
+      ? `${cloneSyncHead}${cloneSyncAssignments};`
+      : cloneSyncRest === undefined
+        ? `${cloneSyncHead}if(${cloneSyncAssignments},${cloneSyncConditionAsMessage})${cloneSyncBodyAsMessage};`
+        : `${cloneSyncHead}{if(${cloneSyncAssignments},${cloneSyncConditionAsMessage})${cloneSyncBodyAsMessage};${cloneSyncRestAsMessage}}`;
   const selectorMatch = selectorMatches[0];
   // The reducer is called through whatever local name this chunk imported it
   // under (selectorMatch[3]), not the name captured at its declaration site.
@@ -7214,6 +7283,7 @@ module.exports = {
   CALICO_HEADER_FETCH,
   patchCompactBodyPolicy,
   patchBackgroundAgentUsage,
+  backgroundAgentUsageApplicability,
   blocksOpenedBetweenClose,
   patchStatuslineCommittedUsage,
   patchStatuslineRateLimitWindows,
