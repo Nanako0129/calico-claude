@@ -133,10 +133,10 @@ function firstUserText(parsed) {
   const content = first?.content;
   return typeof content === "string" ? content : (content ?? []).map((block) => block.text ?? "").join(" ");
 }
-function streamMessage(res, blocks, stopReason) {
+function streamMessage(res, blocks, stopReason, usage = {}) {
   sse(res, "message_start", {
     type: "message_start",
-    message: { id: `msg_${Date.now()}`, type: "message", role: "assistant", model: MODEL, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } },
+    message: { id: `msg_${Date.now()}`, type: "message", role: "assistant", model: MODEL, content: [], stop_reason: null, stop_sequence: null, usage: usage.start ?? { input_tokens: 10, output_tokens: 1 } },
   });
   blocks.forEach((block, index) => {
     if (block.type === "tool_use") {
@@ -148,13 +148,28 @@ function streamMessage(res, blocks, stopReason) {
     }
     sse(res, "content_block_stop", { type: "content_block_stop", index });
   });
-  sse(res, "message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 12 } });
+  sse(res, "message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: usage.delta ?? { output_tokens: 12 } });
   sse(res, "message_stop", { type: "message_stop" });
-  res.end();
+  if (usage.holdEndMs) setTimeout(() => res.end(), usage.holdEndMs);
+  else res.end();
 }
 function agentScenario(parsed, res) {
   if (firstUserText(parsed).includes(AGENT_MARKER)) {
     process.stderr.write("AGENT_REQUEST\n");
+    // MOCK_AGENT_USAGE=gateway: usage the way some OpenAI-compatible gateways
+    // send it, 0/0 at message_start and the real totals only in the terminal
+    // message_delta. The connection is held open after message_stop so the row
+    // stays on the panel and its tokenCount (1234 input + 56 output) reaches
+    // the subagentStatusLine stdin. MOCK_HOLD_END_MS shortens the hold
+    // (a value that is not a positive number keeps 40 s).
+    if (process.env.MOCK_AGENT_USAGE === "gateway") {
+      streamMessage(res, [{ type: "text", text: "agent finished" }], "end_turn", {
+        start: { input_tokens: 0, output_tokens: 0 },
+        delta: { input_tokens: 1234, output_tokens: 56 },
+        holdEndMs: Number(process.env.MOCK_HOLD_END_MS) || 40_000,
+      });
+      return;
+    }
     // Keep the agent running long enough for the panel to tick several times.
     setTimeout(() => streamMessage(res, [{ type: "text", text: "agent finished" }], "end_turn"), 40_000);
     return;

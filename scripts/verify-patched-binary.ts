@@ -280,7 +280,12 @@ function closingBraceIndex(text: string, openIndex: number): number {
 // opened in text[start, end) closes before end. Any `` ` `` or `/` refuses,
 // because templates, regexes and comments are where a scanner miscounts and a
 // miscount fails open; only plain quoted strings are skipped.
-function blocksOpenedBetweenClose(text: string, start: number, end: number): boolean {
+function blocksOpenedBetweenClose(
+  text: string,
+  start: number,
+  end: number,
+  allowOuterClose = true
+): boolean {
   let open = 0;
   for (let i = start; i < end; i += 1) {
     const char = text[i];
@@ -294,8 +299,9 @@ function blocksOpenedBetweenClose(text: string, start: number, end: number): boo
       if (i >= end) return false;
     } else if (char === "{") {
       open += 1;
-    } else if (char === "}" && open > 0) {
-      open -= 1;
+    } else if (char === "}") {
+      if (open > 0) open -= 1;
+      else if (!allowOuterClose) return false;
     }
   }
   return open === 0;
@@ -424,6 +430,16 @@ function disabledMarkerForCheck(check: Check): RegExp | string | undefined {
 // does not import the patcher); a test runs both on the same fixtures.
 function subagentStatusLineApplies(content: string): boolean {
   return content.includes("subagentStatusLine:()=>") && !content.includes("taskDecorations");
+}
+
+// background-agent-usage stops applying once upstream's tracker keeps only the
+// latest finalized response (2.1.328+). Kept in lockstep with
+// backgroundAgentUsageApplicability in patch-claude-display.ts; a test runs both.
+function backgroundAgentUsageApplies(content: string): boolean {
+  return (
+    /\{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0[,}]/.test(content) ||
+    !/\{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0[,}]/.test(content)
+  );
 }
 
 const CHECKS: Check[] = [
@@ -1092,7 +1108,9 @@ const CHECKS: Check[] = [
   {
     id: "background-agent-usage",
     kind: "custom",
+    disabledMarker: /__calicoTrackAgentUsage|__calicoRefreshAgentUsage/,
     describe: "background agent tracker accounts terminal stream usage by response id",
+    applies: backgroundAgentUsageApplies,
     run: (content: string): string | null => {
       const trackHelper =
         'function __calicoTrackAgentUsage(e,t,r,n){if(!t||typeof t!=="object")return;let o=["input_tokens","cache_creation_input_tokens","cache_read_input_tokens"].some((s)=>typeof t[s]==="number"),i=(t.input_tokens??0)+(t.cache_creation_input_tokens??0)+(t.cache_read_input_tokens??0);if(o&&(n||i>0))e.latestInputTokens=i;let s=typeof t.output_tokens==="number"&&Number.isFinite(t.output_tokens)?Math.max(0,t.output_tokens):0;if(r==null){if(s>0)e.cumulativeOutputTokens+=s;return}let a=e.responseOutputTokens.get(r)??0;if(s>a)e.cumulativeOutputTokens+=s-a;if(s>a||!e.responseOutputTokens.has(r))e.responseOutputTokens.set(r,Math.max(a,s))}';
@@ -1401,7 +1419,7 @@ const CHECKS: Check[] = [
         // 2.1.323 adds a callback argument to the inner content builder; both
         // argument lists accept arguments nested two parentheses deep
         // (batchCallArgs, same string as the patcher's).
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.[^{},]*\\{[^{}]*\\})*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.(?:[^{},]*\\{[^{}]*\\}|${identifier}\\(${batchParenRun}\\)))*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1539,11 +1557,11 @@ const CHECKS: Check[] = [
       }
       const aggregationIndex = canonicalStart + (aggregationMatches[0].index ?? -1);
 
-      // Statement form, or 2.1.284's `if` form with upstream's condition and
-      // body re-emitted after the copies. Paired, not crossed.
+      // Statement form, 2.1.284's `if` form, or 2.1.328's block form, with
+      // upstream's condition and body re-emitted after the copies.
       const cloneSyncCopies = `\\2\\.message\\.usage=\\1\\.message\\.usage,\\2\\.message\\.stop_reason=\\1\\.message\\.stop_reason,\\2\\.message\\.stop_details=\\1\\.message\\.stop_details,\\2\\.__calicoUsageState=\\1\\.__calicoUsageState`;
       const cloneSyncPattern = new RegExp(
-        `for\\(let\\{src:(${identifier}),dst:(${identifier})\\}of (${identifier})\\)(?:${cloneSyncCopies};|if\\(${cloneSyncCopies},(?:[^()]|\\([^()]*\\))*\\)[^;{}]*;)`,
+        `for\\(let\\{src:(${identifier}),dst:(${identifier})\\}of (${identifier})\\)(?:${cloneSyncCopies};|if\\(${cloneSyncCopies},(?:[^()]|\\([^()]*\\))*\\)[^;{}]*;|\\{if\\(${cloneSyncCopies},(?:[^()]|\\([^()]*\\))*\\)[^;{}]*;[^{}]*\\})`,
         "g"
       );
       const cloneSyncMatches = [...content.matchAll(cloneSyncPattern)];
@@ -1554,6 +1572,21 @@ const CHECKS: Check[] = [
       const cloneSource = cloneSync[1];
       const cloneDestination = cloneSync[2];
       const cloneArray = cloneSync[3];
+      // The loop walks rows after the rewrite, so upstream's condition, body and
+      // block rest must reach the message through `.message.`; one left as `X.`
+      // reads the row and silently copies nothing (2.1.284 context_management,
+      // 2.1.328 pausedResponses). The head `for(…)` is the only bare use.
+      const cloneSyncLoopBody = cloneSync[0].slice(
+        cloneSync[0].indexOf(")", cloneSync[0].indexOf("}of ")) + 1
+      );
+      const cloneLocals = [cloneSource, cloneDestination].map(escapeRegExp).join("|");
+      if (
+        new RegExp(
+          `(?<![\\w$.])(?:${cloneLocals})(?![\\w$])(?!\\.(?:message\\.|__calicoUsageState(?![\\w$])))`
+        ).test(cloneSyncLoopBody)
+      ) {
+        return "clone-sync loop reads a row local other than through .message or __calicoUsageState";
+      }
       // No name-based aliasing check here. It was a proxy for "the clone list
       // is not the terminal list", it is not sound across a minified bundle
       // (2.1.261 reuses one name for both), and lexical scope cannot be
@@ -1677,8 +1710,14 @@ const CHECKS: Check[] = [
         !terminalSegment.includes(`${terminalLoopLocal}.message.usage=${usageLocal}`) ||
         !terminalSegment.includes(`${terminalLoopLocal}.message.stop_reason=${stopReasonLocal}`) ||
         !terminalSegment.includes(`${terminalLoopLocal}.message.stop_details=${rawEventLocal}.delta.stop_details??null`) ||
-        terminalSegment.includes("=>") ||
-        terminalSegment.includes("function ") ||
+        // The loop sits in the message_delta block itself (see
+        // terminalCommitIsDirect in patch-claude-display.ts).
+        !blocksOpenedBetweenClose(
+          content,
+          aggregationIndex + 'case"message_delta":{'.length,
+          terminalIndex,
+          false
+        ) ||
         terminalSegment.includes('case"message_stop"') ||
         terminalSegment.includes("onStreamingThinking")
       ) {
@@ -1687,7 +1726,7 @@ const CHECKS: Check[] = [
 
       const cloneSyncIndex = cloneSync.index ?? -1;
       const cloneEventPattern = new RegExp(
-        `if\\((${identifier})\\.type==="stream_event"&&\\1\\.event\\.type==="message_delta"\\)`,
+        `if\\((${identifier})\\.type==="stream_event"&&\\1\\.event\\.type==="message_delta"\\)\\{`,
         "g"
       );
       const cloneEventMatches = [...content.matchAll(cloneEventPattern)].filter(
@@ -1697,14 +1736,15 @@ const CHECKS: Check[] = [
       );
       const cloneEvent = cloneEventMatches.at(-1);
       const cloneEventIndex = cloneEvent?.index ?? -1;
-      const cloneDirectSegment =
-        cloneEventIndex === -1 ? "" : content.slice(cloneEventIndex, cloneSyncIndex);
       if (
         cloneEventIndex === -1 ||
-        cloneSyncIndex - cloneEventIndex > 300 ||
         cloneEvent?.[1] !== registeredSource ||
-        cloneDirectSegment.includes("=>") ||
-        cloneDirectSegment.includes("function ")
+        !blocksOpenedBetweenClose(
+          content,
+          cloneEventIndex + cloneEvent[0].length,
+          cloneSyncIndex,
+          false
+        )
       ) {
         return "clone source is not the downstream message_delta event being synchronized";
       }
@@ -2853,10 +2893,14 @@ const CHECKS: Check[] = [
         .map((m) => m[1])
         .filter((name) => pModule.includes(`(){return ${name}()!==null}`));
       const shimAlternatives = shimNames.map((name) => name.replace(/\$/g, "\\$")).join("|") || "(?!)";
+      // 2.1.295 tests the host flag inline; 2.1.329 reads it into a local and
+      // tests that (`let e=s.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST;if(!Oe(e)&&e!=="managed")`).
+      // Paired with the gate pattern in patchDisableOfficialUpdater.
+      const hostTest = `(?:if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)|let ${identifier}=${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST;if\\([^{};]*\\))`;
       const shimReads = (
         pModule.match(
           new RegExp(
-            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)` +
+            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;${hostTest}` +
               `\\{let (${identifier})=(?:${shimAlternatives})\\(\\);return \\1!==null&&\\1\\.type!=="calico"\\}`,
             "g"
           )
@@ -2873,7 +2917,7 @@ const CHECKS: Check[] = [
       const residualHostReads = (
         pModule.match(
           new RegExp(
-            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;if\\(!${identifier}\\.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST\\)return ${identifier}\\(\\);|` +
+            `\\.FORCE_AUTOUPDATE_PLUGINS\\)return!1;${hostTest}return ${identifier}\\(\\);|` +
               `if\\(${escapedPredicate}\\(!1\\)!==null\\)return!0;`,
             "g"
           )
@@ -3250,6 +3294,7 @@ module.exports = {
   evaluateDisabledPatchModule,
   evaluatePatchModule,
   subagentStatusLineApplies,
+  backgroundAgentUsageApplies,
 };
 
 if (require.main === module) {

@@ -281,6 +281,55 @@ test("2.1.284 if-form clone sync still copies context_management onto the clone 
   assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
 });
 
+// 2.1.328 gave the sync a block and appended a pausedResponses copy, and put an
+// expression-bodied arrow in the message_delta case ahead of the terminal loop.
+function blockSyncFixture(rest = "if(_i.pausedResponses!==void 0)Ii.pausedResponses=_i.pausedResponses") {
+  return contextManagementSyncFixture()
+    .replace(
+      "if(Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details,_i.context_management!==void 0)Ii.context_management=_i.context_management;",
+      `{if(Ii.usage=_i.usage,Ii.stop_reason=_i.stop_reason,Ii.stop_details=_i.stop_details,_i.context_management!==void 0)Ii.context_management=_i.context_management;${rest}}`
+    )
+    .replace('an.message.context_management="cm";', 'an.message.context_management="cm";an.message.pausedResponses=["p"];')
+    .replace("pn=xAe(pn,ar.usage);for(let Ou of _r)", "pn=xAe(pn,ar.usage);[].filter((q)=>q);for(let Ou of _r)");
+}
+
+test("2.1.328 block-form clone sync still copies pausedResponses onto the clone message", () => {
+  const source = blockSyncFixture();
+  assert.match(source, /\{if\(Ii\.usage=/);
+  assert.match(source, /\[\]\.filter\(\(q\)=>q\);for\(let Ou/);
+  const { context, result } = loadCommittedFixture(source);
+
+  const clones = context.query(usage(333, 44), "tool_use", true, usage(333, 44), true);
+  for (const clone of clones) {
+    assert.equal(clone.message.context_management, "cm");
+    assert.deepEqual([...clone.message.pausedResponses], ["p"]);
+    assert.equal(clone.__calicoUsageState.committed, true);
+  }
+  assert.deepEqual(readStatuslineUsage(context, clones), usage(333, 44));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+test("verifier rejects a block-form sync whose condition or rest still reads the row", () => {
+  const { result } = loadCommittedFixture(blockSyncFixture());
+  for (const [from, to] of [
+    ["_i.message.pausedResponses!==void 0", "_i.pausedResponses!==void 0"],
+    ["Ii.message.pausedResponses=_i.message.pausedResponses", "Ii.pausedResponses=_i.pausedResponses"],
+    ["_i.message.context_management!==void 0", "_i.context_management!==void 0"],
+  ]) {
+    assert.equal(result.content.split(from).length, 2, from);
+    const broken = result.content.replace(from, to);
+    assert.match(
+      evaluatePatchModule("statusline-committed-usage", broken),
+      /reads a row local other than through \.message/,
+      to
+    );
+  }
+});
+
+test("a block-form sync whose rest uses a loop local other than by member access is not touched", () => {
+  assert.equal(patchStatuslineCommittedUsage(blockSyncFixture("log(_i)")).patched, 0);
+});
+
 test("an if-form sync that uses a loop local other than by member access is not touched", () => {
   const source = contextManagementSyncFixture("_i.context_management!==void 0&&typeof _i!==void 0");
   assert.equal(patchStatuslineCommittedUsage(source).patched, 0);
@@ -587,6 +636,20 @@ test("accepts a spread between the message and batchToolUses", () => {
 
   assert.equal(result.patched, 6);
   assert.equal(completed[0].thinkingDurationMs, "high");
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+// 2.1.329 added a call-valued spread there: `...iBn(_f,ie.agentId),`.
+test("accepts a call spread between the message and batchToolUses", () => {
+  const source = batchCommittedUsageFixture().replace(
+    "content:Ct},...Bt.length>0&&",
+    "content:Ct},...Ie!==void 0&&{thinkingDurationMs:Ie},...OG(Ie,i.agentId),...Bt.length>0&&"
+  );
+  assert.notEqual(source, batchCommittedUsageFixture());
+
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
   assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
   assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
 });

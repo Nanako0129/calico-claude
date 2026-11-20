@@ -5,10 +5,12 @@ const vm = require("node:vm");
 const {
   patchBackgroundAgentUsage,
   blocksOpenedBetweenClose: patcherBlocksClose,
+  backgroundAgentUsageApplicability,
 } = require("../patch-claude-display.ts");
 const {
   evaluatePatchModule,
   blocksOpenedBetweenClose: verifierBlocksClose,
+  backgroundAgentUsageApplies,
 } = require("../scripts/verify-patched-binary.ts");
 
 const fixture = `
@@ -505,6 +507,45 @@ test("block check: closed callbacks pass, anything still open at the site fails"
     const end = source.indexOf("@");
     assert.equal(patcherBlocksClose(source, 0, end), expected, `patcher: ${source}`);
     assert.equal(verifierBlocksClose(source, 0, end), expected, `verifier: ${source}`);
+  }
+});
+
+test("strict mode also refuses a close of a block opened before the segment", () => {
+  const cases = [
+    ["a();if(b){c()}@", true],
+    ["[].filter((q)=>q);@", true], // an expression-bodied arrow opens no block
+    ["break}@", false], // the site left the enclosing block
+    ["}if(a){return}@", false],
+    ["if(a){@", false],
+  ];
+  for (const [source, expected] of cases) {
+    const end = source.indexOf("@");
+    assert.equal(patcherBlocksClose(source, 0, end, false), expected, `patcher: ${source}`);
+    assert.equal(verifierBlocksClose(source, 0, end, false), expected, `verifier: ${source}`);
+  }
+});
+
+// Reconstructed from 2.1.328 (names kept): the tracker keeps only the latest
+// finalized response, so there is no running output total to double-count.
+const finalizedTrackerFixture =
+  "function Wzr(){return{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0,recentActivities:[],seenToolUseIds:new Set}}" +
+  "function Gzr(e){return e.latestInputTokens+e.latestOutputTokens}" +
+  'function u7n(e,o){if(o.type==="response_start")e.latestInputTokens=Gzr(e);e.latestInputTokens=o.promptTokens||e.latestInputTokens,e.latestOutputTokens=o.outputTokens}';
+
+test("2.1.328 finalized-response tracker: module skips, patcher and verifier agree", () => {
+  const result = patchBackgroundAgentUsage(finalizedTrackerFixture);
+  assert.equal(result.skipped, true);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, finalizedTrackerFixture);
+  for (const [source, applies] of [
+    [fixture, true],
+    [finalizedTrackerFixture, false],
+    ["function x(){}", true], // neither shape: still applies, so drift fails loudly
+    [`${finalizedTrackerFixture}${fixture}`, true], // an old tracker anywhere keeps it on
+    [`${finalizedTrackerFixture}x.cumulativeOutputTokens=1;`, false], // an unrelated use does not
+  ]) {
+    assert.equal(backgroundAgentUsageApplicability(source).applies, applies, `patcher: ${source.slice(0, 40)}`);
+    assert.equal(backgroundAgentUsageApplies(source), applies, `verifier: ${source.slice(0, 40)}`);
   }
 });
 

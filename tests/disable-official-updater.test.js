@@ -458,6 +458,36 @@ test("2.1.295 all or nothing: a gate without the direct host-pin read is left un
   assert.equal(result.content, input);
 });
 
+// 2.1.329 reads the host flag into a local and tests its value:
+//   let e=s.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST;if(!Oe(e)&&e!=="managed")return bje();
+function hostPinModule329(n) {
+  return hostPinModule(n).replace(
+    `if(!${n.env}.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST)return ${n.W}();`,
+    `let h=${n.env}.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST;if(!${n.parse}(h)&&h!=="managed")return ${n.W}();`
+  );
+}
+
+test("2.1.329 host-flag local: updater disabled, plugin auto-update kept on both gate paths", () => {
+  const n = HOST_NAMES;
+  const source = hostPinModule329(n);
+  assert.notEqual(source, hostPinModule(n));
+  const result = patchDisableOfficialUpdater(`x()${BOUNDARY}${source}${BOUNDARY}suffix()`);
+  assert.equal(result.patched, 1);
+  const module = result.content.split(BOUNDARY)[1];
+  const free = hostBehaviour(module, n);
+  assert.equal(free.updaterDisabled, true);
+  assert.equal(free.pluginsDisabled, false);
+  const pinned = hostBehaviour(module, n, { CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1" });
+  assert.equal(pinned.pluginsDisabled, false);
+  const pinSkip = hostBehaviour(module, n, { CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1" }, "pinned");
+  assert.equal(pinSkip.pluginsDisabled, true);
+
+  const withCommands = patchDisableOfficialUpdater(`${updateCommand()};${installCommand()}`).content;
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  assert.equal(check(`${withCommands}${result.content}`), null);
+  assert.match(check(`${withCommands}x()${BOUNDARY}${source}${BOUNDARY}suffix()`), /host-pin plugin gate not rewritten/);
+});
+
 test("2.1.295 verifier accepts the patched module and rejects a half-patched gate", () => {
   const check = (content) => evaluatePatchModule("disable-official-updater", content);
   const { result } = hostPatched();

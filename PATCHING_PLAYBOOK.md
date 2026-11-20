@@ -294,6 +294,24 @@ Likely break signs:
 
 ### `background-agent-usage`
 
+Applies through 2.1.327 only. 2.1.328 replaced the tracker
+(`{toolUseCount:0,latestInputTokens:0,latestOutputTokens:0,…}`): the agent runner now passes
+`message_start` usage as `response_start` and terminal `message_delta` usage as `tokens` through
+`onStreamTokenEstimate`, forcing an emit at `message_stop`, and the assistant-wrapper path assigns
+`latestOutputTokens` from finalized usage only. Nothing can be summed twice any more, so
+`backgroundAgentUsageApplicability` skips the module when the new tracker initialiser is present
+and the old `{toolUseCount:0,latestInputTokens:0,cumulativeOutputTokens:0…}` one is not (keyed on
+shape, not version; an unrelated `cumulativeOutputTokens` elsewhere does not count), and the
+verifier confirms the helpers are absent. Runtime check:
+`MOCK_AGENT_USAGE=gateway bash tools/local-verify/subagent-row.sh <binary>` sends 0/0 at
+`message_start` and 1234/56 only in `message_delta`, then holds the connection open for 40 s;
+2.1.329's agent row reported `tokenCount` 1290 (the subagentStatusLine stdin) while running.
+Patched 2.1.327 stays at 3 (the streamed text estimate) while the connection is open, because
+its tracker reads usage from the assistant message, which is yielded once the stream closes:
+with `MOCK_HOLD_END_MS=2000` its row went from 3 while running to 1293 on completion
+(1234 input + 56 output + the 3-token streamed estimate). 2.1.329 under the same timing showed
+1290 both while running and on completion.
+
 Intent:
 
 - keep the background agent row's token count synchronized with finalized GPT usage when an
@@ -550,6 +568,18 @@ Source of truth:
   (`requestId:Xu??void 0,...qIo(Nm,tS,NC.changes),requestedModel:…`). That run now accepts plain
   `name:value` fields and `...fn(…)` spreads, in the patcher and the verifier alike
   (the spread's arguments share `batchParenRun` with `batchCallArgs`, two parentheses deep)
+- Claude Code 2.1.329 put a spread call between `content` and `batchToolUses`
+  (`...iBn(_f,ie.agentId),`); that run accepts `...fn(…)` with the same `batchParenRun`
+- Claude Code 2.1.328 gave the clone sync a block with a `pausedResponses` copy after the `if`
+  (`for(let{src:Me,dst:ot}of Tt){if(ot.usage=Me.usage,…)…;if(Me.pausedResponses!==void 0)…}`).
+  The rest of the block is re-emitted with `X.` rewritten to `X.message.`, like the condition
+  and body. It also put an expression-bodied arrow in the `message_delta` case
+  (`B(fk,(vm)=>jf.has(vm))`), which failed the old `=>` text scan. "The commit is direct" is now
+  `blocksOpenedBetweenClose(…, false)` from inside the case block (terminal loop) and from inside
+  the stream-event block (clone sync): every block opened after the start closes before the loop
+  and none opened before it does. A `for` statement cannot sit in an expression-bodied arrow, so
+  that covers callbacks too. The verifier's 300-character limit between the event test and the
+  clone sync was a stand-in for the same property and is gone
 - compact-tokens-saved: 2.1.324 inserts `attachments:[…]` between the result spread and
   `userDisplayMessage`. Anything there (fields, spreads, one level of braces) is re-emitted
   verbatim; one or more call sites are patched, as before
