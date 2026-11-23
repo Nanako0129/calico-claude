@@ -520,7 +520,19 @@ test("2.1.331 defaulted parameters: updater disabled, plugin auto-update kept on
   const withCommands = patchDisableOfficialUpdater(`${updateCommand()};${installCommand()}`).content;
   const check = (content) => evaluatePatchModule("disable-official-updater", content);
   assert.equal(check(`${withCommands}${result.content}`), null);
-  assert.match(check(`${withCommands}x()${BOUNDARY}${source}${BOUNDARY}suffix()`), /predicate|host-pin/);
+  assert.match(check(`${withCommands}x()${BOUNDARY}${source}${BOUNDARY}suffix()`), /predicate does not end with the Calico reason/);
+});
+
+// P present but not rewritten must refuse the whole module, even when the
+// update and install commands still match: 2.1.329 and 2.1.331 each patched
+// 2 of 3 and --assert-all passed.
+test("an unrewritable P refuses the whole module, commands included", () => {
+  const n = HOST_NAMES;
+  const source = hostPinModule331(n).replace(`function ${n.P}(e,f=!1){`, `function ${n.P}(e,f=Hx()){`);
+  const input = `${updateCommand()};${installCommand()}x()${BOUNDARY}${source}${BOUNDARY}suffix()`;
+  const result = patchDisableOfficialUpdater(input);
+  assert.equal(result.patched, 0);
+  assert.equal(result.content, input);
 });
 
 test("2.1.295 verifier accepts the patched module and rejects a half-patched gate", () => {

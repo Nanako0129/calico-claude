@@ -3116,6 +3116,7 @@ function patchSelfNameInUserListing(content) {
 // reads P twice, once through W and once directly as `P(!1)`. Both reads are
 // rewritten to ignore the Calico reason; leaving the direct one would silently
 // disable plugin updates on pinned hosts. See patchDisableOfficialUpdater.
+// (2.1.331 gives the shim a defaulted parameter; W still calls it with none.)
 //
 // These rewrites happen inside P's own Bun module or none do. A build
 // with P rewritten but G untouched would silently disable plugin updates, and
@@ -3170,6 +3171,8 @@ function patchDisableOfficialUpdater(content) {
   //
   // Both parameter lists accept identifiers with an optional default that holds
   // no call, brace or comma. The wrapper still calls the shim with no arguments.
+  // Ceiling: a default with a call, a comma or braces (`n=Hx()`) does not match
+  // P; the predicate guard at the end of this function then reports zero.
   const paramList = `(?:${identifier}(?:=[^,(){}]*)?(?:,${identifier}(?:=[^,(){}]*)?)*)`;
   const predicateStart = new RegExp(
     `function (${identifier})\\((${paramList})?\\)\\{if\\((${identifier})\\.DISABLE_UPDATES\\)` +
@@ -3229,8 +3232,9 @@ function patchDisableOfficialUpdater(content) {
     // formatter case are the same edit either way.
     const gateEdits = [];
     if (predicateParam !== undefined) {
-      // More than one zero-argument function may return P(…); the shim is the
-      // one the `!==null` wrapper calls.
+      // More than one function may return P(…); the shim is the one the
+      // `!==null` wrapper calls with no arguments (its own parameters, if any,
+      // have defaults: 2.1.331 `z5n(e=!1)`).
       const shimPattern = new RegExp(
         `function (${identifier})\\(${paramList}?\\)\\{return ${escape(predicateName)}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
         "g"
@@ -3303,6 +3307,8 @@ function patchDisableOfficialUpdater(content) {
     );
     patched += 1;
   }
+  const predicatePatched = patched;
+  const predicateCandidates = candidates;
 
   // Spliced back to front with slices, never String#replace: minified names
   // may contain `$`, which a replacement string would read as a pattern.
@@ -3399,6 +3405,14 @@ function patchDisableOfficialUpdater(content) {
     .length;
   if (leftover > 0) {
     return { content, candidates: candidates + leftover, patched: 0 };
+  }
+  // Same for P: its first statement is in the bundle but P was not rewritten.
+  // Without this the command rewrites alone kept the count above zero and
+  // --assert-all passed a build whose updater still ran: 2.1.329 (gate drift)
+  // and 2.1.331 (defaulted parameters) each patched 2 of 3, caught only by the
+  // verifier.
+  if (predicatePatched === 0 && /return\{type:"env",envVar:"DISABLE_UPDATES"\}/.test(content)) {
+    return { content, candidates: candidates + (predicateCandidates === 0 ? 1 : 0), patched: 0 };
   }
 
   return { content: output, candidates, patched };
@@ -4299,9 +4313,20 @@ function batchWrapperContentIsBuilderOutput(text, builderContent, messageSource)
   if (!message) return false;
   const local = message[1];
   if (local === builderContent) return true;
-  return new RegExp(
-    `\\{content:${escapeRegExp(local)}(?:,${I}:${I})*\\}=${I}\\(${escapeRegExp(builderContent)},`
-  ).test(text.slice(0, message.index));
+  // `content:X` anywhere in the pattern, the builder content as the call's
+  // first argument; X may not be bound again between there and the message.
+  const before = text.slice(0, message.index);
+  const destructure = new RegExp(
+    `\\{(?:[^{}]*,)?content:${escapeRegExp(local)}(?:,[^{}]*)?\\}=${I}\\(${escapeRegExp(builderContent)}[,)]`,
+    "g"
+  );
+  const found = [...before.matchAll(destructure)].at(-1);
+  if (!found) return false;
+  const after = before.slice((found.index ?? 0) + found[0].length);
+  const name = escapeRegExp(local);
+  const assigned = new RegExp(`(?<![\\w$.])${name}=(?!=)`);
+  const destructured = new RegExp(`\\{(?:[^{}]*[:,])?${name}(?=[,}])[^{}]*\\}=`);
+  return !assigned.test(after) && !destructured.test(after);
 }
 
 function patchStatuslineCommittedUsage(content) {

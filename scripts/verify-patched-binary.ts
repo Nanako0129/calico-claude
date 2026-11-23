@@ -463,9 +463,20 @@ function batchWrapperContentIsBuilderOutput(
   if (!message) return false;
   const local = message[1];
   if (local === builderContent) return true;
-  return new RegExp(
-    `\\{content:${escapeRegExp(local)}(?:,${I}:${I})*\\}=${I}\\(${escapeRegExp(builderContent)},`
-  ).test(text.slice(0, message.index));
+  // `content:X` anywhere in the pattern, the builder content as the call's
+  // first argument; X may not be bound again between there and the message.
+  const before = text.slice(0, message.index);
+  const destructure = new RegExp(
+    `\\{(?:[^{}]*,)?content:${escapeRegExp(local)}(?:,[^{}]*)?\\}=${I}\\(${escapeRegExp(builderContent)}[,)]`,
+    "g"
+  );
+  const found = [...before.matchAll(destructure)].at(-1);
+  if (!found) return false;
+  const after = before.slice((found.index ?? 0) + found[0].length);
+  const name = escapeRegExp(local);
+  const assigned = new RegExp(`(?<![\\w$.])${name}=(?!=)`);
+  const destructured = new RegExp(`\\{(?:[^{}]*[:,])?${name}(?=[,}])[^{}]*\\}=`);
+  return !assigned.test(after) && !destructured.test(after);
 }
 
 const CHECKS: Check[] = [
@@ -2900,8 +2911,9 @@ const CHECKS: Check[] = [
         "g"
       );
       const gateCount = (content.match(gate) ?? []).length;
-      // 2.1.295 form: P takes a parameter, the gate reads it through a
-      // zero-argument shim and again directly on the host-pin path. Both reads
+      // 2.1.295 form: P takes a parameter, the gate reads it through a shim
+      // called with no arguments (from 2.1.331 its parameter has a default) and
+      // again directly on the host-pin path. Both reads
       // must exclude the Calico reason, and neither original read may remain.
       // P's minified name collides with unrelated functions in other modules
       // (2.1.295: a path helper named `rA`), so the host-form counts read only
@@ -2912,8 +2924,9 @@ const CHECKS: Check[] = [
         pModuleStart === -1 ? 0 : pModuleStart,
         pModuleNext === -1 ? content.length : pModuleNext
       );
-      // The wrapper read must go through P's shim, the zero-argument function
-      // returning P(…) that a `!==null` wrapper calls.
+      // The wrapper read must go through P's shim, the function returning P(…)
+      // that a `!==null` wrapper calls with no arguments (2.1.331: the shim's
+      // own parameter has a default).
       const shimNames = [
         ...pModule.matchAll(
           new RegExp(

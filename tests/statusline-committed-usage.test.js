@@ -688,6 +688,11 @@ test("patcher and verifier agree on which wrapper content locals come from the b
     ["let{content:a,b:c}=f(x),w={message:{...m,content:q},", false],
     ["let{content:a,b:c}=f(x),w={message:{...other,content:a},", false],
     ["let{content:$$,b:c}=f(x),{content:$q,wire:v}=g($$,n),w={message:{...m,content:$q},", true],
+    ["let{content:a,b:c}=f(x),{wire:v,content:q}=g(a,n),w={message:{...m,content:q},", true],
+    ["let{content:a,b:c}=f(x),{content:q,wire}=g(a),w={message:{...m,content:q},", true],
+    ["let{content:a,b:c}=f(x),{content:q,wire:v}=g(a,n),q=h(q),w={message:{...m,content:q},", false],
+    ["let{content:a,b:c}=f(x),{content:q,wire:v}=g(a,n),{content:q}=h(z),w={message:{...m,content:q},", false],
+    ["let{content:a,b:c}=f(x),{content:q,wire:v}=g(a,n),k=q==null,w={message:{...m,content:q},", true],
   ];
   for (const [text, expected] of cases) {
     const builder = /content:([\w$]+),b:/.exec(text)[1];
@@ -699,6 +704,15 @@ test("patcher and verifier agree on which wrapper content locals come from the b
 test("a wrapper content local not derived from the builder output is not the canonical wrapper", () => {
   const source = redestructuredBatchFixture().replace("=Gdr(Ct,n)", "=Gdr(Zr,n)");
   assert.equal(patchStatuslineCommittedUsage(source).patched, 0);
+
+  // The verifier refuses the same wrapper on its full path: patch the good
+  // fixture, then point its re-destructure at the wrong source.
+  const { result } = loadCommittedFixture(redestructuredBatchFixture());
+  assert.equal(result.content.split("=Gdr(Ct,n)").length, 2);
+  assert.match(
+    evaluatePatchModule("statusline-committed-usage", result.content.replace("=Gdr(Ct,n)", "=Gdr(Zr,n)")),
+    /expected 1 canonical wrapper-owned usage cell, found 0/
+  );
 });
 
 test("preserves the 2.1.212 effort metadata wrapper", () => {
