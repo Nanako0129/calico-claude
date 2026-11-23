@@ -464,7 +464,11 @@ function batchWrapperContentIsBuilderOutput(
   const local = message[1];
   if (local === builderContent) return true;
   // `content:X` anywhere in the pattern, the builder content as the call's
-  // first argument; X may not be bound again between there and the message.
+  // first argument. Between there and the message X may not appear at all:
+  // every way to rebind it (`X=`, `X+=`, `[X]=`, `{...X}=`, a nested pattern)
+  // has to name it, so refusing any mention covers them without listing
+  // forms. A harmless read of X there also refuses, which is a loud zero, not
+  // a wrong patch (2.1.331 has none: `…=Gdr(rp,…),Bg=…,GM=…,nb=…,Yy={message:`).
   const before = text.slice(0, message.index);
   const destructure = new RegExp(
     `\\{(?:[^{}]*,)?content:${escapeRegExp(local)}(?:,[^{}]*)?\\}=${I}\\(${escapeRegExp(builderContent)}[,)]`,
@@ -473,10 +477,8 @@ function batchWrapperContentIsBuilderOutput(
   const found = [...before.matchAll(destructure)].at(-1);
   if (!found) return false;
   const after = before.slice((found.index ?? 0) + found[0].length);
-  const name = escapeRegExp(local);
-  const assigned = new RegExp(`(?<![\\w$.])${name}=(?!=)`);
-  const destructured = new RegExp(`\\{(?:[^{}]*[:,])?${name}(?=[,}])[^{}]*\\}=`);
-  return !assigned.test(after) && !destructured.test(after);
+  // Any mention counts except a member read (`o.X`); a spread (`...X`) counts.
+  return !new RegExp(`(?<![\\w$])(?<!(?<!\\.)\\.)${escapeRegExp(local)}(?![\\w$])`).test(after);
 }
 
 const CHECKS: Check[] = [
