@@ -570,6 +570,16 @@ Source of truth:
   (the spread's arguments share `batchParenRun` with `batchCallArgs`, two parentheses deep)
 - Claude Code 2.1.329 put a spread call between `content` and `batchToolUses`
   (`...iBn(_f,ie.agentId),`); that run accepts `...fn(…)` with the same `batchParenRun`
+- Claude Code 2.1.331 builds the message content from a second destructure of the builder
+  output (`{content:q_,wireToolInputs:ov}=Gdr(rp,g,…)`, then `content:q_`). The wrapper
+  pattern accepts any local there, and `batchWrapperContentIsBuilderOutput` (patcher and
+  verifier) requires it to be the builder's `content` or a `{content:X,…}=fn(<content>,`
+  destructure ahead of the message
+- disable-official-updater: 2.1.331 defaulted a second parameter of P (`my(e,n=!1)`) and the
+  shim's parameter (`z5n(e=!1)`). Both parameter lists accept identifiers with an optional
+  default that holds no call, brace or comma; the wrapper still calls the shim with no
+  arguments. Before the fix 2.1.331 patched 2 of 3 candidates, which `--assert-all` lets
+  through (it fails only at zero) and the verifier rejected
 - Claude Code 2.1.328 gave the clone sync a block with a `pausedResponses` copy after the `if`
   (`for(let{src:Me,dst:ot}of Tt){if(ot.usage=Me.usage,…)…;if(Me.pausedResponses!==void 0)…}`).
   The rest of the block is re-emitted with `X.` rewritten to `X.message.`, like the condition

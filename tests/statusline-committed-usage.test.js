@@ -3,10 +3,12 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const {
+  batchWrapperContentIsBuilderOutput: patcherContentCheck,
   patchCustomContextWindows,
   patchStatuslineCommittedUsage,
 } = require("../patch-claude-display.ts");
 const {
+  batchWrapperContentIsBuilderOutput: verifierContentCheck,
   evaluatePatchModule,
 } = require("../scripts/verify-patched-binary.ts");
 
@@ -652,6 +654,51 @@ test("accepts a call spread between the message and batchToolUses", () => {
   const completed = context.query(usage(210, 31), "end_turn");
   assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
   assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+// 2.1.331 re-destructures the builder content before the message object:
+// `{content:q_,wireToolInputs:ov}=Gdr(rp,g,…)`, then `content:q_`.
+function redestructuredBatchFixture(source = committedUsageFixture) {
+  return batchCommittedUsageFixture(source)
+    .replace(
+      "function ZJr(e){return e}",
+      "function ZJr(e){return e}\nfunction Gdr(e,t){return{content:e,wireToolInputs:void 0}}"
+    )
+    .replace(
+      ",n),Kn={message:{...wo,content:Ct},",
+      ",n),{content:Qc,wireToolInputs:Wv}=Gdr(Ct,n),Kn={message:{...wo,content:Qc},"
+    );
+}
+
+test("matches the 2.1.331 wrapper whose content is re-destructured from the builder output", () => {
+  const source = redestructuredBatchFixture();
+  assert.match(source, /content:Qc\}/);
+  const { context, result } = loadCommittedFixture(source);
+  const completed = context.query(usage(210, 31), "end_turn");
+  assert.deepEqual(readStatuslineUsage(context, completed), usage(210, 31));
+  assert.equal(evaluatePatchModule("statusline-committed-usage", result.content), null);
+});
+
+test("patcher and verifier agree on which wrapper content locals come from the builder", () => {
+  const cases = [
+    ["let{content:a,b:c}=f(x),w={message:{...m,content:a},", true],
+    ["let{content:a,b:c}=f(x),{content:q,wire:v}=g(a,n),w={message:{...m,content:q},", true],
+    ["let{content:a,b:c}=f(x),{content:q}=g(a,n),w={message:{...m,content:q},", true],
+    ["let{content:a,b:c}=f(x),{content:q,wire:v}=g(z,n),w={message:{...m,content:q},", false],
+    ["let{content:a,b:c}=f(x),w={message:{...m,content:q},", false],
+    ["let{content:a,b:c}=f(x),w={message:{...other,content:a},", false],
+    ["let{content:$$,b:c}=f(x),{content:$q,wire:v}=g($$,n),w={message:{...m,content:$q},", true],
+  ];
+  for (const [text, expected] of cases) {
+    const builder = /content:([\w$]+),b:/.exec(text)[1];
+    assert.equal(patcherContentCheck(text, builder, "m"), expected, `patcher: ${text}`);
+    assert.equal(verifierContentCheck(text, builder, "m"), expected, `verifier: ${text}`);
+  }
+});
+
+test("a wrapper content local not derived from the builder output is not the canonical wrapper", () => {
+  const source = redestructuredBatchFixture().replace("=Gdr(Ct,n)", "=Gdr(Zr,n)");
+  assert.equal(patchStatuslineCommittedUsage(source).patched, 0);
 });
 
 test("preserves the 2.1.212 effort metadata wrapper", () => {

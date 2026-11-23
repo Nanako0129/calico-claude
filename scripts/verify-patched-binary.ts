@@ -442,6 +442,32 @@ function backgroundAgentUsageApplies(content: string): boolean {
   );
 }
 
+// The batch wrapper's message content is the builder's `content` local, or
+// (2.1.331+) a local re-destructured from a call that takes it first:
+//
+//   2.1.330  let{content:pp,…}=…;…,kS={message:{...Wg,content:pp},…
+//   2.1.331  let{content:rp,…}=…;…,{content:q_,wireToolInputs:ov}=Gdr(rp,g,…),…,
+//            Yy={message:{...Og,content:q_},…
+//
+// The regex accepts any local there; this check keeps it tied to the builder
+// output. Kept in lockstep with the copy in patch-claude-display.ts.
+function batchWrapperContentIsBuilderOutput(
+  text: string,
+  builderContent: string,
+  messageSource: string
+): boolean {
+  const I = "[A-Za-z_$][\\w$]*";
+  const message = new RegExp(
+    `\\{message:\\{\\.\\.\\.${escapeRegExp(messageSource)},content:(${I})\\}`
+  ).exec(text);
+  if (!message) return false;
+  const local = message[1];
+  if (local === builderContent) return true;
+  return new RegExp(
+    `\\{content:${escapeRegExp(local)}(?:,${I}:${I})*\\}=${I}\\(${escapeRegExp(builderContent)},`
+  ).test(text.slice(0, message.index));
+}
+
 const CHECKS: Check[] = [
   {
     id: "gateway-fast-mode",
@@ -1419,7 +1445,8 @@ const CHECKS: Check[] = [
         // 2.1.323 adds a callback argument to the inner content builder; both
         // argument lists accept arguments nested two parentheses deep
         // (batchCallArgs, same string as the patcher's).
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.(?:[^{},]*\\{[^{}]*\\}|${identifier}\\(${batchParenRun}\\)))*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+        // 2.1.331 re-destructures the content (batchWrapperContentIsBuilderOutput).
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:(?:\\1|${identifier})\\}(?:,\\.\\.\\.(?:[^{},]*\\{[^{}]*\\}|${identifier}\\(${batchParenRun}\\)))*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1435,12 +1462,14 @@ const CHECKS: Check[] = [
           effortCondition: match[11],
           effortProperty: match[12],
         })),
-        ...[...content.matchAll(batchWrapperPattern)].map((match) => ({
-          match,
-          local: match[10],
-          effortCondition: match[14],
-          effortProperty: match[15],
-        })),
+        ...[...content.matchAll(batchWrapperPattern)]
+          .filter((match) => batchWrapperContentIsBuilderOutput(match[0], match[1], match[9]))
+          .map((match) => ({
+            match,
+            local: match[10],
+            effortCondition: match[14],
+            effortProperty: match[15],
+          })),
       ];
       if (wrapperMatches.length !== 1) {
         return `expected 1 canonical wrapper-owned usage cell, found ${wrapperMatches.length}`;
@@ -2822,10 +2851,13 @@ const CHECKS: Check[] = [
       // must be the Calico reason and P must keep no null exit at all: a second
       // `return null` would be a path on which the updater still runs, which a
       // count of rewritten tails alone would not see.
+      // 2.1.331 defaults a second parameter of P and the shim's one; same
+      // parameter-list pattern as the patcher's paramList.
+      const paramList = `(?:${identifier}(?:=[^,(){}]*)?(?:,${identifier}(?:=[^,(){}]*)?)*)`;
       const starts = [
         ...content.matchAll(
           new RegExp(
-            `function (${identifier})\\((${identifier})?\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
+            `function (${identifier})\\((${paramList})?\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
               `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
             "g"
           )
@@ -2885,7 +2917,7 @@ const CHECKS: Check[] = [
       const shimNames = [
         ...pModule.matchAll(
           new RegExp(
-            `function (${identifier})\\(\\)\\{return ${escapedPredicate}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
+            `function (${identifier})\\(${paramList}?\\)\\{return ${escapedPredicate}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
             "g"
           )
         ),
@@ -3295,6 +3327,7 @@ module.exports = {
   evaluatePatchModule,
   subagentStatusLineApplies,
   backgroundAgentUsageApplies,
+  batchWrapperContentIsBuilderOutput,
 };
 
 if (require.main === module) {

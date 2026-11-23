@@ -488,6 +488,41 @@ test("2.1.329 host-flag local: updater disabled, plugin auto-update kept on both
   assert.match(check(`${withCommands}x()${BOUNDARY}${source}${BOUNDARY}suffix()`), /host-pin plugin gate not rewritten/);
 });
 
+// 2.1.331 defaults a second parameter of P and the shim's parameter:
+//   function z5n(e=!1){return my(He(process.env.DISABLE_AUTOUPDATER),e)}
+//   function my(e,n=!1){…}
+function hostPinModule331(n) {
+  return hostPinModule329(n)
+    .replace(
+      `function ${n.Q}(){return ${n.P}(${n.parse}(process.env.DISABLE_AUTOUPDATER))}`,
+      `function ${n.Q}(e=!1){return ${n.P}(${n.parse}(process.env.DISABLE_AUTOUPDATER),e)}`
+    )
+    .replace(`function ${n.P}(e){`, `function ${n.P}(e,f=!1){`); // the fixture body already declares `n`
+}
+
+test("2.1.331 defaulted parameters: updater disabled, plugin auto-update kept on both gate paths", () => {
+  const n = HOST_NAMES;
+  const source = hostPinModule331(n);
+  assert.match(source, new RegExp(`function ${n.P}\\(e,f=!1\\)`));
+  assert.match(source, new RegExp(`function ${n.Q}\\(e=!1\\)`));
+  const result = patchDisableOfficialUpdater(`x()${BOUNDARY}${source}${BOUNDARY}suffix()`);
+  assert.equal(result.patched, 1);
+  const module = result.content.split(BOUNDARY)[1];
+  const free = hostBehaviour(module, n);
+  assert.equal(free.reason.type, "calico");
+  assert.equal(free.updaterDisabled, true);
+  assert.equal(free.pluginsDisabled, false);
+  const pinned = hostBehaviour(module, n, { CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST: "1" });
+  assert.equal(pinned.pluginsDisabled, false);
+  const user = hostBehaviour(module, n, { DISABLE_UPDATES: "1" });
+  assert.equal(user.pluginsDisabled, true);
+
+  const withCommands = patchDisableOfficialUpdater(`${updateCommand()};${installCommand()}`).content;
+  const check = (content) => evaluatePatchModule("disable-official-updater", content);
+  assert.equal(check(`${withCommands}${result.content}`), null);
+  assert.match(check(`${withCommands}x()${BOUNDARY}${source}${BOUNDARY}suffix()`), /predicate|host-pin/);
+});
+
 test("2.1.295 verifier accepts the patched module and rejects a half-patched gate", () => {
   const check = (content) => evaluatePatchModule("disable-official-updater", content);
   const { result } = hostPatched();
