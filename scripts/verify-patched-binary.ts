@@ -442,6 +442,45 @@ function backgroundAgentUsageApplies(content: string): boolean {
   );
 }
 
+// The batch wrapper's message content is the builder's `content` local, or
+// (2.1.331+) a local re-destructured from a call that takes it first:
+//
+//   2.1.330  let{content:pp,…}=…;…,kS={message:{...Wg,content:pp},…
+//   2.1.331  let{content:rp,…}=…;…,{content:q_,wireToolInputs:ov}=Gdr(rp,g,…),…,
+//            Yy={message:{...Og,content:q_},…
+//
+// The regex accepts any local there; this check keeps it tied to the builder
+// output. Kept in lockstep with the copy in patch-claude-display.ts.
+function batchWrapperContentIsBuilderOutput(
+  text: string,
+  builderContent: string,
+  messageSource: string
+): boolean {
+  const I = "[A-Za-z_$][\\w$]*";
+  const message = new RegExp(
+    `\\{message:\\{\\.\\.\\.${escapeRegExp(messageSource)},content:(${I})\\}`
+  ).exec(text);
+  if (!message) return false;
+  const local = message[1];
+  if (local === builderContent) return true;
+  // `content:X` anywhere in the pattern, the builder content as the call's
+  // first argument. Between there and the message X may not appear at all:
+  // every way to rebind it (`X=`, `X+=`, `[X]=`, `{...X}=`, a nested pattern)
+  // has to name it, so refusing any mention covers them without listing
+  // forms. A harmless read of X there also refuses, which is a loud zero, not
+  // a wrong patch (2.1.331 has none: `…=Gdr(rp,…),Bg=…,GM=…,nb=…,Yy={message:`).
+  const before = text.slice(0, message.index);
+  const destructure = new RegExp(
+    `\\{(?:[^{}]*,)?content:${escapeRegExp(local)}(?:,[^{}]*)?\\}=${I}\\(${escapeRegExp(builderContent)}[,)]`,
+    "g"
+  );
+  const found = [...before.matchAll(destructure)].at(-1);
+  if (!found) return false;
+  const after = before.slice((found.index ?? 0) + found[0].length);
+  // Any mention counts except a member read (`o.X`); a spread (`...X`) counts.
+  return !new RegExp(`(?<![\\w$])(?<!(?<!\\.)\\.)${escapeRegExp(local)}(?![\\w$])`).test(after);
+}
+
 const CHECKS: Check[] = [
   {
     id: "gateway-fast-mode",
@@ -1419,7 +1458,8 @@ const CHECKS: Check[] = [
         // 2.1.323 adds a callback argument to the inner content builder; both
         // argument lists accept arguments nested two parentheses deep
         // (batchCallArgs, same string as the patcher's).
-        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.(?:[^{},]*\\{[^{}]*\\}|${identifier}\\(${batchParenRun}\\)))*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+        // 2.1.331 re-destructures the content (batchWrapperContentIsBuilderOutput).
+        `let\\{content:(${identifier}),batchToolUses:(${identifier})\\}=(${identifier})\\((${identifier})\\(\\[(${identifier})\\],(${identifier}),(${identifier})\\.agentId,\\{requestId:(${identifier})\\?\\?void 0,messageId:(${identifier})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifier})=\\{message:\\{\\.\\.\\.\\9,content:(?:\\1|${identifier})\\}(?:,\\.\\.\\.(?:[^{},]*\\{[^{}]*\\}|${identifier}\\(${batchParenRun}\\)))*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}(?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?,requestId:\\8\\?\\?void 0,(?:(?:${identifier}:${identifier}(?:\\.${identifier})*|\\.\\.\\.${identifier}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifier})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifier})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,__calicoUsageState:\\{committed:!1,usage:null\\},\\.\\.\\.(${identifier})&&\\{advisorModel:\\13\\},\\.\\.\\.(${identifier})!==void 0&&\\{effort:(${identifier})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
         "g"
       );
       const wrapperMatches = [
@@ -1435,12 +1475,14 @@ const CHECKS: Check[] = [
           effortCondition: match[11],
           effortProperty: match[12],
         })),
-        ...[...content.matchAll(batchWrapperPattern)].map((match) => ({
-          match,
-          local: match[10],
-          effortCondition: match[14],
-          effortProperty: match[15],
-        })),
+        ...[...content.matchAll(batchWrapperPattern)]
+          .filter((match) => batchWrapperContentIsBuilderOutput(match[0], match[1], match[9]))
+          .map((match) => ({
+            match,
+            local: match[10],
+            effortCondition: match[14],
+            effortProperty: match[15],
+          })),
       ];
       if (wrapperMatches.length !== 1) {
         return `expected 1 canonical wrapper-owned usage cell, found ${wrapperMatches.length}`;
@@ -2822,10 +2864,13 @@ const CHECKS: Check[] = [
       // must be the Calico reason and P must keep no null exit at all: a second
       // `return null` would be a path on which the updater still runs, which a
       // count of rewritten tails alone would not see.
+      // 2.1.331 defaults a second parameter of P and the shim's one; same
+      // parameter-list pattern as the patcher's paramList.
+      const paramList = `(?:${identifier}(?:=[^,(){}]*)?(?:,${identifier}(?:=[^,(){}]*)?)*)`;
       const starts = [
         ...content.matchAll(
           new RegExp(
-            `function (${identifier})\\((${identifier})?\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
+            `function (${identifier})\\((${paramList})?\\)\\{if\\(${identifier}\\.DISABLE_UPDATES\\)` +
               `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
             "g"
           )
@@ -2868,8 +2913,9 @@ const CHECKS: Check[] = [
         "g"
       );
       const gateCount = (content.match(gate) ?? []).length;
-      // 2.1.295 form: P takes a parameter, the gate reads it through a
-      // zero-argument shim and again directly on the host-pin path. Both reads
+      // 2.1.295 form: P takes a parameter, the gate reads it through a shim
+      // called with no arguments (from 2.1.331 its parameter has a default) and
+      // again directly on the host-pin path. Both reads
       // must exclude the Calico reason, and neither original read may remain.
       // P's minified name collides with unrelated functions in other modules
       // (2.1.295: a path helper named `rA`), so the host-form counts read only
@@ -2880,12 +2926,13 @@ const CHECKS: Check[] = [
         pModuleStart === -1 ? 0 : pModuleStart,
         pModuleNext === -1 ? content.length : pModuleNext
       );
-      // The wrapper read must go through P's shim, the zero-argument function
-      // returning P(…) that a `!==null` wrapper calls.
+      // The wrapper read must go through P's shim, the function returning P(…)
+      // that a `!==null` wrapper calls with no arguments (2.1.331: the shim's
+      // own parameter has a default).
       const shimNames = [
         ...pModule.matchAll(
           new RegExp(
-            `function (${identifier})\\(\\)\\{return ${escapedPredicate}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
+            `function (${identifier})\\(${paramList}?\\)\\{return ${escapedPredicate}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
             "g"
           )
         ),
@@ -3295,6 +3342,7 @@ module.exports = {
   evaluatePatchModule,
   subagentStatusLineApplies,
   backgroundAgentUsageApplies,
+  batchWrapperContentIsBuilderOutput,
 };
 
 if (require.main === module) {

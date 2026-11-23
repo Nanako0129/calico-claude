@@ -3116,6 +3116,7 @@ function patchSelfNameInUserListing(content) {
 // reads P twice, once through W and once directly as `P(!1)`. Both reads are
 // rewritten to ignore the Calico reason; leaving the direct one would silently
 // disable plugin updates on pinned hosts. See patchDisableOfficialUpdater.
+// (2.1.331 gives the shim a defaulted parameter; W still calls it with none.)
 //
 // These rewrites happen inside P's own Bun module or none do. A build
 // with P rewritten but G untouched would silently disable plugin updates, and
@@ -3162,8 +3163,19 @@ function patchDisableOfficialUpdater(content) {
   // the 2.1.295 spelling (the test itself is upstream's and is not rewritten):
   //
   //   let e=s.CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST;if(!Oe(e)&&e!=="managed")return bje();
+  //
+  // 2.1.331 gave P a second, defaulted parameter and the shim a defaulted one:
+  //
+  //   function z5n(e=!1){return my(He(process.env.DISABLE_AUTOUPDATER),e)}
+  //   function my(e,n=!1){if(s.DISABLE_UPDATES)…;let r=gDe();if(r&&!n)…;return null}
+  //
+  // Both parameter lists accept identifiers with an optional default that holds
+  // no call, brace or comma. The wrapper still calls the shim with no arguments.
+  // Ceiling: a default with a call, a comma or braces (`n=Hx()`) does not match
+  // P; the predicate guard at the end of this function then reports zero.
+  const paramList = `(?:${identifier}(?:=[^,(){}]*)?(?:,${identifier}(?:=[^,(){}]*)?)*)`;
   const predicateStart = new RegExp(
-    `function (${identifier})\\((${identifier})?\\)\\{if\\((${identifier})\\.DISABLE_UPDATES\\)` +
+    `function (${identifier})\\((${paramList})?\\)\\{if\\((${identifier})\\.DISABLE_UPDATES\\)` +
       `return\\{type:"env",envVar:"DISABLE_UPDATES"\\}`,
     "g"
   );
@@ -3220,10 +3232,11 @@ function patchDisableOfficialUpdater(content) {
     // formatter case are the same edit either way.
     const gateEdits = [];
     if (predicateParam !== undefined) {
-      // More than one zero-argument function may return P(…); the shim is the
-      // one the `!==null` wrapper calls.
+      // More than one function may return P(…); the shim is the one the
+      // `!==null` wrapper calls with no arguments (its own parameters, if any,
+      // have defaults: 2.1.331 `z5n(e=!1)`).
       const shimPattern = new RegExp(
-        `function (${identifier})\\(\\)\\{return ${escape(predicateName)}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
+        `function (${identifier})\\(${paramList}?\\)\\{return ${escape(predicateName)}\\((?:[^(){}]|\\([^(){}]*\\))*\\)\\}`,
         "g"
       );
       let shimName = null;
@@ -3294,6 +3307,8 @@ function patchDisableOfficialUpdater(content) {
     );
     patched += 1;
   }
+  const predicatePatched = patched;
+  const predicateCandidates = candidates;
 
   // Spliced back to front with slices, never String#replace: minified names
   // may contain `$`, which a replacement string would read as a pattern.
@@ -3390,6 +3405,14 @@ function patchDisableOfficialUpdater(content) {
     .length;
   if (leftover > 0) {
     return { content, candidates: candidates + leftover, patched: 0 };
+  }
+  // Same for P: its first statement is in the bundle but P was not rewritten.
+  // Without this the command rewrites alone kept the count above zero and
+  // --assert-all passed a build whose updater still ran: 2.1.329 (gate drift)
+  // and 2.1.331 (defaulted parameters) each patched 2 of 3, caught only by the
+  // verifier.
+  if (predicatePatched === 0 && /return\{type:"env",envVar:"DISABLE_UPDATES"\}/.test(content)) {
+    return { content, candidates: candidates + (predicateCandidates === 0 ? 1 : 0), patched: 0 };
   }
 
   return { content: output, candidates, patched };
@@ -4275,6 +4298,39 @@ function patchBackgroundAgentUsage(content) {
   return { content: output, candidates, patched: 4 };
 }
 
+// The batch wrapper's message content is the builder's `content` local, or
+// (2.1.331+) a local re-destructured from a call that takes it first:
+//
+//   2.1.330  let{content:pp,…}=…;…,kS={message:{...Wg,content:pp},…
+//   2.1.331  let{content:rp,…}=…;…,{content:q_,wireToolInputs:ov}=Gdr(rp,g,…),…,
+//            Yy={message:{...Og,content:q_},…
+//
+// The regex accepts any local there; this check keeps it tied to the builder
+// output. Mirrored in scripts/verify-patched-binary.ts; a test runs both.
+function batchWrapperContentIsBuilderOutput(text, builderContent, messageSource) {
+  const I = "[A-Za-z_$][\\w$]*";
+  const message = new RegExp(`\\{message:\\{\\.\\.\\.${escapeRegExp(messageSource)},content:(${I})\\}`).exec(text);
+  if (!message) return false;
+  const local = message[1];
+  if (local === builderContent) return true;
+  // `content:X` anywhere in the pattern, the builder content as the call's
+  // first argument. Between there and the message X may not appear at all:
+  // every way to rebind it (`X=`, `X+=`, `[X]=`, `{...X}=`, a nested pattern)
+  // has to name it, so refusing any mention covers them without listing
+  // forms. A harmless read of X there also refuses, which is a loud zero, not
+  // a wrong patch (2.1.331 has none: `…=Gdr(rp,…),Bg=…,GM=…,nb=…,Yy={message:`).
+  const before = text.slice(0, message.index);
+  const destructure = new RegExp(
+    `\\{(?:[^{}]*,)?content:${escapeRegExp(local)}(?:,[^{}]*)?\\}=${I}\\(${escapeRegExp(builderContent)}[,)]`,
+    "g"
+  );
+  const found = [...before.matchAll(destructure)].at(-1);
+  if (!found) return false;
+  const after = before.slice((found.index ?? 0) + found[0].length);
+  // Any mention counts except a member read (`o.X`); a spread (`...X`) counts.
+  return !new RegExp(`(?<![\\w$])(?<!(?<!\\.)\\.)${escapeRegExp(local)}(?![\\w$])`).test(after);
+}
+
 function patchStatuslineCommittedUsage(content) {
   const original = content;
   const identifierPattern = "[A-Za-z_$][\\w$]*";
@@ -4353,6 +4409,8 @@ function patchStatuslineCommittedUsage(content) {
   // read below do not move. 2.1.329 added a call-valued spread among them
   // (`...iBn(_f,ie.agentId),...Q_.length>0&&{batchToolUses:Q_}`), accepted
   // with the same batchParenRun as the spread call after requestId.
+  // 2.1.331 builds the message content from a second destructure of the
+  // builder output; see batchWrapperContentIsBuilderOutput.
   //
   // 2.1.295 added a member-valued field after requestRef
   // (`requestRef:nJ,requestedModel:X.model,...Nne(…)`), so the plain fields
@@ -4372,7 +4430,7 @@ function patchStatuslineCommittedUsage(content) {
   const batchParenRun = "(?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*";
   const batchCallArgs = `(?:,${batchParenRun})?`;
   const batchWrapperPattern = new RegExp(
-    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:\\1\\}(?:,\\.\\.\\.(?:[^{},]*\\{[^{}]*\\}|${identifierPattern}\\(${batchParenRun}\\)))*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
+    `let\\{content:(${identifierPattern}),batchToolUses:(${identifierPattern})\\}=(${identifierPattern})\\((${identifierPattern})\\(\\[(${identifierPattern})\\],(${identifierPattern}),(${identifierPattern})\\.agentId,\\{requestId:(${identifierPattern})\\?\\?void 0,messageId:(${identifierPattern})\\.id\\}${batchCallArgs}\\),\\6${batchCallArgs}\\)(?:[^{}]|\\{[^{}]*\\})*?,(${identifierPattern})=\\{message:\\{\\.\\.\\.\\9,content:(?:\\1|${identifierPattern})\\}(?:,\\.\\.\\.(?:[^{},]*\\{[^{}]*\\}|${identifierPattern}\\(${batchParenRun}\\)))*,\\.\\.\\.\\2\\.length>0&&\\{batchToolUses:\\2\\}((?:,[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*?),requestId:\\8\\?\\?void 0,(?:(?:${identifierPattern}:${identifierPattern}(?:\\.${identifierPattern})*|\\.\\.\\.${identifierPattern}\\(${batchParenRun}\\)),)*\\.\\.\\.(${identifierPattern})\\(\\7\\.querySource,\\7\\.spawnedBySkill,\\7\\.activeSkill,\\7\\.activeMcpServer,\\7\\.activeMcpTool\\),type:"assistant",uuid:(${identifierPattern})(?:\\.randomUUID)?\\(\\),timestamp:new Date\\(\\)\\.toISOString\\(\\),\\.\\.\\.!1,\\.\\.\\.(${identifierPattern})&&\\{advisorModel:\\14\\},\\.\\.\\.(${identifierPattern})!==void 0&&\\{effort:(${identifierPattern})\\}((?:,(?:\\.\\.\\.)?[^{},]*(?:\\{[^{}]*\\}[^{},]*)?)*)\\};`,
     "g"
   );
   // Two spellings of the terminal commit, paired rather than crossed. Through
@@ -4483,12 +4541,14 @@ function patchStatuslineCommittedUsage(content) {
     // Group 11 captures whatever upstream inserts between batchToolUses and
     // requestId (2.1.257: wireToolInputs + apiBlockIndex), which shifts the
     // trailing captures by one.
-    ...[...content.matchAll(batchWrapperPattern)].map((match) => ({
-      match,
-      local: match[10],
-      effortCondition: match[15],
-      effortProperty: match[16],
-    })),
+    ...[...content.matchAll(batchWrapperPattern)]
+      .filter((match) => batchWrapperContentIsBuilderOutput(match[0], match[1], match[9]))
+      .map((match) => ({
+        match,
+        local: match[10],
+        effortCondition: match[15],
+        effortProperty: match[16],
+      })),
   ];
   const wrapperMatch = wrapperMatches[0];
   const wrapperIndex = wrapperMatch?.match.index ?? -1;
@@ -7287,6 +7347,7 @@ module.exports = {
   CALICO_HEADER_FETCH,
   patchCompactBodyPolicy,
   patchBackgroundAgentUsage,
+  batchWrapperContentIsBuilderOutput,
   backgroundAgentUsageApplicability,
   blocksOpenedBetweenClose,
   patchStatuslineCommittedUsage,
