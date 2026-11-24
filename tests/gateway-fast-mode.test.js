@@ -807,3 +807,27 @@ test("description interpolation survives `$$` names and argument lists verbatim"
   assert.equal(native.wSs.description, "Toggle fast mode (<claude-opus-4-8>)");
   assert.equal(evaluatePatchModule("gateway-fast-mode", patched), null);
 });
+
+// 2.1.332 declares the dispatch record as a later declarator of a longer
+// `let` list (`let Le=f4t(),Fe={proto:Bp,…}`). The module went to 0 patched
+// while still finding all 6 candidates.
+test("2.1.332 dispatch record declared after another declarator", async (t) => {
+  const source = fixture.replace("let U={proto:nm", "let pre=n,U={proto:nm");
+  assert.notEqual(source, fixture);
+
+  const result = patchGatewayFastMode(source);
+  assert.equal(result.candidates, 6);
+  assert.equal(result.patched, 6);
+  assert.equal(evaluatePatchModule("gateway-fast-mode", result.content), null);
+
+  const { context } = runtime(t, {
+    source,
+    env: { REMORA_ACTIVE: "1", CLAUDE_CODE_EXTRA_BODY: "{}" },
+  });
+  const dispatch = await context.BF_(null, { BASE: "1" }, context.process.env);
+  assert.equal(
+    dispatch.env.CALICO_GATEWAY_FAST_STATE_FILE,
+    context.process.env.CALICO_GATEWAY_FAST_STATE_FILE
+  );
+
+});

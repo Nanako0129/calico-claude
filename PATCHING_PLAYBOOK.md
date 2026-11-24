@@ -580,6 +580,16 @@ Source of truth:
   default that holds no call, brace or comma; the wrapper still calls the shim with no
   arguments. Before the fix 2.1.331 patched 2 of 3 candidates, which `--assert-all` lets
   through (it fails only at zero) and the verifier rejected
+- gateway-fast-mode: 2.1.332 declares the worker dispatch record as a later declarator
+  (`let Le=f4t(),Fe={proto:Bp,…}`). The record pattern accepts `let ` or `,` before the name
+  (patcher and verifier); the record still has to end right at `},[,X]=await Promise.all(`
+- thinking-streaming: 2.1.332 passes the renderer an alias of the turn-stream selection,
+  `Mo=Oe===void 0?X:fs`, which is emptied while a waiting row (`waitingRow:Oe`) is shown. The
+  patcher follows a single `V=<cond>?X:<fallback>,` alias to the `streamingToolUses:V,` prop and
+  gates the injected prop on the same condition
+  (`streamingThinking:Oe===void 0?__cc_streamingThinking:null`); the verifier accepts that form.
+  Without it 2.1.332 patched 8 of 10 candidates and the verifier caught the missing renderer
+  parameter
 - Claude Code 2.1.328 gave the clone sync a block with a `pausedResponses` copy after the `if`
   (`for(let{src:Me,dst:ot}of Tt){if(ot.usage=Me.usage,…)…;if(Me.pausedResponses!==void 0)…}`).
   The rest of the block is re-emitted with `X.` rewritten to `X.message.`, like the condition

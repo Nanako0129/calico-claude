@@ -841,7 +841,8 @@ const CHECKS: Check[] = [
         return -1;
       }
       const dispatchRecordPattern = new RegExp(
-        `let (${identifier})=\\{proto:${identifier},short:${identifier},sessionId:${identifier},`,
+        // `let X={proto:…` or, since 2.1.332, a later declarator `let a=b(),X={proto:…`.
+        `(?:(?<![\\w$])let |,)(${identifier})=\\{proto:${identifier},short:${identifier},sessionId:${identifier},`,
         "g"
       );
       const dispatchRecords = [...workerSegment.matchAll(dispatchRecordPattern)]
@@ -2561,8 +2562,10 @@ const CHECKS: Check[] = [
         // 2.1.245 replaced the explicit prop list at the main call site with a
         // rest spread inside a React-compiler memo cache, so that shape is the
         // second accepted form.
+        // 2.1.332 gates the value on the same condition as the tool uses
+        // (`streamingThinking:Oe===void 0?__cc_streamingThinking:null`).
         const compilerCallSitePattern =
-          /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:__cc_streamingThinking[,}]/;
+          /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:(?:[^,?:{}()]+\?__cc_streamingThinking:null|__cc_streamingThinking)[,}]/;
         const compilerCallSiteMatch = content.match(compilerCallSitePattern);
         const usesCompilerCallSite = compilerCallSiteMatch !== null;
         if (rendererCallSites.length !== 1 && !usesCompilerCallSite) {
