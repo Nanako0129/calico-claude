@@ -204,3 +204,42 @@ test("forced rebuild lands on the guard owning the renderer assignment", () => {
   );
   assert.equal(context.lastProps.streamingThinking.messages[0], "THOUGHT");
 });
+
+// 2.1.332 passes the renderer an alias of the selection that is emptied while a
+// waiting row is shown (`Mo=Oe===void 0?X:fs`). The thinking prop rides the
+// same condition: present without a waiting row, null with one.
+const waitingRowFixture = `
+function wrapper(wr){let su=hk(tn?.stream,se)??li,mo=wr===void 0?su:li,x;if(cache[0]!==mo)x=o(C,{...E,streamingToolUses:mo,isLoading:!1}),cache[0]=mo,cache[1]=x;else x=cache[1];return x}
+function next(){}
+`;
+
+test("2.1.332 waiting-row alias gates streaming thinking like the tool uses", () => {
+  const result = patchThinkingStreaming(waitingRowFixture);
+  assert.ok(result.patched > 0, "expected the aliased turn-stream selection to patch");
+  assert.match(result.content, /streamingToolUses:mo,streamingThinking:wr===void 0\?__cc_streamingThinking:null,/);
+
+  for (const [waitingRow, expected] of [[undefined, "THOUGHT"], ["row", null]]) {
+    const context = { cache: [], lastProps: null, waitingRow };
+    vm.createContext(context);
+    vm.runInContext(
+      `var hk=(s,f)=>s?f(s):null;` +
+        `var tn={stream:{streamingToolUses:["tu"],streamingThinking:{messages:["THOUGHT"]}}};` +
+        `var se=(s)=>s.streamingToolUses,li=[],C={},E={};` +
+        `function o(c,p){lastProps=p;return{c,p}}` +
+        result.content +
+        `;wrapper(waitingRow);`,
+      context
+    );
+    assert.equal(context.lastProps.streamingThinking?.messages[0] ?? null, expected);
+  }
+
+  // A chained assignment is not a condition: `mo=wr=a===b?su:li` assigns wr.
+  // A looser gate (any text before `?`) would read gate `wr=a===b` for mo.
+  const chained = waitingRowFixture
+    .replace("function wrapper(wr)", "function wrapper(wr,a,b)")
+    .replace("mo=wr===void 0?su:li", "mo=wr=a===b?su:li");
+  assert.notEqual(chained, waitingRowFixture);
+  const chainedResult = patchThinkingStreaming(chained);
+  assert.equal(chainedResult.patched, 0);
+  assert.equal(chainedResult.content, chained);
+});

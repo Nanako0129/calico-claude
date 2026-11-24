@@ -737,8 +737,28 @@ function patchThinkingStreaming(content) {
     }
 
     const wrapperSegment = output.slice(fnStart, fnEnd);
-    if (!wrapperSegment.includes(`streamingToolUses:${streamingToolUsesVar},`)) {
-      continue;
+    // 2.1.332 hands the renderer an alias, `Mo=Oe===void 0?X:fs`: while a
+    // waiting row is shown the live tool uses are swapped for the empty
+    // fallback. Streaming thinking takes the same condition, or it would keep
+    // rendering after the transcript was cut at that row.
+    let rendererToolUsesVar = streamingToolUsesVar;
+    let thinkingGate = null;
+    if (!wrapperSegment.includes(`streamingToolUses:${rendererToolUsesVar},`)) {
+      // The condition is one strict comparison of two plain operands, so it
+      // carries no assignment or call and re-emitting it at the prop is safe.
+      const aliases = [
+        ...wrapperSegment.matchAll(
+          new RegExp(
+            `(?<![\\w$.])([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*(?:===|!==)(?:void 0|[A-Za-z_$][\\w$]*))\\?${escapeRegExp(streamingToolUsesVar)}:[A-Za-z_$][\\w$]*,`,
+            "g"
+          )
+        ),
+      ].filter((alias) => wrapperSegment.includes(`streamingToolUses:${alias[1]},`));
+      if (aliases.length !== 1) {
+        continue;
+      }
+      rendererToolUsesVar = aliases[0][1];
+      thinkingGate = aliases[0][2];
     }
 
     const rendererSignaturePattern =
@@ -748,6 +768,10 @@ function patchThinkingStreaming(content) {
     }
 
     const streamingThinkingVar = "__cc_streamingThinking";
+    const streamingThinkingProp =
+      thinkingGate === null
+        ? `streamingThinking:${streamingThinkingVar},`
+        : `streamingThinking:${thinkingGate}?${streamingThinkingVar}:null,`;
     // Both replacements interpolate captured minified names, and the matcher
     // admits `$` in them. Passing that text as a replacement *string* would let
     // `String.replace` expand a `$$` inside a name to a single `$`, silently
@@ -759,8 +783,8 @@ function patchThinkingStreaming(content) {
         `${turnStreamSelectionMatch[0]}${streamingThinkingVar}=${selectorHook}(${turnVar}?.stream,(__cc_state)=>__cc_state.streamingThinking)??null,`
     );
     nextWrapperSegment = nextWrapperSegment.replace(
-      `streamingToolUses:${streamingToolUsesVar},`,
-      () => `streamingToolUses:${streamingToolUsesVar},streamingThinking:${streamingThinkingVar},`
+      `streamingToolUses:${rendererToolUsesVar},`,
+      () => `streamingToolUses:${rendererToolUsesVar},${streamingThinkingProp}`
     );
 
     // Force the compiler's memo guard to rebuild the element. The guard has to
@@ -772,7 +796,7 @@ function patchThinkingStreaming(content) {
     // Identify it structurally: find the assignment whose props object holds the
     // injected prop, then take the `if(` whose condition closes immediately
     // before that assignment starts.
-    const propIndex = nextWrapperSegment.indexOf(`streamingThinking:${streamingThinkingVar},`);
+    const propIndex = nextWrapperSegment.indexOf(streamingThinkingProp);
     if (propIndex === -1) {
       continue;
     }
@@ -5559,8 +5583,12 @@ function patchGatewayFastMode(content) {
     }
     return -1;
   }
+  // 2.1.332 folded the record into a longer declaration list,
+  // `let Le=f4t(),Fe={proto:…}`, so it no longer follows `let ` directly. A
+  // name after `,` is accepted too; the record still has to hold the respawn
+  // env and be followed directly by the awaited dispatch below.
   const dispatchRecordPattern = new RegExp(
-    "let (" +
+    "(?:(?<![\\w$])let |,)(" +
       identifier +
       ")=\\{proto:" +
       identifier +

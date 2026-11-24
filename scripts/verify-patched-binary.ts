@@ -841,7 +841,8 @@ const CHECKS: Check[] = [
         return -1;
       }
       const dispatchRecordPattern = new RegExp(
-        `let (${identifier})=\\{proto:${identifier},short:${identifier},sessionId:${identifier},`,
+        // `let X={proto:…` or, since 2.1.332, `let a=b(),X={proto:…`.
+        `(?:(?<![\\w$])let |,)(${identifier})=\\{proto:${identifier},short:${identifier},sessionId:${identifier},`,
         "g"
       );
       const dispatchRecords = [...workerSegment.matchAll(dispatchRecordPattern)]
@@ -2561,10 +2562,26 @@ const CHECKS: Check[] = [
         // 2.1.245 replaced the explicit prop list at the main call site with a
         // rest spread inside a React-compiler memo cache, so that shape is the
         // second accepted form.
+        // 2.1.332 gates the value on the same condition as the tool uses
+        // (`streamingThinking:Oe===void 0?__cc_streamingThinking:null` next to
+        // `streamingToolUses:Mo`, `Mo=Oe===void 0?X:fs`); the gate has the
+        // patcher's grammar and is the condition of that alias, declared in the
+        // call site's function.
         const compilerCallSitePattern =
-          /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:[A-Za-z_$][\w$]*,streamingThinking:__cc_streamingThinking[,}]/;
+          /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:([A-Za-z_$][\w$]*),streamingThinking:(?:([A-Za-z_$][\w$]*(?:===|!==)(?:void 0|[A-Za-z_$][\w$]*))\?__cc_streamingThinking:null|__cc_streamingThinking)[,}]/;
         const compilerCallSiteMatch = content.match(compilerCallSitePattern);
         const usesCompilerCallSite = compilerCallSiteMatch !== null;
+        if (
+          compilerCallSiteMatch?.[2] !== undefined &&
+          !content
+            .slice(
+              content.lastIndexOf("function ", compilerCallSiteMatch.index ?? 0),
+              compilerCallSiteMatch.index
+            )
+            .includes(`${compilerCallSiteMatch[1]}=${compilerCallSiteMatch[2]}?`)
+        ) {
+          return "expected the gated streamingThinking prop to share the tool-use alias condition";
+        }
         if (rendererCallSites.length !== 1 && !usesCompilerCallSite) {
           return `expected 1 renderer call-site streamingThinking prop, found ${rendererCallSites.length}`;
         }
