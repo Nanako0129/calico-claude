@@ -749,7 +749,7 @@ function patchThinkingStreaming(content) {
       const aliases = [
         ...wrapperSegment.matchAll(
           new RegExp(
-            `(?<![\\w$.])([A-Za-z_$][\\w$]*)=((?<![\\w$])[A-Za-z_$][\\w$]*(?:===|!==)(?:void 0|[A-Za-z_$][\\w$]*))\\?${escapeRegExp(streamingToolUsesVar)}:[A-Za-z_$][\\w$]*,`,
+            `(?<![\\w$.])([A-Za-z_$][\\w$]*)=([A-Za-z_$][\\w$]*(?:===|!==)(?:void 0|[A-Za-z_$][\\w$]*))\\?${escapeRegExp(streamingToolUsesVar)}:[A-Za-z_$][\\w$]*,`,
             "g"
           )
         ),

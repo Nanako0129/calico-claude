@@ -2564,15 +2564,21 @@ const CHECKS: Check[] = [
         // second accepted form.
         // 2.1.332 gates the value on the same condition as the tool uses
         // (`streamingThinking:Oe===void 0?__cc_streamingThinking:null` next to
-        // `streamingToolUses:Mo`, `Mo=Oe===void 0?X:fs`); the gate has to be
-        // that alias's condition, character for character.
+        // `streamingToolUses:Mo`, `Mo=Oe===void 0?X:fs`); the gate has the
+        // patcher's grammar and is the condition of that alias, declared in the
+        // call site's function.
         const compilerCallSitePattern =
-          /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:([A-Za-z_$][\w$]*),streamingThinking:(?:([^,?:{}()]+)\?__cc_streamingThinking:null|__cc_streamingThinking)[,}]/;
+          /\{\.\.\.[A-Za-z_$][\w$]*,[^{}]*streamingToolUses:([A-Za-z_$][\w$]*),streamingThinking:(?:([A-Za-z_$][\w$]*(?:===|!==)(?:void 0|[A-Za-z_$][\w$]*))\?__cc_streamingThinking:null|__cc_streamingThinking)[,}]/;
         const compilerCallSiteMatch = content.match(compilerCallSitePattern);
         const usesCompilerCallSite = compilerCallSiteMatch !== null;
         if (
           compilerCallSiteMatch?.[2] !== undefined &&
-          !content.includes(`${compilerCallSiteMatch[1]}=${compilerCallSiteMatch[2]}?`)
+          !content
+            .slice(
+              content.lastIndexOf("function ", compilerCallSiteMatch.index ?? 0),
+              compilerCallSiteMatch.index
+            )
+            .includes(`${compilerCallSiteMatch[1]}=${compilerCallSiteMatch[2]}?`)
         ) {
           return "expected the gated streamingThinking prop to share the tool-use alias condition";
         }

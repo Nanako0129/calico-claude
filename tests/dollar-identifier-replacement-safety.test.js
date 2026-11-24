@@ -233,10 +233,13 @@ test("2.1.332 waiting-row alias gates streaming thinking like the tool uses", ()
     assert.equal(context.lastProps.streamingThinking?.messages[0] ?? null, expected);
   }
 
-  // A chained assignment is not a condition: `mo=wr=fo?su:li` assigns wr.
+  // A chained assignment is not a condition: `mo=wr=a===b?su:li` assigns wr.
+  // A looser gate (any text before `?`) would read gate `wr=a===b` for mo.
   const chained = waitingRowFixture
-    .replace("function wrapper(wr)", "function wrapper(wr,fo)")
-    .replace("mo=wr===void 0?su:li", "mo=wr=fo?su:li");
+    .replace("function wrapper(wr)", "function wrapper(wr,a,b)")
+    .replace("mo=wr===void 0?su:li", "mo=wr=a===b?su:li");
   assert.notEqual(chained, waitingRowFixture);
-  assert.doesNotMatch(patchThinkingStreaming(chained).content, /streamingThinking:wr=/);
+  const chainedResult = patchThinkingStreaming(chained);
+  assert.equal(chainedResult.patched, 0);
+  assert.equal(chainedResult.content, chained);
 });
