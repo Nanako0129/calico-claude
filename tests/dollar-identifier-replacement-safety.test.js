@@ -232,4 +232,11 @@ test("2.1.332 waiting-row alias gates streaming thinking like the tool uses", ()
     );
     assert.equal(context.lastProps.streamingThinking?.messages[0] ?? null, expected);
   }
+
+  // A chained assignment is not a condition: `mo=wr=fo?su:li` assigns wr.
+  const chained = waitingRowFixture
+    .replace("function wrapper(wr)", "function wrapper(wr,fo)")
+    .replace("mo=wr===void 0?su:li", "mo=wr=fo?su:li");
+  assert.notEqual(chained, waitingRowFixture);
+  assert.doesNotMatch(patchThinkingStreaming(chained).content, /streamingThinking:wr=/);
 });

@@ -744,10 +744,12 @@ function patchThinkingStreaming(content) {
     let rendererToolUsesVar = streamingToolUsesVar;
     let thinkingGate = null;
     if (!wrapperSegment.includes(`streamingToolUses:${rendererToolUsesVar},`)) {
+      // The condition is one strict comparison of two plain operands, so it
+      // carries no assignment or call and re-emitting it at the prop is safe.
       const aliases = [
         ...wrapperSegment.matchAll(
           new RegExp(
-            `(?<![\\w$.])([A-Za-z_$][\\w$]*)=([^,?:{}()]+)\\?${escapeRegExp(streamingToolUsesVar)}:[A-Za-z_$][\\w$]*,`,
+            `(?<![\\w$.])([A-Za-z_$][\\w$]*)=((?<![\\w$])[A-Za-z_$][\\w$]*(?:===|!==)(?:void 0|[A-Za-z_$][\\w$]*))\\?${escapeRegExp(streamingToolUsesVar)}:[A-Za-z_$][\\w$]*,`,
             "g"
           )
         ),
@@ -5583,9 +5585,8 @@ function patchGatewayFastMode(content) {
   }
   // 2.1.332 folded the record into a longer declaration list,
   // `let Le=f4t(),Fe={proto:…}`, so it no longer follows `let ` directly. A
-  // declarator after `,` is accepted too; the awaited-dispatch check below still
-  // requires `},[,X]=await Promise.all(` right after the record, which only a
-  // `let` declarator list produces.
+  // name after `,` is accepted too; the record still has to hold the respawn
+  // env and be followed directly by the awaited dispatch below.
   const dispatchRecordPattern = new RegExp(
     "(?:(?<![\\w$])let |,)(" +
       identifier +
